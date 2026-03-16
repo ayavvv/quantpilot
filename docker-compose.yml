@@ -1,0 +1,148 @@
+# QuantPilot Docker Compose
+#
+# Profiles:
+#   - collector:  Data collection (baostock A-shares)
+#   - inference:  Daily model prediction (Qlib + LightGBM)
+#   - trader:     Auto trading via Futu OpenD
+#   - trainer:    Weekly model retraining
+#   - reporter:   Daily email report
+#   - observer:   System monitoring dashboard
+#
+# Usage:
+#   docker compose --profile inference --profile reporter up    # Daily pipeline
+#   docker compose --profile collector up -d                    # Data collection daemon
+#   docker compose --profile observer up -d                     # Monitoring dashboard
+#   docker compose run --rm inference                           # One-shot inference
+#
+# Single-machine:
+#   docker compose --profile all up -d                          # Everything
+
+services:
+  # --- Data Collection ---
+  collector:
+    build:
+      context: .
+      dockerfile: collector/Dockerfile
+    container_name: quantpilot-collector
+    restart: unless-stopped
+    profiles: ["collector", "all"]
+    environment:
+      - TZ=Asia/Shanghai
+      - CRON_TIME=${CRON_TIME:-16:30}
+      - QLIB_DATA_DIR=/qlib_data
+      - FUTU_HOST=${FUTU_HOST:-localhost}
+      - FUTU_PORT=${FUTU_PORT:-11111}
+    env_file:
+      - .env
+    volumes:
+      - ${DATA_DIR:-./data}:/data
+      - ${QLIB_DATA_DIR:-./qlib_data}:/qlib_data
+
+  # --- Daily Inference ---
+  inference:
+    build:
+      context: .
+      dockerfile: inference/Dockerfile
+    # pyqlib has no arm64 wheels - must use Rosetta on Apple Silicon
+    platform: linux/amd64
+    container_name: quantpilot-inference
+    restart: "no"
+    profiles: ["inference", "all"]
+    environment:
+      - TZ=Asia/Shanghai
+      - QLIB_DATA_DIR=/qlib_data
+      - MODEL_DIR=/app/models
+      - SIGNAL_DIR=/data/signals
+      - MARKET=${MARKET:-sh}
+    volumes:
+      - ${QLIB_DATA_DIR:-./qlib_data}:/qlib_data:ro
+      - ${DATA_DIR:-./data}/signals:/data/signals
+      - ${DATA_DIR:-./data}/models:/app/models:ro
+
+  # --- Auto Trader ---
+  trader:
+    build:
+      context: .
+      dockerfile: trader/Dockerfile
+    container_name: quantpilot-trader
+    restart: "no"
+    profiles: ["trader", "all"]
+    environment:
+      - TZ=Asia/Shanghai
+      - FUTU_HOST=${FUTU_HOST:-host.docker.internal}
+      - FUTU_PORT=${FUTU_PORT:-11111}
+      - PRED_PATH=/models/pred_sh.pkl
+      - QLIB_DATA_DIR=/qlib_data
+      - TOP_N=${TOP_N:-5}
+      - HOLD_BONUS=${HOLD_BONUS:-0.05}
+      - STOP_LOSS_PCT=${STOP_LOSS_PCT:--0.08}
+      - DRY_RUN=${DRY_RUN:-true}
+    volumes:
+      - ${QLIB_DATA_DIR:-./qlib_data}:/qlib_data:ro
+      - ${DATA_DIR:-./data}/signals:/signals
+      - ${DATA_DIR:-./data}/models:/models:ro
+    # Access host network for Futu OpenD
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # --- Weekly Trainer ---
+  trainer:
+    build:
+      context: .
+      dockerfile: trainer/Dockerfile
+    platform: linux/amd64
+    container_name: quantpilot-trainer
+    restart: "no"
+    profiles: ["trainer", "all"]
+    environment:
+      - TZ=Asia/Shanghai
+      - QLIB_DATA_DIR=/qlib_data
+      - STRATEGY_DIR=/app
+      - MODELS_DIR=/data/models
+      - OUTPUT_DIR=/data/output
+      - TRADE_PRED_PATH=/data/models/pred_sh.pkl
+    env_file:
+      - .env
+    volumes:
+      - ${QLIB_DATA_DIR:-./qlib_data}:/qlib_data:ro
+      - ${DATA_DIR:-./data}:/data
+
+  # --- Daily Reporter ---
+  reporter:
+    build:
+      context: .
+      dockerfile: reporter/Dockerfile
+    container_name: quantpilot-reporter
+    restart: "no"
+    profiles: ["reporter", "all"]
+    environment:
+      - TZ=Asia/Shanghai
+      - QLIB_DATA_DIR=/qlib_data
+      - SIGNAL_DIR=/data/signals
+      - REPORT_DIR=/data/reports
+    env_file:
+      - .env
+    volumes:
+      - ${QLIB_DATA_DIR:-./qlib_data}:/qlib_data:ro
+      - ${DATA_DIR:-./data}/signals:/data/signals:ro
+      - ${DATA_DIR:-./data}/reports:/data/reports
+
+  # --- System Monitor ---
+  observer:
+    build:
+      context: .
+      dockerfile: observer/Dockerfile
+    container_name: quantpilot-observer
+    restart: unless-stopped
+    profiles: ["observer", "all"]
+    ports:
+      - "${OBSERVER_PORT:-8501}:8501"
+    environment:
+      - TZ=Asia/Shanghai
+      - QLIB_DATA_DIR=/qlib_data
+      - SIGNAL_DIR=/data/signals
+      - MODEL_DIR=/data/models
+      - REPORT_DIR=/data/reports
+    volumes:
+      - ${QLIB_DATA_DIR:-./qlib_data}:/qlib_data:ro
+      - ${DATA_DIR:-./data}:/data:ro

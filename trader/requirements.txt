@@ -1,0 +1,3 @@
+pandas
+numpy
+futu-api>=6.0.0
