@@ -1,0 +1,46 @@
+# Qlib 港股配置：LightGBM + Alpha158
+# 数据目录：~/.qlib/qlib_data/hk_quant_data（仅港股）
+# 10年数据(2016-)补录完成后可完整训练；当前少量数据时用 _segments_from_calendar 自适应分段
+
+qlib_init:
+  provider_uri: "~/.qlib/qlib_data/hk_quant_data"
+  region: cn   # 沿用cn region；calendar由实际HK parquet数据构建
+
+market: &market all
+benchmark: &benchmark HK.800000
+
+data_handler_config: &data_handler_config
+  start_time: 2016-01-01
+  end_time: 2026-12-31
+  fit_start_time: 2016-01-01
+  fit_end_time: 2024-12-31
+  instruments: *market
+
+task:
+  model:
+    class: LGBModel
+    module_path: qlib.contrib.model.gbdt
+    kwargs:
+      loss: mse
+      colsample_bytree: 0.8
+      learning_rate: 0.05
+      subsample: 0.8
+      lambda_l1: 5.0
+      lambda_l2: 10.0
+      max_depth: 6
+      num_leaves: 63
+      num_threads: 10
+      num_boost_round: 300
+      early_stopping_rounds: 50
+  dataset:
+    class: DatasetH
+    module_path: qlib.data.dataset
+    kwargs:
+      handler:
+        class: Alpha158HK
+        module_path: strategy.alpha_hk
+        kwargs: *data_handler_config
+      segments:
+        train: [2016-01-01, 2023-12-31]
+        valid: [2024-01-01, 2024-06-30]
+        test:  [2024-07-01, 2025-12-31]

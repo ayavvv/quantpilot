@@ -1,0 +1,88 @@
+# QuantPilot Mac mini — 推理 + 交易 + 调度
+#
+# Usage:
+#   docker compose -f docker-compose.mac.yml up -d scheduler
+#   docker compose -f docker-compose.mac.yml run --rm trader
+#
+# OpenD 运行在宿主机 127.0.0.1:11111, trader 通过 host.docker.internal 访问
+
+services:
+  # --- 每日 Qlib 推理 (x86 via Rosetta) ---
+  inference:
+    build:
+      context: .
+      dockerfile: inference/Dockerfile
+    platform: linux/amd64
+    container_name: quantpilot-inference
+    restart: "no"
+    environment:
+      - TZ=Asia/Shanghai
+      - QLIB_DATA_DIR=/qlib_data
+      - SIGNAL_DIR=/data/signals
+    volumes:
+      - quant_data:/data
+      - ~/quantpilot_data/qlib_data:/qlib_data:ro
+      - ~/quantpilot_data/models:/app/models:ro
+
+  # --- 模拟盘交易 ---
+  trader:
+    build:
+      context: .
+      dockerfile: trader/Dockerfile
+    container_name: quantpilot-trader
+    restart: "no"
+    environment:
+      - TZ=Asia/Shanghai
+      - FUTU_HOST=host.docker.internal
+      - FUTU_PORT=11111
+      - PRED_PATH=/data/signals/pred_a.pkl
+      - QLIB_DATA_DIR=/qlib_data
+      - SIGNAL_DIR=/data/signals
+      - TOP_N=5
+      - HOLD_BONUS=0.05
+      - STOP_LOSS_PCT=-0.08
+      - DRY_RUN=false
+    volumes:
+      - quant_data:/data
+      - ~/quantpilot_data/qlib_data:/qlib_data:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # --- 每日邮件报告 ---
+  reporter:
+    build:
+      context: .
+      dockerfile: reporter/Dockerfile
+    container_name: quantpilot-reporter
+    restart: "no"
+    environment:
+      - TZ=Asia/Shanghai
+    env_file:
+      - ./reporter/.env
+    volumes:
+      - quant_data:/data:ro
+
+  # --- 调度器 (替代 crontab) ---
+  scheduler:
+    build:
+      context: .
+      dockerfile: scheduler/Dockerfile
+    container_name: quantpilot-scheduler
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - quant_data:/data
+      - ~/quantpilot_data/qlib_data:/qlib_data
+      - ~/.ssh/nas_key:/ssh/nas_key:ro
+      - .:/compose:ro
+      - ./logs:/logs
+
+volumes:
+  quant_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${HOME}/quantpilot_data

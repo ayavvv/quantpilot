@@ -1,0 +1,12 @@
+# QuantPilot Mac mini Scheduler
+# All times are Asia/Shanghai (CST)
+
+# 工作日 14:40 — 从 NAS 同步最新 kline 数据
+40 14 * * 1-5 /scripts/sync_kline.sh >> /logs/sync.log 2>&1
+
+# 工作日 14:50 — 模拟盘自动交易
+50 14 * * 1-5 /scripts/run_trade.sh >> /logs/trade.log 2>&1
+
+# 工作日 17:00 — 推理 + 日报
+0 17 * * 1-5 /scripts/run_daily.sh >> /logs/daily.log 2>&1
+

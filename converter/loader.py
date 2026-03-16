@@ -1,8 +1,11 @@
 """
 将 Parquet K 线数据转换为 Qlib 所需的 .bin 格式。
 
-数据源：通过环境变量 DATA_SOURCE 指定，或使用项目根目录下的默认路径
-输出：通过环境变量 QLIB_DATA_DIR 指定，默认 ~/.qlib/qlib_data/my_quant_data
+数据源：nas-quant-collector 采集的数据
+- 本地：ROOT_DIR/data/kline/1d 或 data/kline/K_DAY
+- NAS/SMB：通过环境变量 DATA_SOURCE 指定挂载路径
+
+输出：~/.qlib/qlib_data/my_quant_data
 """
 
 import os
@@ -19,14 +22,12 @@ try:
 except ImportError:
 
     def fname_to_code(fname: str) -> str:
-        """文件名转股票代码"""
         prefix = "_qlib_"
         if str(fname).startswith(prefix):
-            fname = fname[len(prefix) :]
+            fname = fname[len(prefix):]
         return str(fname).upper()
 
     def code_to_fname(code: str) -> str:
-        """股票代码转文件名"""
         replace_names = ["CON", "PRN", "AUX", "NUL"] + [
             f"COM{i}" for i in range(10)
         ] + [f"LPT{i}" for i in range(10)]
@@ -37,10 +38,9 @@ except ImportError:
 
 # 必需的列（Qlib 格式）
 REQUIRED_COLUMNS = ["date", "open", "close", "high", "low", "volume", "amount"]
-# 可选列，用于复权因子
 OPTIONAL_FACTOR = "factor"
 
-# 列映射：nas-quant-collector / Futu 可能使用的列名 -> 目标列名
+# 列映射
 COLUMN_ALIAS = {
     "time_key": "date",
     "turn_over": "amount",
@@ -49,18 +49,13 @@ COLUMN_ALIAS = {
 
 
 def _get_root_dir() -> Path:
-    """获取项目根目录（脚本父目录的父目录）"""
     return Path(__file__).resolve().parent.parent
 
 
 def _get_data_source() -> Path:
-    """
-    获取数据源路径。
-    优先：环境变量 DATA_SOURCE > ROOT_DIR/data/kline/1d > ROOT_DIR/data/kline/K_DAY
-    """
+    root = _get_root_dir()
     if env_path := os.environ.get("DATA_SOURCE"):
         return Path(env_path).expanduser().resolve()
-    root = _get_root_dir()
     for sub in ["data/kline/1d", "data/kline/K_DAY"]:
         p = root / sub
         if p.exists():
@@ -69,24 +64,12 @@ def _get_data_source() -> Path:
 
 
 def _get_output_dir() -> Path:
-    """
-    Qlib 数据输出路径。
-    优先使用环境变量 QLIB_DATA_DIR，默认 ~/.qlib/qlib_data/my_quant_data
-    """
-    env_path = os.environ.get("QLIB_DATA_DIR")
-    if env_path:
-        return Path(env_path).expanduser().resolve()
     return Path("~/.qlib/qlib_data/my_quant_data").expanduser().resolve()
 
 
 def _collect_parquet_files(data_source: Path) -> list[tuple[Path, str]]:
-    """
-    递归收集所有 .parquet 文件，返回 [(文件路径, 股票代码), ...]
-    股票代码从父目录名推导（如 K_DAY/HK00700/data.parquet -> HK00700）
-    """
     result = []
     for parquet_path in data_source.rglob("*.parquet"):
-        # 父目录名即股票代码（如 HK00700、SH600000）
         code = parquet_path.parent.name
         if code and not code.startswith("."):
             result.append((parquet_path, code))
@@ -94,13 +77,10 @@ def _collect_parquet_files(data_source: Path) -> list[tuple[Path, str]]:
 
 
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """标准化列名，确保包含 date, open, close, high, low, volume, amount"""
     df = df.copy()
-    # 应用列别名
     for old, new in COLUMN_ALIAS.items():
         if old in df.columns and new not in df.columns:
             df[new] = df[old]
-    # 确保有 date
     if "date" not in df.columns and "time_key" in df.columns:
         df["date"] = df["time_key"]
     df["date"] = pd.to_datetime(df["date"])
@@ -108,7 +88,6 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _ensure_required_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """确保必需列存在，缺失的用 NaN 填充；添加 factor 若不存在"""
     for col in REQUIRED_COLUMNS:
         if col not in df.columns:
             df[col] = np.nan
@@ -118,24 +97,104 @@ def _ensure_required_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _clean_data(df: pd.DataFrame) -> pd.DataFrame:
-    """清洗数据：处理 NaN（Qlib 用 NaN 表示停牌等）"""
     df = df.copy()
-    # 按 date 去重，保留最后一条
     if "date" in df.columns:
         df = df.drop_duplicates(subset=["date"], keep="last")
-    # 数值列中的 inf 转为 nan
     for col in df.select_dtypes(include=[np.number]).columns:
         df[col] = df[col].replace([np.inf, -np.inf], np.nan)
     return df
 
 
+def _load_fundamentals_snapshot(data_source: Path) -> dict[str, pd.DataFrame]:
+    candidates = [
+        data_source.parent.parent / "fundamentals" / "daily_snapshot.parquet",
+        data_source.parent / "fundamentals" / "daily_snapshot.parquet",
+    ]
+    for path in candidates:
+        if path.exists():
+            try:
+                df = pd.read_parquet(path)
+                if "code" in df.columns and "date" in df.columns:
+                    df["date"] = pd.to_datetime(df["date"])
+                    return {code: grp for code, grp in df.groupby("code")}
+            except Exception as e:
+                print(f"  [警告] 读取基本面快照失败: {e}")
+    return {}
+
+
+def _fill_fundamentals(df: pd.DataFrame, fund_df: pd.DataFrame = None) -> pd.DataFrame:
+    df = df.copy()
+    if fund_df is not None and "pb_ratio" in fund_df.columns and "date" in df.columns:
+        fund_pb = fund_df[["date", "pb_ratio"]].copy()
+        fund_pb["date"] = pd.to_datetime(fund_pb["date"])
+        df = df.merge(fund_pb, on="date", how="left", suffixes=("", "_fund"))
+        if "pb_ratio_fund" in df.columns:
+            if "pb_ratio" not in df.columns:
+                df["pb_ratio"] = df["pb_ratio_fund"]
+            else:
+                df["pb_ratio"] = df["pb_ratio"].fillna(df["pb_ratio_fund"])
+            df.drop(columns=["pb_ratio_fund"], inplace=True)
+    for col in ["pe_ratio", "turnover_rate", "pb_ratio"]:
+        if col in df.columns:
+            df[col] = df[col].astype(float).replace(0, np.nan)
+            df[col] = df[col].replace([np.inf, -np.inf], np.nan)
+        else:
+            df[col] = np.nan
+    return df
+
+
+def _load_macro_data(data_source: Path) -> pd.DataFrame | None:
+    macro_map = {
+        "MACRO.VIX": "vix",
+        "MACRO.DXY": "dxy",
+        "MACRO.TNX": "tnx",
+    }
+    etf_map = {
+        "US.SPY": "spy",
+        "US.QQQ": "qqq",
+    }
+    all_map = {**macro_map, **etf_map}
+    kday_dir = data_source
+    merged = None
+    for code, col_name in all_map.items():
+        fp = kday_dir / code / "data.parquet"
+        if not fp.exists():
+            continue
+        try:
+            df = pd.read_parquet(fp)
+            df = _normalize_columns(df)
+            df["date"] = pd.to_datetime(df["date"])
+            df = df[["date", "close"]].drop_duplicates(subset=["date"], keep="last")
+            df = df.rename(columns={"close": col_name})
+            if merged is None:
+                merged = df
+            else:
+                merged = merged.merge(df, on="date", how="outer")
+        except Exception as e:
+            print(f"  [警告] 加载宏观数据 {code} 失败: {e}")
+    if merged is not None:
+        merged = merged.sort_values("date").reset_index(drop=True)
+        for col in merged.columns:
+            if col != "date":
+                merged[col] = merged[col].ffill()
+        print(f"  已加载宏观数据: {[c for c in merged.columns if c != 'date']}, {len(merged)} 天")
+    return merged
+
+
+def _merge_macro(df: pd.DataFrame, macro_df: pd.DataFrame | None) -> pd.DataFrame:
+    if macro_df is None:
+        return df
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.merge(macro_df, on="date", how="left")
+    macro_cols = [c for c in macro_df.columns if c != "date"]
+    for col in macro_cols:
+        if col in df.columns:
+            df[col] = df[col].ffill()
+    return df
+
+
 def _fill_vwap(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    SRE 数据补全：确保 vwap 列存在且无 inf/NaN，供 Alpha158 等因子使用。
-    - 若不存在 vwap 但有 amount 和 volume：vwap = amount / volume
-    - 若无 amount 或 amount/volume 不可用：vwap = (open + high + low + close) / 4
-    - 补全后：inf/NaN 填为 close，无 close 则填 0
-    """
     df = df.copy()
     has_amount = "amount" in df.columns
     has_volume = "volume" in df.columns
@@ -144,7 +203,6 @@ def _fill_vwap(df: pd.DataFrame) -> pd.DataFrame:
 
     if need_vwap:
         if has_amount and has_volume:
-            # 避免除零：volume 为 0 或 NaN 时该行留 nan，后续用 close 填充
             mask = (pd.Series(df["volume"]).fillna(0) != 0) & (df["amount"].notna())
             vwap = np.where(mask, df["amount"].astype(float) / df["volume"].astype(float), np.nan)
         else:
@@ -153,7 +211,6 @@ def _fill_vwap(df: pd.DataFrame) -> pd.DataFrame:
             vwap = (df["open"] + df["high"] + df["low"] + df["close"]) / 4.0
         df["vwap"] = vwap
 
-    # 清洗：inf -> nan，再 nan 用 close 填，无 close 用 0
     v = df["vwap"].replace([np.inf, -np.inf], np.nan)
     if "close" in df.columns and df["close"].notna().any():
         v = v.fillna(df["close"])
@@ -162,15 +219,28 @@ def _fill_vwap(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _prepare_flat_parquet_dir(
-    parquet_items: list[tuple[Path, str]], temp_dir: Path
+    parquet_items: list[tuple[Path, str]], temp_dir: Path,
+    fund_map: dict[str, pd.DataFrame] = None,
+    macro_df: pd.DataFrame = None,
+    whitelist: set[str] | None = None,
 ) -> int:
     """
-    将嵌套的 parquet 转为平铺结构 temp_dir/{code}.parquet，供 Qlib dump_bin 使用。
-    返回成功处理的文件数。
+    将嵌套的 parquet 转为平铺结构。
+    whitelist: 如果提供，只转换在白名单中的股票代码。
     """
-    dump_fields = ["open", "close", "high", "low", "volume", "amount", "factor", "vwap", "pe_ratio", "turnover_rate"]
+    macro_cols = [c for c in (macro_df.columns if macro_df is not None else []) if c != "date"]
+    dump_fields = ["open", "close", "high", "low", "volume", "amount", "factor", "vwap",
+                   "pe_ratio", "turnover_rate", "pb_ratio"] + macro_cols
+    if fund_map is None:
+        fund_map = {}
     count = 0
     for parquet_path, code in parquet_items:
+        # 跳过宏观/ETF 数据本身
+        if code.startswith("MACRO.") or code.startswith("US."):
+            continue
+        # 白名单过滤
+        if whitelist is not None and code not in whitelist:
+            continue
         try:
             df = pd.read_parquet(parquet_path)
         except Exception as e:
@@ -180,10 +250,8 @@ def _prepare_flat_parquet_dir(
         df = _ensure_required_columns(df)
         df = _clean_data(df)
         df = _fill_vwap(df)
-        # 清洗 pe_ratio: 0 或负值（亏损公司）转为 NaN
-        if "pe_ratio" in df.columns:
-            df.loc[df["pe_ratio"] <= 0, "pe_ratio"] = np.nan
-        # 只保留需要的列
+        df = _fill_fundamentals(df, fund_df=fund_map.get(code))
+        df = _merge_macro(df, macro_df)
         cols = [c for c in ["date"] + dump_fields if c in df.columns]
         df = df[cols]
         if df.empty or df["date"].isna().all():
@@ -195,20 +263,24 @@ def _prepare_flat_parquet_dir(
     return count
 
 
-def convert_data(qlib_dir: str = None) -> None:
+def convert_data(whitelist: set[str] | None = None) -> None:
     """
     将数据源目录下的 Parquet 转换为 Qlib .bin 格式。
+
+    Args:
+        whitelist: 可选股票白名单（通过 stock_filter 生成），None 表示不过滤。
     """
     data_source = _get_data_source()
-    output_dir = Path(qlib_dir).resolve() if qlib_dir else _get_output_dir()
+    output_dir = _get_output_dir()
 
     print(f"数据源: {data_source}")
     print(f"输出目录: {output_dir}")
+    if whitelist is not None:
+        print(f"股票白名单: {len(whitelist)} 只")
     print("-" * 50)
 
     if not data_source.exists():
         print(f"错误: 数据源目录不存在: {data_source}")
-        print("提示: 请设置环境变量 DATA_SOURCE 指向行情数据目录")
         return
 
     parquet_items = _collect_parquet_files(data_source)
@@ -217,16 +289,35 @@ def convert_data(qlib_dir: str = None) -> None:
         return
 
     print(f"找到 {len(parquet_items)} 个 Parquet 文件")
+
+    fund_map = _load_fundamentals_snapshot(data_source)
+    if fund_map:
+        print(f"已加载 {len(fund_map)} 只股票的基本面快照数据")
+
+    macro_df = _load_macro_data(data_source)
+
     print("正在准备数据并转换为 Qlib 格式...")
 
     with tempfile.TemporaryDirectory(prefix="qlib_loader_") as temp_dir:
         temp_path = Path(temp_dir)
-        n_prepared = _prepare_flat_parquet_dir(parquet_items, temp_path)
+        n_prepared = _prepare_flat_parquet_dir(
+            parquet_items, temp_path,
+            fund_map=fund_map, macro_df=macro_df,
+            whitelist=whitelist,
+        )
         if n_prepared == 0:
             print("无有效数据可转换")
             return
 
+        base_fields = ["open", "close", "high", "low", "volume", "amount", "factor", "vwap",
+                       "pe_ratio", "turnover_rate", "pb_ratio"]
+        macro_cols = [c for c in (macro_df.columns if macro_df is not None else []) if c != "date"]
+        all_fields = base_fields + macro_cols
+        include_fields_str = ",".join(all_fields)
+
         print(f"已准备 {n_prepared} 个股票数据，开始 dump 到 Qlib...")
+        if macro_cols:
+            print(f"  宏观因子列: {macro_cols}")
 
         use_standalone = True
         try:
@@ -238,13 +329,12 @@ def convert_data(qlib_dir: str = None) -> None:
             dumper = DumpDataAll(
                 data_path=str(temp_path),
                 qlib_dir=str(output_dir),
-                include_fields="open,close,high,low,volume,amount,factor,vwap,pe_ratio,turnover_rate",
+                include_fields=include_fields_str,
                 date_field_name="date",
                 file_suffix=".parquet",
             )
             dumper.dump()
         except ImportError:
-            # Qlib 未安装或 dump_bin 不可用，使用 subprocess
             import subprocess
             import sys
 
@@ -269,16 +359,11 @@ def convert_data(qlib_dir: str = None) -> None:
                     sys.executable,
                     str(dump_script),
                     "dump_all",
-                    "--data_path",
-                    str(temp_path),
-                    "--qlib_dir",
-                    str(output_dir),
-                    "--include_fields",
-                    "open,close,high,low,volume,amount,factor,vwap,pe_ratio,turnover_rate",
-                    "--date_field_name",
-                    "date",
-                    "--file_suffix",
-                    ".parquet",
+                    "--data_path", str(temp_path),
+                    "--qlib_dir", str(output_dir),
+                    "--include_fields", include_fields_str,
+                    "--date_field_name", "date",
+                    "--file_suffix", ".parquet",
                 ]
                 subprocess.run(cmd, check=True)
                 use_standalone = False
@@ -302,12 +387,19 @@ def _dump_bin_standalone(
     qlib_dir: Path,
     parquet_items: list[tuple[Path, str]],
 ) -> None:
-    """
-    不依赖 Qlib 脚本，自行实现 dump 到 .bin 格式（兼容 Qlib 数据结构）。
-    """
     freq = "day"
     date_field = "date"
-    dump_fields = ["open", "close", "high", "low", "volume", "amount", "factor", "vwap", "pe_ratio", "turnover_rate"]
+    base_dump_fields = ["open", "close", "high", "low", "volume", "amount", "factor", "vwap",
+                        "pe_ratio", "turnover_rate", "pb_ratio"]
+    extra_cols = set()
+    for fp in data_path.glob("*.parquet"):
+        try:
+            cols = pd.read_parquet(fp, columns=None).columns.tolist()
+            extra_cols.update(c for c in cols if c not in base_dump_fields and c != date_field)
+        except Exception:
+            pass
+        break
+    dump_fields = base_dump_fields + sorted(extra_cols)
     bin_suffix = ".bin"
     daily_fmt = "%Y-%m-%d"
     calendars_dir = qlib_dir / "calendars"
@@ -315,7 +407,6 @@ def _dump_bin_standalone(
     instruments_dir = qlib_dir / "instruments"
     instruments_sep = "\t"
 
-    # 1. 收集所有数据，构建 calendar 和 instruments
     all_dates = set()
     instruments_rows = []
 
@@ -336,7 +427,7 @@ def _dump_bin_standalone(
         start_d = df[date_field].min().strftime(daily_fmt)
         end_d = df[date_field].max().strftime(daily_fmt)
         instruments_rows.append((code, start_d, end_d))
-        if (i + 1) % 50 == 0:
+        if (i + 1) % 100 == 0:
             print(f"  已扫描 {i + 1}/{len(flat_files)} 个文件...")
 
     calendars_list = sorted(all_dates)
@@ -344,7 +435,6 @@ def _dump_bin_standalone(
         print("无有效交易日历")
         return
 
-    # 2. 保存 calendars
     calendars_dir.mkdir(parents=True, exist_ok=True)
     cal_path = calendars_dir / f"{freq}.txt"
     with open(cal_path, "w", encoding="utf-8") as f:
@@ -352,23 +442,13 @@ def _dump_bin_standalone(
             f.write(pd.Timestamp(d).strftime(daily_fmt) + "\n")
     print(f"  已生成 calendars: {cal_path}")
 
-    # 3. 保存 instruments（all + 按市场拆分）
     instruments_dir.mkdir(parents=True, exist_ok=True)
     inst_path = instruments_dir / "all.txt"
     with open(inst_path, "w", encoding="utf-8") as f:
         for row in instruments_rows:
             f.write(instruments_sep.join(row) + "\n")
-    print(f"  已生成 instruments: {inst_path} ({len(instruments_rows)} 只)")
+    print(f"  已生成 instruments: {inst_path}")
 
-    for market_tag, prefix in [("sh", "SH."), ("sz", "SZ."), ("hk", "HK.")]:
-        market_rows = [r for r in instruments_rows if r[0].startswith(prefix)]
-        mp = instruments_dir / f"{market_tag}.txt"
-        with open(mp, "w", encoding="utf-8") as f:
-            for row in market_rows:
-                f.write(instruments_sep.join(row) + "\n")
-        print(f"  已生成 instruments: {mp} ({len(market_rows)} 只)")
-
-    # 4. 对每个股票 dump bin
     for i, fp in enumerate(flat_files):
         code = fname_to_code(fp.stem.lower()).upper()
         try:
@@ -381,7 +461,6 @@ def _dump_bin_standalone(
         df = df.drop_duplicates(subset=[date_field], keep="last")
         df = df.set_index(date_field).sort_index()
 
-        # 对齐到 calendar
         start_idx = bisect.bisect_left(calendars_list, df.index.min())
         end_idx = bisect.bisect_right(calendars_list, df.index.max())
         if start_idx >= end_idx:
@@ -399,9 +478,8 @@ def _dump_bin_standalone(
             arr = np.array(aligned[field], dtype=np.float32)
             arr = np.where(np.isfinite(arr), arr, np.nan)
             bin_path = feat_dir / f"{field.lower()}.{freq}{bin_suffix}"
-            # Qlib bin 格式: [date_index, v1, v2, ...]，date_index 为该股票在 calendar 中的起始索引
             data = np.hstack([np.array([date_index], dtype="<f4"), arr]).astype("<f4")
             data.tofile(str(bin_path))
 
-        if (i + 1) % 50 == 0 or i == len(flat_files) - 1:
+        if (i + 1) % 100 == 0 or i == len(flat_files) - 1:
             print(f"  已 dump {i + 1}/{len(flat_files)} 个股票")

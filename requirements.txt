@@ -1,0 +1,16 @@
+# 数据加载器依赖（Python 3.10+ 均可）
+python-dotenv>=1.0
+pandas>=2.0
+numpy>=1.24
+fastparquet>=2023.0.0
+PyYAML>=6.0
+
+# 策略/看板依赖
+lightgbm>=3.3.0
+streamlit>=1.20.0
+plotly>=5.13.0
+fire
+scikit-learn
+watchdog
+
+# Qlib 需单独安装（仅支持 Python 3.9–3.12）: pip install -r requirements-qlib.txt

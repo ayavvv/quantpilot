@@ -1,0 +1,6 @@
+# 策略引擎与看板预测依赖：微软 Qlib（PyPI 包名 pyqlib）
+# 文档: https://qlib.readthedocs.io/en/latest/
+# 仓库: https://github.com/microsoft/qlib
+# 需 Python 3.12（pyqlib 暂不支持 3.13+）
+# 用法：Python 3.12 建 venv 后执行 pip install -r requirements.txt -r requirements-qlib.txt
+pyqlib>=0.9.0

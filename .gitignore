@@ -1,9 +1,33 @@
+# Python
 __pycache__/
 *.pyc
+*.pyo
+.venv/
+
+# Environment
 .env
+.smtp_env
+
+# Data (runtime, not code)
 data/
 qlib_data/
+kline/
+signals/
+reports/
+output/
+mlruns/
 logs/
 *.log
-*.pkl
-*.bin
+
+# Generated
+daily_buy_list.csv
+dryrun/portfolio_state.json
+dryrun/logs/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
