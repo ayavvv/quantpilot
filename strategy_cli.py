@@ -1,4 +1,4 @@
-"""量化策略入口。需 Python 3.12 + pyqlib。"""
+"""量化策略 CLI 入口。需 Python 3.12 + pyqlib。"""
 from pathlib import Path
 import subprocess
 import sys
@@ -10,9 +10,7 @@ try:
     if not (_root / ".env").exists():
         load_dotenv(_root / ".env.example")
 except ImportError:
-    pass
-
-from strategy.loader import convert_data
+    _root = Path(__file__).resolve().parent
 
 
 def _check_qlib() -> None:
@@ -24,63 +22,7 @@ def _check_qlib() -> None:
         sys.exit(1)
 
 
-# ── A股流程 ──────────────────────────────────────────────────────────────────
-
-def convert() -> None:
-    """数据转换：Parquet -> Qlib Bin（全 A 股，含过滤）"""
-    from strategy.stock_filter import filter_stock_universe
-    from converter.loader import _get_data_source
-
-    print("=" * 60)
-    print("A 股数据转换（含股票池过滤）")
-    print("=" * 60)
-
-    data_source = _get_data_source()
-    print(f"数据源: {data_source}")
-    print("过滤规则: 剔除 ST、次新股(<1年)、日均成交额<5000万")
-
-    passed, rejected = filter_stock_universe(data_source)
-    print(f"通过过滤: {len(passed)} 只")
-    print(f"被剔除: {len(rejected)} 只")
-
-    # 打印剔除统计
-    st_count = sum(1 for r in rejected.values() if r.startswith("ST"))
-    ipo_count = sum(1 for r in rejected.values() if r.startswith("次新"))
-    vol_count = sum(1 for r in rejected.values() if r.startswith("低流动"))
-    other_count = len(rejected) - st_count - ipo_count - vol_count
-    print(f"  ST: {st_count}, 次新股: {ipo_count}, 低流动性: {vol_count}, 其他: {other_count}")
-
-    convert_data(whitelist=set(passed))
-
-
-def convert_hk() -> None:
-    """数据转换：Parquet -> Qlib Bin（港股）"""
-    import os
-    from converter.loader import convert_data as _convert
-    print("=" * 50)
-    print("Qlib Parquet -> Bin 数据转换（港股）")
-    print("=" * 50)
-    data_src = os.environ.get("DATA_SOURCE", str(_root / "data/kline/K_DAY"))
-    hk_tmp = _root / "data" / "kline" / "K_DAY_HK_only"
-    hk_tmp.mkdir(parents=True, exist_ok=True)
-    import shutil
-    src = Path(data_src)
-    for d in src.iterdir():
-        if d.name.startswith("HK.") and d.is_dir():
-            dst = hk_tmp / d.name
-            if not dst.exists():
-                shutil.copytree(d, dst)
-    os.environ["DATA_SOURCE"] = str(hk_tmp)
-    from pathlib import Path as P
-    import importlib, converter.loader as cl
-    orig = cl._get_output_dir
-    cl._get_output_dir = lambda: P("~/.qlib/qlib_data/hk_quant_data").expanduser().resolve()
-    try:
-        _convert()
-    finally:
-        cl._get_output_dir = orig
-        os.environ["DATA_SOURCE"] = data_src
-
+# ── 训练 ─────────────────────────────────────────────────────────────────────
 
 def train(experiment_name: str = "a_share_lgbm", save_dir: str | None = None) -> None:
     """训练全 A 股 LightGBM 模型"""
@@ -184,7 +126,7 @@ def dryrun(topk: int = 10, n_drop: int = 2, initial_cash: float = 1_000_000) -> 
     result = trader.execute_daily()
     report = trader.get_daily_report(result)
     print(report)
-    report_dir = Path(__file__).resolve().parent / "dryrun"
+    report_dir = _root / "dryrun"
     report_path = report_dir / f"report_{result['date']}.txt"
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(report, encoding="utf-8")
@@ -199,67 +141,35 @@ def dryrun_status() -> None:
     print(trader.get_portfolio_summary())
 
 
-def deploy() -> None:
-    """部署：将 pred_a.pkl 复制到 trader 目录"""
-    import shutil
-    src = _root / "models" / "pred_a.pkl"
-    if not src.exists():
-        src = _root / "models" / "pred.pkl"
-    if not src.exists():
-        print("未找到预测文件，请先运行 train")
-        return
-    dst = Path.home() / "nas_quant_trader" / "models" / "pred_a.pkl"
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst)
-    print(f"已部署: {src} -> {dst}")
-    print(f"文件大小: {dst.stat().st_size / 1024:.1f} KB")
-
-
 def pipeline() -> None:
-    """完整流水线：sync -> filter -> convert -> train -> backtest -> deploy"""
+    """完整流水线：sync -> train -> backtest -> deploy"""
     print("=" * 60)
     print("全 A 股量化 Pipeline")
     print("=" * 60)
-    # 1. 同步
-    print("\n[1/5] 从 NAS 同步数据...")
-    sync_script = _root / "scripts" / "sync_from_nas.sh"
+    # 1. 同步 Qlib 数据
+    print("\n[1/4] 从 NAS 同步 Qlib 数据...")
+    sync_script = _root / "scripts" / "sync_data.sh"
     if sync_script.exists():
         subprocess.run(["bash", str(sync_script)], check=True)
     else:
-        print("  跳过同步（sync_from_nas.sh 不存在）")
-    # 2. 过滤 + 转换
-    print("\n[2/5] 过滤 + Qlib 转换...")
-    convert()
-    # 3. 训练
-    print("\n[3/5] 训练模型...")
+        print("  跳过同步（sync_data.sh 不存在）")
+    # 2. 训练
+    print("\n[2/4] 训练模型...")
     _check_qlib()
     train()
-    # 4. 回测
-    print("\n[4/5] 回测验证...")
+    # 3. 回测
+    print("\n[3/4] 回测验证...")
     backtest()
-    # 5. 部署
-    print("\n[5/5] 部署到 trader...")
-    deploy()
+    # 4. 完成
     print("\n" + "=" * 60)
     print("Pipeline 完成!")
     print("=" * 60)
 
 
-def run() -> None:
-    """完整流程：convert -> train -> dashboard"""
-    _check_qlib()
-    convert(); print()
-    train(); print()
-    dashboard()
-
-
 # ── 入口 ─────────────────────────────────────────────────────────────────────
 
 COMMANDS = {
-    "pipeline":      (pipeline,      "完整流水线: sync -> filter -> convert -> train -> backtest -> deploy"),
-    "run":           (run,           "完整 A股流程：转换 -> 训练 -> 看板"),
-    "convert":       (convert,       "A股数据转换（含过滤）Parquet -> Qlib Bin"),
-    "convert-hk":    (convert_hk,    "港股数据转换 Parquet -> Qlib Bin"),
+    "pipeline":      (pipeline,      "完整流水线: sync -> train -> backtest"),
     "train":         (train,         "训练全 A 股 LightGBM 模型"),
     "train-hk":      (train_hk,      "训练港股选股模型"),
     "backtest":      (backtest,      "A股 TopkDropout 回测"),
@@ -268,14 +178,13 @@ COMMANDS = {
     "predict-index": (predict_index, "预测恒指/科技指数明日走势"),
     "dryrun":        (dryrun,        "执行模拟交易 (TopkDropout Dry Run)"),
     "dryrun-status": (dryrun_status, "查看模拟交易组合当前状态"),
-    "deploy":        (deploy,        "部署 pred.pkl 到 trader"),
     "dashboard":     (dashboard,     "启动 Streamlit 看板"),
 }
 
 
 def main() -> None:
     if len(sys.argv) <= 1 or sys.argv[1] in ("-h", "--help"):
-        print("用法: python main.py <命令>\n")
+        print("用法: python strategy_cli.py <命令>\n")
         for cmd, (_, desc) in COMMANDS.items():
             print(f"  {cmd:<18} {desc}")
         print()
