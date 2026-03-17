@@ -60,7 +60,7 @@ services:
     env_file:
       - ./reporter/.env
     volumes:
-      - quant_data:/data:ro
+      - quant_data:/data
 
   # --- 调度器 (替代 crontab) ---
   scheduler:
