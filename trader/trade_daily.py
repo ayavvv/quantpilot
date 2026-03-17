@@ -381,13 +381,13 @@ def main():
 
     # 2. 读取信号日涨跌幅
     signal_changes = {}
-    if KLINE_DIR.exists():
+    if QLIB_DATA_DIR.exists():
         sh_codes = signals_df["code"].tolist()
         signal_changes = load_signal_day_changes(sig_date, sh_codes[:50])
         n_limit = sum(1 for c in signal_changes if _is_limit_up(c, signal_changes[c]))
         log.info(f"信号日涨跌幅: {len(signal_changes)} 只, 涨停 {n_limit} 只")
     else:
-        log.warning(f"kline 数据不可用: {KLINE_DIR}")
+        log.warning(f"Qlib 数据不可用: {QLIB_DATA_DIR}")
 
     # 保存信号快照
     SIGNAL_DIR.mkdir(parents=True, exist_ok=True)
