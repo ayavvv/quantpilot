@@ -14,6 +14,7 @@ Qlib bin format:
 from __future__ import annotations
 
 import bisect
+import json
 from pathlib import Path
 from typing import Any
 
@@ -176,7 +177,7 @@ class QlibDirectWriter:
         inst_path.write_text("\n".join(lines) + "\n")
 
         # Save per-market
-        for market_tag, prefix in [("sh", "SH."), ("sz", "SZ."), ("hk", "HK.")]:
+        for market_tag, prefix in [("sh", "SH."), ("sz", "SZ."), ("hk", "HK."), ("us", "US."), ("macro", "MACRO.")]:
             market_insts = {k: v for k, v in self.instruments.items() if k.startswith(prefix)}
             mp = self.instruments_dir / f"{market_tag}.txt"
             if market_insts:
@@ -335,6 +336,141 @@ class QlibDirectWriter:
 
         self._dirty = True
         return len(new_data)
+
+    def write_feature_records(
+        self, code: str, records: list[dict[str, Any]], fields: list[str],
+    ) -> int:
+        """
+        Write arbitrary feature fields to Qlib bin format.
+
+        Unlike write_stock_records (which normalizes K-line fields), this writes
+        the specified fields directly — suitable for fundamentals, short selling, etc.
+
+        Args:
+            code: Stock code (e.g., "HK.00700")
+            records: List of dicts with 'date'/'time_key' and feature values
+            fields: List of field names to write (e.g., ["pb_ratio", "dividend_ttm"])
+
+        Returns:
+            Number of new dates written
+        """
+        if not records or not fields:
+            return 0
+
+        # Parse records
+        new_data: dict[str, dict[str, float]] = {}
+        for record in records:
+            date_str = None
+            for dk in ["date", "time_key"]:
+                if dk in record and record[dk]:
+                    date_str = str(record[dk])[:10]
+                    break
+            if not date_str:
+                continue
+
+            values = {}
+            for field in fields:
+                try:
+                    v = float(record.get(field, np.nan))
+                    values[field] = v if np.isfinite(v) else np.nan
+                except (ValueError, TypeError):
+                    values[field] = np.nan
+            new_data[date_str] = values
+
+        if not new_data:
+            return 0
+
+        # Ensure all dates are in calendar
+        for date_str in sorted(new_data.keys()):
+            self._ensure_date_in_calendar(date_str)
+
+        # Get existing start_index (from these fields or standard K-line fields)
+        feat_dir = self._get_feat_dir(code)
+        existing_start = None
+        existing_values = {}
+
+        for field in fields:
+            bin_path = feat_dir / f"{field}.{FREQ}.bin"
+            result = self._read_bin(bin_path)
+            if result is not None:
+                si, vals = result
+                existing_start = si
+                existing_values[field] = vals
+
+        # Fall back to K-line start_index for alignment
+        if existing_start is None:
+            for probe in ["close", "open"]:
+                result = self._read_bin(feat_dir / f"{probe}.{FREQ}.bin")
+                if result is not None:
+                    existing_start = result[0]
+                    break
+
+        all_dates = sorted(new_data.keys())
+        if existing_start is None:
+            existing_start = bisect.bisect_left(self.calendar, all_dates[0])
+
+        last_cal_idx = bisect.bisect_left(self.calendar, all_dates[-1])
+        total_length = last_cal_idx - existing_start + 1
+
+        for field in fields:
+            old_vals = existing_values.get(field, np.array([], dtype="<f4"))
+            new_arr = np.full(total_length, np.nan, dtype="<f4")
+            new_arr[:len(old_vals)] = old_vals[:total_length]
+            for date_str, values in new_data.items():
+                cal_idx = bisect.bisect_left(self.calendar, date_str)
+                data_idx = cal_idx - existing_start
+                if 0 <= data_idx < total_length:
+                    v = values.get(field, np.nan)
+                    new_arr[data_idx] = np.float32(v) if np.isfinite(v) else np.nan
+            bin_path = feat_dir / f"{field}.{FREQ}.bin"
+            self._write_bin(bin_path, existing_start, new_arr)
+
+        for date_str in all_dates:
+            self._update_instrument(code, date_str)
+
+        self._dirty = True
+        return len(new_data)
+
+    def write_constant_feature(self, code: str, field: str, value: float) -> bool:
+        """
+        Write a constant feature value across the stock's entire existing date range.
+
+        Useful for categorical features like industry_id that rarely change.
+        Aligns with the stock's existing K-line bin range.
+
+        Args:
+            code: Stock code
+            field: Feature name (e.g., "industry_id")
+            value: Constant float value to fill
+
+        Returns:
+            True if written, False if the stock has no existing K-line data
+        """
+        feat_dir = self._get_feat_dir(code)
+        for probe in ["close", "open"]:
+            result = self._read_bin(feat_dir / f"{probe}.{FREQ}.bin")
+            if result is not None:
+                start_idx, vals = result
+                arr = np.full(len(vals), np.float32(value), dtype="<f4")
+                bin_path = feat_dir / f"{field}.{FREQ}.bin"
+                self._write_bin(bin_path, start_idx, arr)
+                return True
+        return False
+
+    def save_metadata(self, name: str, data: dict | list):
+        """Save a JSON metadata file alongside Qlib data (e.g., industry ID mapping)."""
+        meta_dir = self.qlib_dir / "metadata"
+        meta_dir.mkdir(parents=True, exist_ok=True)
+        path = meta_dir / f"{name}.json"
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        logger.info(f"Metadata saved: {path}")
+
+    def load_metadata(self, name: str) -> dict | list | None:
+        """Load a JSON metadata file."""
+        path = self.qlib_dir / "metadata" / f"{name}.json"
+        if not path.exists():
+            return None
+        return json.loads(path.read_text())
 
     def flush(self):
         """Save calendar and instruments to disk. Call after batch updates."""

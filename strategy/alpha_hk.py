@@ -10,10 +10,10 @@ from qlib.contrib.data.handler import Alpha158
 
 
 class Alpha158HK(Alpha158):
-    """Alpha158 + fundamental + macro factors for HK stocks."""
+    """Alpha158 + fundamental + macro + short sell + industry factors for HK stocks."""
 
     EXTRA_FIELDS = [
-        # 基本面
+        # 基本面 - 估值
         ("$pe_ratio", "PE"),
         ("1/($pe_ratio+1e-9)", "INPE"),
         ("$pb_ratio", "PB"),
@@ -21,6 +21,16 @@ class Alpha158HK(Alpha158):
         ("$turnover_rate", "TURNRATE"),
         ("$turnover_rate/(Mean($turnover_rate,5)+1e-9)", "RELTURN5"),
         ("$turnover_rate/(Mean($turnover_rate,20)+1e-9)", "RELTURN20"),
+        # 基本面 - 盈利与分红
+        ("$dividend_ttm", "DIV_TTM"),
+        ("$return_on_equity", "ROE"),
+        ("$net_profit_growth_rate", "NP_GROWTH"),
+        # 卖空情绪
+        ("$short_sell_ratio", "SS_RATIO"),
+        ("$short_sell_ratio-Ref($short_sell_ratio,5)", "SS_RATIO_D5"),
+        ("Mean($short_sell_ratio,5)", "SS_RATIO_MA5"),
+        # 行业
+        ("$industry_id", "IND_ID"),
         # 宏观 - VIX
         ("$vix", "VIX"),
         ("$vix/Ref($vix,5)-1", "VIX_CHG5"),

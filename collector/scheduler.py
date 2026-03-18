@@ -23,6 +23,20 @@ class DataCollectorScheduler:
         self.client: FutuClient = None
         self.bs_client: BaostockClient = None
         self.db_engine: DBEngine = None
+        self.qlib_writer = None
+
+    def _init_qlib_writer(self):
+        """Initialize Qlib direct writer if QLIB_DATA_DIR is configured."""
+        if self.qlib_writer is not None:
+            return
+        qlib_dir = os.environ.get("QLIB_DATA_DIR", "")
+        if qlib_dir:
+            try:
+                from converter.incremental import QlibDirectWriter
+                self.qlib_writer = QlibDirectWriter(qlib_dir)
+                logger.info(f"Qlib direct writer initialized: {qlib_dir}")
+            except ImportError:
+                logger.warning("converter.incremental not available, falling back to parquet")
 
     def sync_code_data(self, code: str):
         """
@@ -64,6 +78,11 @@ class DataCollectorScheduler:
         """
         Sync K-line data: check DB by range, only fetch missing intervals from Futu.
         """
+        # Qlib direct write for daily K-line
+        if self.qlib_writer and ktype == "K_DAY":
+            self._sync_kline_to_qlib(code, start, end)
+            return
+
         if end is None:
             end = datetime.now().strftime("%Y-%m-%d")
 
@@ -118,6 +137,30 @@ class DataCollectorScheduler:
                 logger.warning(f"{code} {ktype} no data")
                 return
             self.db_engine.append_kline(pd.DataFrame(data), code, ktype)
+
+    def _sync_kline_to_qlib(self, code: str, start: str = None, end: str = None):
+        """Sync daily K-line via Futu and write directly to Qlib bin format."""
+        if end is None:
+            end = datetime.now().strftime("%Y-%m-%d")
+
+        if start is None:
+            max_date = self.qlib_writer.get_stock_last_date(code)
+            if max_date is not None:
+                if max_date >= end:
+                    return
+                start = (datetime.strptime(max_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+            else:
+                years_back = 5 if code.startswith("HK.8") else 10
+                start = (datetime.strptime(end, "%Y-%m-%d") - timedelta(days=365 * years_back)).strftime("%Y-%m-%d")
+                logger.info(f"{code} K_DAY first fetch (qlib): {start} ~ {end}")
+
+        data = self.client.get_history_kline(
+            code=code, start=start, end=end, ktype="K_DAY", autype="qfq"
+        )
+        if data:
+            n = self.qlib_writer.write_stock_records(code, data)
+            if n > 0:
+                self.db_engine.log_job("success", f"{code} +{n} days (qlib)", code, "K_DAY")
 
     def sync_kline_1m(self, code: str):
         """
@@ -175,72 +218,157 @@ class DataCollectorScheduler:
                 logger.error(f"Sync {code} {year} 1-min K-line failed: {e}")
                 continue
 
+    FUNDAMENTAL_FIELDS = [
+        "pb_ratio", "dividend_ttm", "net_profit_ttm",
+        "return_on_equity", "net_profit_growth_rate",
+    ]
+
     def sync_fundamentals(self, codes: List[str]):
         """Daily fundamental snapshot collection (PB, dividend, EPS, ROE)."""
-        today = datetime.now().strftime("%Y-%m-%d")
         logger.info(f"Collecting fundamental snapshots for {len(codes)} stocks...")
         try:
             records = self.client.get_fundamentals(codes)
             if not records:
                 logger.warning("Fundamental snapshot empty")
                 return
-            df = pd.DataFrame(records)
-            out_path = self.db_engine.data_path / "fundamentals" / "daily_snapshot.parquet"
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            if out_path.exists():
-                existing = pd.read_parquet(out_path)
-                combined = pd.concat([existing, df]).drop_duplicates(
-                    subset=["code", "date"], keep="last"
-                ).sort_values(["code", "date"]).reset_index(drop=True)
+
+            if self.qlib_writer:
+                # Group by code, write each stock's fundamentals as Qlib features
+                from collections import defaultdict
+                by_code = defaultdict(list)
+                for r in records:
+                    by_code[r["code"]].append(r)
+                total = 0
+                for code, code_records in by_code.items():
+                    n = self.qlib_writer.write_feature_records(
+                        code, code_records, self.FUNDAMENTAL_FIELDS
+                    )
+                    total += n
+                logger.info(f"Fundamentals → qlib: {len(by_code)} stocks, {total} new dates")
             else:
-                combined = df
-            combined.to_parquet(out_path, index=False)
-            logger.info(f"Fundamental snapshot saved: {len(df)} new, {len(combined)} total")
+                df = pd.DataFrame(records)
+                out_path = self.db_engine.data_path / "fundamentals" / "daily_snapshot.parquet"
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                if out_path.exists():
+                    existing = pd.read_parquet(out_path)
+                    combined = pd.concat([existing, df]).drop_duplicates(
+                        subset=["code", "date"], keep="last"
+                    ).sort_values(["code", "date"]).reset_index(drop=True)
+                else:
+                    combined = df
+                combined.to_parquet(out_path, index=False)
+                logger.info(f"Fundamental snapshot saved: {len(df)} new, {len(combined)} total")
         except Exception as e:
             logger.error(f"Fundamental snapshot collection failed: {e}")
 
     def sync_industry_map(self):
-        """Collect industry plate mapping (refresh weekly)."""
+        """Collect industry plate mapping (refresh weekly).
+
+        When qlib_writer is available, encodes industry as numeric ID and writes
+        industry_id.day.bin for each stock (constant feature across all dates).
+        Also saves the ID↔name mapping to metadata/industry_map.json.
+        """
         logger.info("Collecting industry plate mapping...")
         try:
             records = self.client.get_industry_map("HK")
             if not records:
                 logger.warning("Industry plate mapping empty")
                 return
-            df = pd.DataFrame(records)
-            out_path = self.db_engine.data_path / "metadata" / "industry_map.parquet"
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            df.to_parquet(out_path, index=False)
-            logger.info(f"Industry mapping saved: {len(df)} records")
+
+            if self.qlib_writer:
+                # Build industry name → numeric ID mapping
+                # Load existing mapping to keep IDs stable across updates
+                existing_map = self.qlib_writer.load_metadata("industry_map") or {}
+                name_to_id = {v: int(k) for k, v in existing_map.items()} if existing_map else {}
+                next_id = max(name_to_id.values(), default=0) + 1
+
+                # Assign IDs to new industries
+                for r in records:
+                    industry = r.get("industry", "")
+                    if industry and industry not in name_to_id:
+                        name_to_id[industry] = next_id
+                        next_id += 1
+
+                # Save mapping: {id_str: industry_name}
+                id_map = {str(v): k for k, v in name_to_id.items()}
+                self.qlib_writer.save_metadata("industry_map", id_map)
+
+                # Build code → industry_id (use first/primary industry per stock)
+                code_industry = {}
+                for r in records:
+                    code = r.get("code", "")
+                    industry = r.get("industry", "")
+                    if code and industry and code not in code_industry:
+                        code_industry[code] = name_to_id[industry]
+
+                # Write constant feature for each stock
+                written = 0
+                for code, industry_id in code_industry.items():
+                    if self.qlib_writer.write_constant_feature(code, "industry_id", float(industry_id)):
+                        written += 1
+
+                logger.info(
+                    f"Industry → qlib: {len(name_to_id)} industries, "
+                    f"{written}/{len(code_industry)} stocks written"
+                )
+            else:
+                df = pd.DataFrame(records)
+                out_path = self.db_engine.data_path / "metadata" / "industry_map.parquet"
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                df.to_parquet(out_path, index=False)
+                logger.info(f"Industry mapping saved: {len(df)} records")
         except Exception as e:
             logger.error(f"Industry mapping collection failed: {e}")
+
+    SHORT_SELL_FIELDS = [
+        "short_sell_qty", "short_sell_amount", "short_sell_ratio",
+    ]
 
     def sync_short_sell(self):
         """Daily HK short selling data collection."""
         today = datetime.now().strftime("%Y-%m-%d")
-        out_path = self.db_engine.data_path / "short_sell" / "daily.parquet"
-        if out_path.exists():
-            existing = pd.read_parquet(out_path)
-            if "date" in existing.columns and today in existing["date"].values:
-                logger.info(f"Short sell data {today} already collected, skipping")
-                return
+
+        # Skip check: for Qlib, check bin; for parquet, check file
+        if not self.qlib_writer:
+            out_path = self.db_engine.data_path / "short_sell" / "daily.parquet"
+            if out_path.exists():
+                existing = pd.read_parquet(out_path)
+                if "date" in existing.columns and today in existing["date"].values:
+                    logger.info(f"Short sell data {today} already collected, skipping")
+                    return
+
         logger.info("Collecting HK short sell data...")
         try:
             records = self.client.get_short_sell_list("HK")
             if not records:
                 logger.warning("Short sell data empty (may require subscription)")
                 return
-            df = pd.DataFrame(records)
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            if out_path.exists():
-                existing = pd.read_parquet(out_path)
-                combined = pd.concat([existing, df]).drop_duplicates(
-                    subset=["code", "date"], keep="last"
-                ).sort_values(["date", "code"]).reset_index(drop=True)
+
+            if self.qlib_writer:
+                from collections import defaultdict
+                by_code = defaultdict(list)
+                for r in records:
+                    by_code[r["code"]].append(r)
+                total = 0
+                for code, code_records in by_code.items():
+                    n = self.qlib_writer.write_feature_records(
+                        code, code_records, self.SHORT_SELL_FIELDS
+                    )
+                    total += n
+                logger.info(f"Short sell → qlib: {len(by_code)} stocks, {total} new dates")
             else:
-                combined = df
-            combined.to_parquet(out_path, index=False)
-            logger.info(f"Short sell data saved: {len(df)} records")
+                df = pd.DataFrame(records)
+                out_path = self.db_engine.data_path / "short_sell" / "daily.parquet"
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                if out_path.exists():
+                    existing = pd.read_parquet(out_path)
+                    combined = pd.concat([existing, df]).drop_duplicates(
+                        subset=["code", "date"], keep="last"
+                    ).sort_values(["date", "code"]).reset_index(drop=True)
+                else:
+                    combined = df
+                combined.to_parquet(out_path, index=False)
+                logger.info(f"Short sell data saved: {len(df)} records")
         except Exception as e:
             logger.error(f"Short sell data collection failed: {e}")
 
@@ -322,16 +450,7 @@ class DataCollectorScheduler:
             self.db_engine = DBEngine(settings.data_path)
             self.bs_client = BaostockClient(rate_limit=0.3)
 
-            # Initialize Qlib direct writer if configured
-            self.qlib_writer = None
-            qlib_dir = os.environ.get("QLIB_DATA_DIR", "")
-            if qlib_dir:
-                try:
-                    from converter.incremental import QlibDirectWriter
-                    self.qlib_writer = QlibDirectWriter(qlib_dir)
-                    logger.info(f"Qlib direct writer: {qlib_dir}")
-                except ImportError:
-                    logger.warning("converter.incremental not available, falling back to parquet")
+            self._init_qlib_writer()
 
             # 1. Get target stock pool
 
@@ -383,11 +502,6 @@ class DataCollectorScheduler:
                         logger.error(f"[{idx}/{len(a_share_codes)}] Baostock {code} failed: {e}")
                         continue
 
-                # Flush Qlib data after all A-shares collected
-                if self.qlib_writer:
-                    self.qlib_writer.flush()
-                    logger.info("Qlib bin data flushed after A-share collection")
-
             # 3. HK stock collection (Futu)
             if hk_codes and futu_ok:
                 logger.info(f"=== Futu HK collection: {len(hk_codes)} stocks ===")
@@ -425,6 +539,11 @@ class DataCollectorScheduler:
                     except Exception as e:
                         logger.error(f"Extra code {code} failed: {e}")
 
+            # Flush Qlib data after all collections
+            if self.qlib_writer:
+                self.qlib_writer.flush()
+                logger.info("Qlib bin data flushed")
+
             # Log job completion
             duration = (datetime.now() - job_start_time).total_seconds()
             self.db_engine.log_job(
@@ -450,19 +569,29 @@ class DataCollectorScheduler:
     def _sync_via_yfinance(self, code: str):
         """Sync daily K-line for a single code via YFinance (Futu fallback)."""
         yf_client = YFinanceClient()
-        max_date = self.db_engine.get_kline_max_date(code, "K_DAY")
+        if self.qlib_writer:
+            max_date = self.qlib_writer.get_stock_last_date(code)
+        else:
+            max_date = self.db_engine.get_kline_max_date(code, "K_DAY")
+
         if max_date is not None:
-            start = (datetime.strptime(max_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
             today = datetime.now().strftime("%Y-%m-%d")
             if max_date >= today:
                 logger.info(f"YFinance {code} up to date (max={max_date}), skipping")
                 return
+            start = (datetime.strptime(max_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
         else:
             start = "2006-01-01"
+
         data = yf_client.get_history_kline(code, start=start)
         if data:
-            self.db_engine.append_kline(pd.DataFrame(data), code, "K_DAY")
-            logger.info(f"YFinance {code} sync complete: {len(data)} records")
+            if self.qlib_writer:
+                n = self.qlib_writer.write_stock_records(code, data)
+                if n > 0:
+                    logger.info(f"YFinance {code} → qlib: +{n} days")
+            else:
+                self.db_engine.append_kline(pd.DataFrame(data), code, "K_DAY")
+                logger.info(f"YFinance {code} sync complete: {len(data)} records")
         else:
             logger.warning(f"YFinance {code} no data")
 
@@ -477,6 +606,7 @@ class DataCollectorScheduler:
             return
         try:
             self.db_engine = DBEngine(settings.data_path)
+            self._init_qlib_writer()
             futu_ok = False
             try:
                 self.client = FutuClient(settings.futu_host, settings.futu_port)
@@ -506,6 +636,8 @@ class DataCollectorScheduler:
                 except Exception as e:
                     logger.error(f"YFinance {code} failed: {e}")
 
+            if self.qlib_writer:
+                self.qlib_writer.flush()
             logger.info(f"US morning job complete, duration {(datetime.now()-job_start).total_seconds():.1f}s")
         except Exception as e:
             logger.error(f"US morning job failed: {e}")
@@ -519,10 +651,14 @@ class DataCollectorScheduler:
         logger.info(f"Starting macro data collection ({job_start.strftime('%Y-%m-%d %H:%M:%S')})")
         try:
             self.db_engine = DBEngine(settings.data_path)
+            self._init_qlib_writer()
             yf_client = YFinanceClient()
             for code in YFinanceClient.MACRO_SYMBOLS:
                 try:
-                    max_date = self.db_engine.get_kline_max_date(code, "K_DAY")
+                    if self.qlib_writer:
+                        max_date = self.qlib_writer.get_stock_last_date(code)
+                    else:
+                        max_date = self.db_engine.get_kline_max_date(code, "K_DAY")
                     if max_date is not None:
                         start = (datetime.strptime(max_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
                         today = datetime.now().strftime("%Y-%m-%d")
@@ -533,10 +669,17 @@ class DataCollectorScheduler:
                         start = "2006-01-01"
                     data = yf_client.get_history_kline(code, start=start)
                     if data:
-                        self.db_engine.append_kline(pd.DataFrame(data), code, "K_DAY")
-                        logger.info(f"Macro {code} sync complete: {len(data)} records")
+                        if self.qlib_writer:
+                            n = self.qlib_writer.write_stock_records(code, data)
+                            if n > 0:
+                                logger.info(f"Macro {code} → qlib: +{n} days")
+                        else:
+                            self.db_engine.append_kline(pd.DataFrame(data), code, "K_DAY")
+                            logger.info(f"Macro {code} sync complete: {len(data)} records")
                 except Exception as e:
                     logger.error(f"Macro {code} collection failed: {e}")
+            if self.qlib_writer:
+                self.qlib_writer.flush()
             logger.info(f"Macro data collection complete, duration {(datetime.now()-job_start).total_seconds():.1f}s")
         except Exception as e:
             logger.error(f"Macro data collection job failed: {e}")
@@ -547,9 +690,12 @@ class DataCollectorScheduler:
         try:
             self.client = FutuClient(settings.futu_host, settings.futu_port)
             self.db_engine = DBEngine(settings.data_path)
+            self._init_qlib_writer()
             if not self.client.connect():
                 raise RuntimeError("Cannot connect to Futu OpenD")
             self.sync_industry_map()
+            if self.qlib_writer:
+                self.qlib_writer.flush()
             logger.info("Industry plate mapping refresh complete")
         except Exception as e:
             logger.error(f"Weekly job failed: {e}")
