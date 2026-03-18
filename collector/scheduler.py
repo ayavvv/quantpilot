@@ -711,7 +711,8 @@ class DataCollectorScheduler:
             trigger=CronTrigger(hour=16, minute=30, timezone='Asia/Shanghai'),
             id='daily_data_sync',
             name='Daily data sync',
-            replace_existing=True
+            replace_existing=True,
+            misfire_grace_time=3600,
         )
         # Daily 07:00 US stock K-line
         self.scheduler.add_job(
@@ -719,7 +720,8 @@ class DataCollectorScheduler:
             trigger=CronTrigger(hour=7, minute=0, timezone='Asia/Shanghai'),
             id='us_morning_sync',
             name='US morning data sync',
-            replace_existing=True
+            replace_existing=True,
+            misfire_grace_time=3600,
         )
         # Weekly Monday 08:00 industry plate refresh
         self.scheduler.add_job(
@@ -727,7 +729,8 @@ class DataCollectorScheduler:
             trigger=CronTrigger(day_of_week='mon', hour=8, minute=0, timezone='Asia/Shanghai'),
             id='weekly_industry_sync',
             name='Weekly industry plate refresh',
-            replace_existing=True
+            replace_existing=True,
+            misfire_grace_time=3600,
         )
         # Daily 07:30 macro indicators
         self.scheduler.add_job(
@@ -735,7 +738,8 @@ class DataCollectorScheduler:
             trigger=CronTrigger(hour=7, minute=30, timezone='Asia/Shanghai'),
             id='macro_data_sync',
             name='Macro indicator sync',
-            replace_existing=True
+            replace_existing=True,
+            misfire_grace_time=3600,
         )
 
         logger.info("Scheduler started: daily 16:30 main | daily 07:00 US+ETF | 07:30 macro | weekly Mon 08:00 industry")

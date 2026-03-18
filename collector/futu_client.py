@@ -35,11 +35,29 @@ class FutuClient:
         import threading
 
         result = {"ok": False, "error": None}
+        # Shared holder so background thread can store ctx for cleanup
+        holder = {"ctx": None, "abandoned": False}
 
         def _do_connect():
             try:
-                self.ctx = OpenQuoteContext(host=self.host, port=self.port)
-                ret, data = self.ctx.get_market_state(['HK.00700'])
+                ctx = OpenQuoteContext(host=self.host, port=self.port)
+                holder["ctx"] = ctx
+                if holder["abandoned"]:
+                    # Parent timed out, clean up immediately
+                    try:
+                        ctx.close()
+                    except Exception:
+                        pass
+                    return
+                self.ctx = ctx
+                ret, data = ctx.get_market_state(['HK.00700'])
+                if holder["abandoned"]:
+                    try:
+                        ctx.close()
+                    except Exception:
+                        pass
+                    self.ctx = None
+                    return
                 if ret == RET_OK:
                     result["ok"] = True
                 else:
@@ -53,12 +71,15 @@ class FutuClient:
 
         if t.is_alive():
             logger.error(f"Futu OpenD connection timeout ({self.connect_timeout}s), target: {self.host}:{self.port}")
-            if self.ctx:
+            holder["abandoned"] = True
+            # Clean up if ctx was already created
+            ctx = holder.get("ctx") or self.ctx
+            if ctx:
                 try:
-                    self.ctx.close()
-                except:
+                    ctx.close()
+                except Exception:
                     pass
-                self.ctx = None
+            self.ctx = None
             return False
 
         if result["ok"]:
