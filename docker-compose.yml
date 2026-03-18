@@ -18,6 +18,25 @@
 #   docker compose --profile all up -d                          # Everything
 
 services:
+  # --- Scheduler (cron) ---
+  scheduler:
+    build:
+      context: .
+      dockerfile: scheduler/Dockerfile
+    container_name: quantpilot-scheduler
+    restart: unless-stopped
+    profiles: ["scheduler", "all"]
+    network_mode: host
+    environment:
+      - TZ=Asia/Shanghai
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${DATA_DIR:-./data}:/data
+      - ${QLIB_DATA_DIR:-./qlib_data}:/qlib_data
+      - ~/.ssh/nas_key:/ssh/nas_key:ro
+      - .:/compose:ro
+      - ./logs:/logs
+
   # --- Data Collection ---
   collector:
     build:
