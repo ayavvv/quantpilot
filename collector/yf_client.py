@@ -30,7 +30,7 @@ class YFinanceClient:
         "MACRO.DXY": "DX-Y.NYB",
         "MACRO.TNX": "^TNX",        # US 10-year Treasury yield
         "MACRO.HSI": "^HSI",        # Hang Seng Index (backup)
-        "MACRO.HSTECH": "^HSTECH",  # Hang Seng Tech (backup)
+        # MACRO.HSTECH moved to Futu (HK.800700) — Yahoo ^HSTECH returns 404
     }
 
     def get_history_kline(

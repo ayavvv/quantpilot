@@ -678,6 +678,59 @@ class DataCollectorScheduler:
                             logger.info(f"Macro {code} sync complete: {len(data)} records")
                 except Exception as e:
                     logger.error(f"Macro {code} collection failed: {e}")
+            # HSTECH via Futu subscribe+cur_kline (Yahoo ^HSTECH delisted,
+            # request_history_kline has quota limits for index codes)
+            try:
+                from futu import OpenQuoteContext, SubType, KLType, RET_OK
+                hstech_code = "MACRO.HSTECH"
+                if self.qlib_writer:
+                    max_date = self.qlib_writer.get_stock_last_date(hstech_code)
+                else:
+                    max_date = self.db_engine.get_kline_max_date(hstech_code, "K_DAY")
+                today = datetime.now().strftime("%Y-%m-%d")
+                if max_date is not None and max_date >= today:
+                    logger.info(f"Macro {hstech_code} up to date, skipping")
+                else:
+                    ctx = OpenQuoteContext(host=settings.futu_host, port=settings.futu_port)
+                    try:
+                        ret, _ = ctx.subscribe(["HK.800700"], [SubType.K_DAY])
+                        if ret != RET_OK:
+                            raise RuntimeError(f"Subscribe HK.800700 failed: {_}")
+                        ret, kline = ctx.get_cur_kline("HK.800700", 100, KLType.K_DAY)
+                        if ret != RET_OK or kline is None or kline.empty:
+                            raise RuntimeError(f"get_cur_kline failed: {kline}")
+                        # Convert to Futu-compatible records, filter by max_date
+                        records = []
+                        for _, row in kline.iterrows():
+                            day = row["time_key"][:10]
+                            if max_date and day <= max_date:
+                                continue
+                            records.append({
+                                "code": hstech_code,
+                                "time_key": row["time_key"],
+                                "open": float(row["open"]),
+                                "close": float(row["close"]),
+                                "high": float(row["high"]),
+                                "low": float(row["low"]),
+                                "volume": int(row.get("volume", 0)),
+                                "turnover": float(row.get("turnover", 0)),
+                                "pe_ratio": 0.0,
+                                "turnover_rate": 0.0,
+                                "change_rate": 0.0,
+                            })
+                        if records and self.qlib_writer:
+                            n = self.qlib_writer.write_stock_records(hstech_code, records)
+                            if n > 0:
+                                logger.info(f"Macro {hstech_code} (Futu cur_kline HK.800700) → qlib: +{n} days")
+                        elif records:
+                            self.db_engine.append_kline(pd.DataFrame(records), hstech_code, "K_DAY")
+                            logger.info(f"Macro {hstech_code} sync complete: {len(records)} records")
+                        else:
+                            logger.info(f"Macro {hstech_code} no new records")
+                    finally:
+                        ctx.close()
+            except Exception as e:
+                logger.error(f"Macro HSTECH (Futu) collection failed: {e}")
             if self.qlib_writer:
                 self.qlib_writer.flush()
             logger.info(f"Macro data collection complete, duration {(datetime.now()-job_start).total_seconds():.1f}s")
