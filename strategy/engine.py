@@ -396,6 +396,21 @@ class StrategyEngine:
         except Exception as e:
             raise RuntimeError(f"获取最近交易日失败: {e}") from e
 
+        # 防止日历被 US/MACRO 数据推进超过 A 股数据范围：
+        # 取 A 股 instruments 的最大 end_time，限制 infer_date
+        if not hk_mode:
+            inst_path = Path(self.provider_uri) / "instruments" / "all.txt"
+            if inst_path.exists():
+                max_a_end = None
+                for line in inst_path.read_text().splitlines():
+                    parts = line.strip().split("\t")
+                    if len(parts) >= 3 and (parts[0].startswith("SH") or parts[0].startswith("SZ")):
+                        if max_a_end is None or parts[2] > max_a_end:
+                            max_a_end = parts[2]
+                if max_a_end and max_a_end < last_date:
+                    print(f"[WARN] 日历最后一天 {last_date} 超过 A 股数据范围 {max_a_end}，回退到 {max_a_end}")
+                    last_date = max_a_end
+
         dataset_cfg = task["dataset"].copy()
         kwargs = dataset_cfg.get("kwargs", {}).copy()
         handler_cfg = kwargs.get("handler", {}).copy()
