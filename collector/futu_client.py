@@ -27,6 +27,7 @@ class FutuClient:
 
         # Enable protocol encryption for cross-network connections
         SysConfig.enable_proto_encrypt(True)
+        SysConfig.set_init_rsa_file("/app/keys/futu_rsa_1024.pem")
 
     def connect(self) -> bool:
         """
