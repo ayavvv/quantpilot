@@ -2,7 +2,7 @@
 import time
 from typing import Optional, List, Dict, Any
 import pandas as pd
-from futu import OpenQuoteContext, RET_OK, RET_ERROR, TrdEnv, Plate
+from futu import OpenQuoteContext, RET_OK, RET_ERROR, TrdEnv, Plate, SysConfig
 from loguru import logger
 
 
@@ -24,6 +24,9 @@ class FutuClient:
         self.retry_delay = 2  # seconds
         self.rate_limit_delay = 0.6  # seconds
         self.connect_timeout = 30  # seconds
+
+        # Enable protocol encryption for cross-network connections
+        SysConfig.enable_proto_encrypt(True)
 
     def connect(self) -> bool:
         """
