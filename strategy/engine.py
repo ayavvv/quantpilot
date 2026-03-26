@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import copy
 import pickle
 from pathlib import Path
 from typing import Any
@@ -234,7 +235,7 @@ class StrategyEngine:
             raise ValueError("config 中缺少 task 段")
 
         model_cfg = task["model"]
-        dataset_cfg = task["dataset"].copy()
+        dataset_cfg = copy.deepcopy(task["dataset"])
         first_date, last_date = _calendar_range(self.provider_uri)
         handler_end = last_date
 
@@ -267,7 +268,8 @@ class StrategyEngine:
             h_kwargs["start_time"] = _warmup
             h_kwargs["end_time"] = handler_end
             h_kwargs["fit_start_time"] = _warmup
-            h_kwargs["fit_end_time"] = handler_end
+            # fit_end_time 用 valid 段结束日期，避免特征归一化看到测试集数据
+            h_kwargs["fit_end_time"] = segments["valid"][1]
             handler_cfg["kwargs"] = h_kwargs
             dataset_cfg["kwargs"]["handler"] = handler_cfg
 
@@ -318,7 +320,7 @@ class StrategyEngine:
             R.log_metrics(IC=ic_val, ICIR=icir_val)
 
             # 保存预测
-            pred_suffix = "hk_pred.pkl" if hk_mode else "pred_a.pkl"
+            pred_suffix = "hk_pred.pkl" if hk_mode else "pred_sh.pkl"
             pred_path = models_dir / pred_suffix
             with open(pred_path, "wb") as f:
                 pickle.dump(pred, f)
@@ -330,7 +332,7 @@ class StrategyEngine:
                 with open(compat_path, "wb") as f:
                     pickle.dump(pred, f)
 
-            model_suffix = "lightgbm_hk_latest.pkl" if hk_mode else "lightgbm_a_latest.pkl"
+            model_suffix = "lightgbm_hk_latest.pkl" if hk_mode else "lightgbm_sh_latest.pkl"
             latest_path = models_dir / model_suffix
             with open(latest_path, "wb") as f:
                 pickle.dump(model, f)
@@ -368,9 +370,11 @@ class StrategyEngine:
             model_file = "lightgbm_hk_latest.pkl"
         else:
             # 优先用新文件名，兼容旧的
-            model_file = "lightgbm_a_latest.pkl"
+            model_file = "lightgbm_sh_latest.pkl"
             if not (models_dir / model_file).exists():
-                model_file = "lightgbm_latest.pkl"
+                model_file = "lightgbm_a_latest.pkl"  # compat fallback
+            if not (models_dir / model_file).exists():
+                model_file = "lightgbm_latest.pkl"  # legacy fallback
         latest_path = models_dir / model_file
         if not latest_path.exists():
             raise FileNotFoundError(f"未找到模型文件 {latest_path}")
@@ -411,7 +415,7 @@ class StrategyEngine:
                     print(f"[WARN] 日历最后一天 {last_date} 超过 A 股数据范围 {max_a_end}，回退到 {max_a_end}")
                     last_date = max_a_end
 
-        dataset_cfg = task["dataset"].copy()
+        dataset_cfg = copy.deepcopy(task["dataset"])
         kwargs = dataset_cfg.get("kwargs", {}).copy()
         handler_cfg = kwargs.get("handler", {}).copy()
         h_kwargs = handler_cfg.get("kwargs", {}).copy()

@@ -37,6 +37,7 @@ from futu import (
     TrdSide,
     OrderType,
     RET_OK,
+    SysConfig,
 )
 
 # ─── 安全锁 ────────────────────────────────────────────
@@ -46,6 +47,12 @@ assert SAFE_TRD_ENV == TrdEnv.SIMULATE, "禁止使用真实交易环境！"
 # ─── 配置（环境变量覆盖）────────────────────────────────
 FUTU_HOST = os.environ.get("FUTU_HOST", "futu-opend")
 FUTU_PORT = int(os.environ.get("FUTU_PORT", "11111"))
+FUTU_RSA_KEY = os.environ.get("FUTU_RSA_KEY", "")
+
+# ─── RSA 加密（跨网络交易需要）────────────────────────────
+if FUTU_RSA_KEY and Path(FUTU_RSA_KEY).exists():
+    SysConfig.enable_proto_encrypt(True)
+    SysConfig.set_init_rsa_file(FUTU_RSA_KEY)
 PRED_PATH = Path(os.environ.get("PRED_PATH", "/models/pred_sh.pkl"))
 QLIB_DATA_DIR = Path(os.environ.get("QLIB_DATA_DIR", "/qlib_data"))
 SIGNAL_DIR = Path(os.environ.get("SIGNAL_DIR", "/signals"))
@@ -225,8 +232,11 @@ def get_latest_prices(quote_ctx, codes: list[str]) -> tuple[dict, dict]:
             prices[code] = float(row["last_price"])
             changes[code] = float(row.get("change_rate", 0))
         else:
-            log.warning(f"行情失败: {code}")
+            log.warning(f"行情失败: {code} | ret={ret} | data={data}")
         time.sleep(0.3)
+
+    if len(prices) < len(codes):
+        log.warning(f"行情汇总: {len(prices)}/{len(codes)} 成功")
     return prices, changes
 
 
@@ -287,6 +297,11 @@ def run_trade(
 
     target_set = set(filtered)
     log.info(f"目标持仓 Top-{TOP_N}: {filtered}")
+
+    # 行情异常保护: 大面积行情失败时保持现有持仓
+    if not target_set and current_codes and len(prices) < len(query_codes) * 0.5:
+        log.warning(f"行情异常保护: 仅 {len(prices)}/{len(query_codes)} 行情成功，保持现有持仓不动")
+        return
 
     # 止损
     stop_loss_sells = set()
@@ -379,6 +394,14 @@ def main():
         return
     signals_df, sig_date = extract_signals(PRED_PATH, signal_date)
 
+    # 信号新鲜度检查: 信号日期不应超过 3 个交易日前
+    from datetime import datetime as _dt
+    sig_age = (_dt.now() - _dt.strptime(sig_date, "%Y-%m-%d")).days
+    if sig_age > 5:
+        log.warning(f"信号过旧: {sig_date} ({sig_age} 天前)，可能推理管线异常")
+    elif sig_age > 3:
+        log.warning(f"信号较旧: {sig_date} ({sig_age} 天前)")
+
     # 2. 读取信号日涨跌幅
     signal_changes = {}
     if QLIB_DATA_DIR.exists():
@@ -398,11 +421,26 @@ def main():
 
     # 3. 连接 futu
     log.info(f"连接 OpenD {FUTU_HOST}:{FUTU_PORT} ...")
-    trd_ctx = OpenSecTradeContext(
-        filter_trdmarket=TrdMarket.CN,
-        host=FUTU_HOST, port=FUTU_PORT,
-    )
-    quote_ctx = OpenQuoteContext(host=FUTU_HOST, port=FUTU_PORT)
+
+    # 设置连接超时 (默认 Futu SDK 无限重试)
+    import signal as _signal
+
+    def _timeout_handler(signum, frame):
+        raise TimeoutError(f"OpenD 连接超时 ({FUTU_HOST}:{FUTU_PORT})")
+
+    _signal.signal(_signal.SIGALRM, _timeout_handler)
+    _signal.alarm(30)
+    try:
+        trd_ctx = OpenSecTradeContext(
+            filter_trdmarket=TrdMarket.CN,
+            host=FUTU_HOST, port=FUTU_PORT,
+        )
+        quote_ctx = OpenQuoteContext(host=FUTU_HOST, port=FUTU_PORT)
+    except TimeoutError as e:
+        log.error(str(e))
+        return
+    finally:
+        _signal.alarm(0)
 
     try:
         ret, acc_list = trd_ctx.get_acc_list()

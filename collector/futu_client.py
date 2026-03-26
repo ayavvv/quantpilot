@@ -355,7 +355,7 @@ class FutuClient:
                             record_dt = datetime.strptime(record_time_str, "%Y-%m-%d %H:%M:%S.%f")
                         else:
                             record_dt = datetime.strptime(record_time_str, "%Y-%m-%d %H:%M:%S")
-                    except:
+                    except (ValueError, TypeError):
                         continue
 
                     if start_dt and record_dt < start_dt:

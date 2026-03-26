@@ -34,7 +34,7 @@ class DBEngine:
             try:
                 conn.execute("SELECT 1 FROM job_logs LIMIT 1")
                 table_exists = True
-            except:
+            except duckdb.CatalogException:
                 table_exists = False
 
             if not table_exists:
@@ -78,19 +78,22 @@ class DBEngine:
 
         if not file_path.exists():
             return None
+        conn = None
         try:
             conn = duckdb.connect(":memory:")
             row = conn.execute(
                 "SELECT max(CAST(time_key AS DATE)) FROM read_parquet(?)",
                 [str(file_path)]
             ).fetchone()
-            conn.close()
             if row and row[0] is not None:
                 return row[0].strftime("%Y-%m-%d")
             return None
         except Exception as e:
             logger.warning(f"Failed to read K-line max date: {e}")
             return None
+        finally:
+            if conn:
+                conn.close()
 
     def get_kline_count_in_range(
         self,
@@ -120,6 +123,7 @@ class DBEngine:
 
         if not file_path.exists():
             return 0
+        conn = None
         try:
             conn = duckdb.connect(":memory:")
             row = conn.execute(
@@ -129,11 +133,13 @@ class DBEngine:
                 """,
                 [str(file_path), start, end],
             ).fetchone()
-            conn.close()
             return int(row[0]) if row and row[0] is not None else 0
         except Exception as e:
             logger.warning(f"Failed to read K-line range count: {e}")
             return 0
+        finally:
+            if conn:
+                conn.close()
 
     def ticker_file_exists(self, code: str, date: str) -> bool:
         """
@@ -320,6 +326,7 @@ class DBEngine:
             code: Stock code (optional)
             data_type: Data type (optional, e.g. K_DAY, K_1M, Ticker)
         """
+        conn = None
         try:
             conn = duckdb.connect(str(self.meta_db_path))
             max_id_result = conn.execute("SELECT COALESCE(MAX(id), 0) FROM job_logs").fetchone()
@@ -329,7 +336,9 @@ class DBEngine:
                 INSERT INTO job_logs (id, timestamp, status, message, code, data_type)
                 VALUES (?, ?, ?, ?, ?, ?)
             """, [next_id, datetime.now(), status, message, code, data_type])
-            conn.close()
             logger.debug(f"Logged: {status} - {message}")
         except Exception as e:
             logger.error(f"Failed to log job: {e}")
+        finally:
+            if conn:
+                conn.close()

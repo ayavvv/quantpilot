@@ -150,7 +150,7 @@ class QlibDirectWriter:
         if date_str in self.cal_set:
             return bisect.bisect_left(self.calendar, date_str)
 
-        idx = bisect.insort(self.calendar, date_str)
+        bisect.insort(self.calendar, date_str)
         self.cal_set.add(date_str)
         self._dirty = True
         return bisect.bisect_left(self.calendar, date_str)

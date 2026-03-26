@@ -19,7 +19,7 @@ fi
 DATA_DIR="${DATA_DIR:-$HOME/quantpilot_data}"
 NAS_HOST="${NAS_HOST:-}"
 NAS_USER="${NAS_USER:-}"
-NAS_QLIB_PATH="${NAS_QLIB_PATH:-/qlib_data}"
+NAS_QLIB_PATH="${NAS_QLIB_PATH:-/volume1/docker/quantpilot/qlib_data}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519}"
 
 if [ -z "$NAS_HOST" ] || [ -z "$NAS_USER" ]; then
@@ -33,10 +33,26 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] Syncing Qlib data from ${NAS_USER}@${NAS_HO
 
 mkdir -p "$QLIB_DIR"
 
-ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no \
+# 原子同步: 先写临时目录，成功后再替换，避免中断导致数据损坏
+SYNC_TMP="${QLIB_DIR}.sync_tmp"
+rm -rf "$SYNC_TMP"
+mkdir -p "$SYNC_TMP"
+
+if ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no \
     "${NAS_USER}@${NAS_HOST}" \
     "cd ${NAS_QLIB_PATH} && tar cf - calendars instruments features" | \
-    tar xf - -C "$QLIB_DIR/"
+    tar xf - -C "$SYNC_TMP/"; then
+    # 同步成功，原子替换各子目录
+    for subdir in calendars instruments features; do
+        rm -rf "${QLIB_DIR:?}/$subdir"
+        mv "$SYNC_TMP/$subdir" "$QLIB_DIR/$subdir"
+    done
+    rm -rf "$SYNC_TMP"
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Sync failed, keeping existing data"
+    rm -rf "$SYNC_TMP"
+    exit 1
+fi
 
 # Stats
 N_DAYS=$(wc -l < "$QLIB_DIR/calendars/day.txt" 2>/dev/null | tr -d ' ' || echo 0)

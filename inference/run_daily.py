@@ -60,13 +60,9 @@ def step2_predict(last_date: str):
     """加载模型，预测最新一天。"""
     log.info(f"Step 2: 模型推理 (最新日期: {last_date}) ...")
 
-    model_path = MODEL_DIR / "lightgbm_sh_latest.pkl"
-    if not model_path.exists():
-        raise FileNotFoundError(f"模型文件不存在: {model_path}")
-
-    from strategy.engine import InferenceEngine
-    engine = InferenceEngine(provider_uri=str(QLIB_DATA_DIR))
-    df = engine.predict(model_path=model_path, market="sh")
+    from strategy.engine import StrategyEngine
+    engine = StrategyEngine(provider_uri=str(QLIB_DATA_DIR))
+    df = engine.predict_next_day(hk_mode=False)
 
     log.info(f"  预测完成: {len(df)} 只股票")
     if len(df) > 0:

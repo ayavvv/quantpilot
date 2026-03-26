@@ -99,6 +99,7 @@ class Alpha158Fund(Alpha158):
         ("$turnover_rate", "TURNRATE"),
         ("$turnover_rate/(Mean($turnover_rate,5)+1e-9)", "RELTURN5"),
         ("$turnover_rate/(Mean($turnover_rate,20)+1e-9)", "RELTURN20"),
+        ("$change_rate", "CHG_RATE"),
     ]
 
     def get_feature_config(self):

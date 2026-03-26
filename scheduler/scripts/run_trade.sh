@@ -9,6 +9,6 @@ if [ "$DOW" -gt 5 ]; then
   exit 0
 fi
 
-docker compose -f /compose/docker-compose.yml --project-directory /compose run --rm trader
+docker compose -f /compose/docker-compose.mac.yml --project-directory /compose run --rm trader
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] run_trade: done"

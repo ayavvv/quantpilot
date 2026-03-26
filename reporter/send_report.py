@@ -179,11 +179,30 @@ def main():
     data_info = check_data_status()
     signal_info = check_signal_status()
 
+    # 检查今天交易是否实际执行
+    trade_log = Path(os.environ.get("TRADE_LOG", "")) or Path.home() / "quantpilot/logs/trade.log"
+    trade_status = "Trading module active (simulation mode)."
+    if trade_log.exists():
+        try:
+            lines = trade_log.read_text(encoding="utf-8", errors="replace").splitlines()
+            today_trades = [l for l in lines if today in l and ("买入" in l or "卖出" in l)]
+            today_errors = [l for l in lines if today in l and ("行情失败" in l or "ERROR" in l)]
+            if today_trades:
+                trade_status = f"Today: {len(today_trades)} order(s) executed (simulation)."
+            elif today_errors:
+                trade_status = f"WARNING: Trading ran but had {len(today_errors)} error(s). Check trade.log."
+            else:
+                today_runs = [l for l in lines if today in l and "run_trade: done" in l]
+                if not today_runs:
+                    trade_status = "WARNING: No trading execution found today."
+        except Exception:
+            pass
+
     template = Template(REPORT_TEMPLATE)
     html = template.render(
         date=today,
         gen_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        trade_status="Trading module active (simulation mode).",
+        trade_status=trade_status,
         **data_info,
         **signal_info,
     )

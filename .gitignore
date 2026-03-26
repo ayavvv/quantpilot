@@ -4,9 +4,10 @@ __pycache__/
 *.pyo
 .venv/
 
-# Environment
+# Environment & secrets
 .env
 .smtp_env
+keys/
 
 # Data (runtime, not code)
 data/

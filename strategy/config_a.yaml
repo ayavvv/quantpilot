@@ -37,7 +37,7 @@ task:
     module_path: qlib.data.dataset
     kwargs:
       handler:
-        class: Alpha158A
+        class: Alpha158Fund
         module_path: strategy.alpha_hk
         kwargs: *data_handler_config
       segments:

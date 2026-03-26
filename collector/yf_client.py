@@ -1,6 +1,7 @@
 """Yahoo Finance data source - fallback for assets not covered by Futu."""
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
+import time
 
 import pandas as pd
 from loguru import logger
@@ -64,36 +65,42 @@ class YFinanceClient:
 
         logger.info(f"YFinance fetching {code} ({yf_symbol}): {start} ~ {end}")
 
-        try:
-            ticker = yf.Ticker(yf_symbol)
-            df = ticker.history(start=start, end=end, auto_adjust=False)
-            if df is None or df.empty:
-                logger.warning(f"YFinance {yf_symbol} no data")
-                return []
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                ticker = yf.Ticker(yf_symbol)
+                df = ticker.history(start=start, end=end, auto_adjust=False)
+                if df is None or df.empty:
+                    logger.warning(f"YFinance {yf_symbol} no data")
+                    return []
 
-            # Convert to Futu-compatible format
-            records = []
-            for idx, row in df.iterrows():
-                records.append({
-                    "code": code,
-                    "time_key": idx.strftime("%Y-%m-%d 00:00:00"),
-                    "open": float(row.get("Open", 0)),
-                    "close": float(row.get("Close", 0)),
-                    "high": float(row.get("High", 0)),
-                    "low": float(row.get("Low", 0)),
-                    "volume": int(row.get("Volume", 0)),
-                    "turnover": float(row.get("Volume", 0) * row.get("Close", 0)),
-                    "pe_ratio": 0.0,
-                    "turnover_rate": 0.0,
-                    "change_rate": 0.0,
-                })
+                # Convert to Futu-compatible format
+                records = []
+                for idx, row in df.iterrows():
+                    records.append({
+                        "code": code,
+                        "time_key": idx.strftime("%Y-%m-%d 00:00:00"),
+                        "open": float(row.get("Open", 0)),
+                        "close": float(row.get("Close", 0)),
+                        "high": float(row.get("High", 0)),
+                        "low": float(row.get("Low", 0)),
+                        "volume": int(row.get("Volume", 0)),
+                        "turnover": float(row.get("Volume", 0) * row.get("Close", 0)),
+                        "pe_ratio": 0.0,
+                        "turnover_rate": 0.0,
+                        "change_rate": 0.0,
+                    })
 
-            logger.info(f"YFinance {code}: got {len(records)} daily records")
-            return records
+                logger.info(f"YFinance {code}: got {len(records)} daily records")
+                return records
 
-        except Exception as e:
-            logger.error(f"YFinance fetch {code} failed: {e}")
-            return []
+            except Exception as e:
+                if attempt < max_retries:
+                    logger.warning(f"YFinance fetch {code} failed (attempt {attempt}/{max_retries}): {e}")
+                    time.sleep(2 ** attempt)
+                else:
+                    logger.error(f"YFinance fetch {code} failed after {max_retries} attempts: {e}")
+                    return []
 
     def get_macro_data(self) -> Dict[str, List[Dict[str, Any]]]:
         """
