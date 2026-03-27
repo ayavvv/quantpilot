@@ -72,7 +72,7 @@ def step2_predict(last_date: str):
     return df
 
 
-def step3_output(df, last_date: str):
+def step3_output(df, signal_date: str):
     """输出信号文件。"""
     log.info("Step 3: 输出信号文件 ...")
 
@@ -83,16 +83,18 @@ def step3_output(df, last_date: str):
 
     # CSV 格式（人可读）
     csv_path = SIGNAL_DIR / f"signal_{today}.csv"
-    df.to_csv(csv_path, index=False)
+    out_df = df.copy()
+    out_df["signal_date"] = signal_date
+    out_df.to_csv(csv_path, index=False)
     log.info(f"  CSV: {csv_path}")
 
     # pkl 格式（程序可读，兼容 trade_daily.py）
-    ts = pd.Timestamp(last_date)
+    ts = pd.Timestamp(signal_date)
     idx = pd.MultiIndex.from_arrays(
-        [[ts] * len(df), df["code"].tolist()],
+        [[ts] * len(out_df), out_df["code"].tolist()],
         names=["datetime", "instrument"],
     )
-    pred_series = pd.Series(df["score"].values, index=idx, name="score")
+    pred_series = pd.Series(out_df["score"].values, index=idx, name="score")
 
     pkl_path = SIGNAL_DIR / f"pred_sh_daily_{today}.pkl"
     with open(pkl_path, "wb") as f:
@@ -115,13 +117,17 @@ def main():
     start = datetime.now()
 
     try:
-        last_date = step1_validate()
-        df = step2_predict(last_date)
+        validated_date = step1_validate()
+        df = step2_predict(validated_date)
+        signal_date = df.attrs.get("infer_date", validated_date)
+        if signal_date != validated_date:
+            log.warning(f"  实际信号日期 {signal_date} 与日历最后日期 {validated_date} 不一致")
 
         if df.empty:
             log.warning("预测结果为空，跳过输出")
         else:
-            step3_output(df, last_date)
+            log.info(f"  信号日期: {signal_date}")
+            step3_output(df, signal_date)
 
         elapsed = (datetime.now() - start).total_seconds()
         log.info(f"全部完成! 耗时 {elapsed:.0f} 秒")

@@ -124,6 +124,21 @@ def _calendar_range(provider_uri: str, freq: str = "day") -> tuple[str, str]:
     return lines[0].strip(), lines[-1].strip()
 
 
+def _pred_infer_date(pred: pd.Series | pd.DataFrame, fallback_date: str) -> str:
+    """Extract the actual infer date from prediction index when available."""
+    if hasattr(pred, "index") and isinstance(pred.index, pd.MultiIndex):
+        for level in pred.index.names:
+            try:
+                values = pred.index.get_level_values(level)
+            except (KeyError, IndexError):
+                continue
+            if pd.api.types.is_datetime64_any_dtype(values):
+                unique_dates = pd.Index(values.unique()).sort_values()
+                if len(unique_dates) > 0:
+                    return pd.Timestamp(unique_dates[-1]).strftime("%Y-%m-%d")
+    return fallback_date
+
+
 # ── A 股配置 ──────────────────────────────────────────
 
 A_CONFIG_PATH = _this_dir() / "config_a.yaml"
@@ -437,7 +452,11 @@ class StrategyEngine:
 
         pred = model.predict(dataset, segment="infer")
         if pred is None or (hasattr(pred, "empty") and pred.empty):
-            return pd.DataFrame(columns=["code", "score", "rank", "top5"])
+            df = pd.DataFrame(columns=["code", "score", "rank", "top5"])
+            df.attrs["infer_date"] = last_date
+            return df
+
+        infer_date = _pred_infer_date(pred, last_date)
 
         if hasattr(pred, "index") and isinstance(pred.index, pd.MultiIndex):
             level_instrument = "instrument" if "instrument" in pred.index.names else pred.index.names[1]
@@ -457,5 +476,6 @@ class StrategyEngine:
         df = df.sort_values("score", ascending=False).reset_index(drop=True)
         df["rank"] = range(1, len(df) + 1)
         df["top5"] = df["rank"] <= 5
-
-        return df[["code", "score", "rank", "top5"]]
+        result = df[["code", "score", "rank", "top5"]]
+        result.attrs["infer_date"] = infer_date
+        return result

@@ -65,6 +65,7 @@ MIN_LOT_SH = 100
 BUY_PRICE_SLIPPAGE = 1.01    # 买入价上浮 1% 确保成交
 SELL_PRICE_SLIPPAGE = 0.99   # 卖出价下浮 1% 确保成交
 DRY_RUN = os.environ.get("DRY_RUN", "false").lower() == "true"
+ALLOW_STALE_SIGNAL = os.environ.get("ALLOW_STALE_SIGNAL", "false").lower() == "true"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -151,6 +152,24 @@ def _load_calendar() -> list[str]:
     return [l.strip() for l in cal_path.read_text().splitlines() if l.strip()]
 
 
+def _latest_a_share_date() -> str | None:
+    inst_path = QLIB_DATA_DIR / "instruments" / "all.txt"
+    if not inst_path.exists():
+        return None
+
+    latest = None
+    for line in inst_path.read_text().splitlines():
+        parts = line.strip().split("\t")
+        if len(parts) < 3:
+            continue
+        code, _, end_date = parts[:3]
+        if not code.startswith(("SH.", "SZ.")):
+            continue
+        if latest is None or end_date > latest:
+            latest = end_date
+    return latest
+
+
 def _read_qlib_field(code: str, field: str, calendar: list[str]) -> pd.Series:
     """Read a single field from Qlib bin file."""
     feat_dir = QLIB_DATA_DIR / "features" / _code_to_fname(code).lower()
@@ -200,6 +219,7 @@ def get_positions(trd_ctx) -> dict[str, dict]:
         if row["qty"] > 0:
             positions[row["code"]] = {
                 "qty": int(row["qty"]),
+                "can_sell_qty": int(row.get("can_sell_qty", row["qty"])),
                 "market_val": float(row["market_val"]),
                 "cost_price": float(row["cost_price"]),
                 "pl_ratio": float(row.get("pl_ratio", 0)),
@@ -326,10 +346,17 @@ def run_trade(
         return
 
     # 先卖（价格下浮确保成交）
+    sell_failures = []
     for code in sells:
-        qty = positions[code]["qty"]
+        qty = positions[code].get("can_sell_qty", positions[code]["qty"])
+        if qty <= 0:
+            log.warning(f"卖出跳过 {code}: 可卖数量为 0")
+            sell_failures.append(code)
+            continue
         price = prices.get(code)
         if not price:
+            log.warning(f"卖出跳过 {code}: 行情缺失")
+            sell_failures.append(code)
             continue
         sell_price = round(price * SELL_PRICE_SLIPPAGE, 2)
         log.info(f"卖出 {code}: {qty}股 @ {sell_price:.2f} (市价{price:.2f})")
@@ -340,11 +367,17 @@ def run_trade(
                 trd_env=SAFE_TRD_ENV,
             )
             log.info(f"  {'OK' if ret == RET_OK else 'FAIL'} {data}")
+            if ret != RET_OK:
+                sell_failures.append(code)
             time.sleep(1)
 
     if sells and not dry_run:
         time.sleep(3)
         account = get_account_info(trd_ctx)
+
+    if sell_failures:
+        log.error(f"卖出失败，停止后续买入: {sorted(set(sell_failures))}")
+        return
 
     # 后买
     if not buys:
@@ -393,6 +426,14 @@ def main():
         log.error(f"预测文件不存在: {PRED_PATH}")
         return
     signals_df, sig_date = extract_signals(PRED_PATH, signal_date)
+    latest_a_share_date = _latest_a_share_date()
+    if latest_a_share_date and sig_date != latest_a_share_date:
+        level = log.warning if ALLOW_STALE_SIGNAL else log.error
+        level(
+            f"信号日期与本地 A 股最新数据不一致: signal={sig_date}, latest_a_share={latest_a_share_date}"
+        )
+        if not ALLOW_STALE_SIGNAL:
+            return
 
     # 信号新鲜度检查: 信号日期不应超过 3 个交易日前
     from datetime import datetime as _dt

@@ -21,6 +21,8 @@ NAS_HOST="${NAS_HOST:-}"
 NAS_USER="${NAS_USER:-}"
 NAS_QLIB_PATH="${NAS_QLIB_PATH:-/volume1/docker/quantpilot/qlib_data}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519}"
+PYTHON_BIN="${PYTHON_BIN:-$PROJECT_DIR/.venv/bin/python}"
+REPAIR_QLIB_METADATA="${REPAIR_QLIB_METADATA:-true}"
 
 if [ -z "$NAS_HOST" ] || [ -z "$NAS_USER" ]; then
     echo "Error: NAS_HOST and NAS_USER must be set in .env or environment"
@@ -55,6 +57,14 @@ else
 fi
 
 # Stats
+if [ "$REPAIR_QLIB_METADATA" != "false" ]; then
+    if [ ! -x "$PYTHON_BIN" ]; then
+        PYTHON_BIN="${PYTHON_BIN_FALLBACK:-python3}"
+    fi
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Repairing Qlib instruments metadata..."
+    "$PYTHON_BIN" "$SCRIPT_DIR/repair_qlib_metadata.py" --qlib-dir "$QLIB_DIR"
+fi
+
 N_DAYS=$(wc -l < "$QLIB_DIR/calendars/day.txt" 2>/dev/null | tr -d ' ' || echo 0)
 N_STOCKS=$(ls -d "$QLIB_DIR/features/"* 2>/dev/null | wc -l | tr -d ' ')
 SIZE=$(du -sh "$QLIB_DIR" 2>/dev/null | cut -f1)

@@ -758,10 +758,13 @@ class DataCollectorScheduler:
 
     def start(self):
         """Start the scheduler."""
-        # Daily 16:30 main job (HK/A-share K-line + fundamentals + short sell)
+        # Daily 18:00 main job (HK/A-share K-line + fundamentals + short sell).
+        # Baostock/Futu daily bars may lag shortly after the close; moving this
+        # later avoids the local evening inference pipeline missing the latest
+        # A-share session and falling back to stale signals.
         self.scheduler.add_job(
             self.run_daily_job,
-            trigger=CronTrigger(hour=16, minute=30, timezone='Asia/Shanghai'),
+            trigger=CronTrigger(hour=18, minute=0, timezone='Asia/Shanghai'),
             id='daily_data_sync',
             name='Daily data sync',
             replace_existing=True,
@@ -795,7 +798,7 @@ class DataCollectorScheduler:
             misfire_grace_time=3600,
         )
 
-        logger.info("Scheduler started: daily 16:30 main | daily 07:00 US+ETF | 07:30 macro | weekly Mon 08:00 industry")
+        logger.info("Scheduler started: daily 18:00 main | daily 07:00 US+ETF | 07:30 macro | weekly Mon 08:00 industry")
         if settings.index_list:
             logger.info(f"Target indexes: {', '.join(settings.index_list)}")
         if settings.extra_codes:

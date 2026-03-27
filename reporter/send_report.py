@@ -4,6 +4,7 @@ Sends via SMTP email or saves HTML locally.
 """
 
 import os
+import pickle
 import smtplib
 import ssl
 from datetime import datetime
@@ -93,18 +94,26 @@ def check_data_status():
         return {"data_ok": False, "data_status": "Qlib data missing", "stock_count": 0, "data_date": "N/A"}
 
     lines = cal_path.read_text().strip().splitlines()
-    data_date = lines[-1].strip() if lines else "N/A"
+    calendar_date = lines[-1].strip() if lines else "N/A"
 
     inst_path = qlib_dir / "instruments" / "all.txt"
     stock_count = 0
+    a_share_date = None
     if inst_path.exists():
-        stock_count = len(inst_path.read_text().strip().splitlines())
+        for line in inst_path.read_text().strip().splitlines():
+            parts = line.strip().split("\t")
+            if len(parts) < 3:
+                continue
+            stock_count += 1
+            code, _, end_date = parts[:3]
+            if code.startswith(("SH.", "SZ.")) and (a_share_date is None or end_date > a_share_date):
+                a_share_date = end_date
 
     return {
         "data_ok": stock_count > 1000,
         "data_status": "OK" if stock_count > 1000 else "Warning",
         "stock_count": stock_count,
-        "data_date": data_date,
+        "data_date": a_share_date or calendar_date,
     }
 
 
@@ -113,12 +122,27 @@ def check_signal_status():
     today = datetime.now().strftime("%Y%m%d")
     signal_file = SIGNAL_DIR / f"signal_{today}.csv"
     latest_file = SIGNAL_DIR / "signal_latest.csv"
+    latest_pred = SIGNAL_DIR / "pred_sh_latest.pkl"
 
     target = signal_file if signal_file.exists() else latest_file
+    actual_signal_date = None
+    if latest_pred.exists():
+        try:
+            with open(latest_pred, "rb") as f:
+                pred = pickle.load(f)
+            dates = sorted(pred.index.get_level_values("datetime").unique())
+            if dates:
+                actual_signal_date = dates[-1].strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
     if not target.exists():
         return {"signal_count": 0, "signal_date": today, "top10": []}
 
     df = pd.read_csv(target)
+    signal_date = actual_signal_date or (
+        str(df["signal_date"].iloc[0]) if "signal_date" in df.columns and not df.empty else today
+    )
     top10_df = df.head(10)
     top10 = []
     for _, row in top10_df.iterrows():
@@ -130,7 +154,7 @@ def check_signal_status():
 
     return {
         "signal_count": len(df),
-        "signal_date": today,
+        "signal_date": signal_date,
         "top10": top10,
     }
 
@@ -180,15 +204,19 @@ def main():
     signal_info = check_signal_status()
 
     # 检查今天交易是否实际执行
-    trade_log = Path(os.environ.get("TRADE_LOG", "")) or Path.home() / "quantpilot/logs/trade.log"
+    trade_log_env = os.environ.get("TRADE_LOG", "").strip()
+    trade_log = Path(trade_log_env) if trade_log_env else Path.home() / "quantpilot/logs/trade.log"
     trade_status = "Trading module active (simulation mode)."
     if trade_log.exists():
         try:
             lines = trade_log.read_text(encoding="utf-8", errors="replace").splitlines()
-            today_trades = [l for l in lines if today in l and ("买入" in l or "卖出" in l)]
+            filled = [l for l in lines if today in l and "  OK " in l]
+            failed = [l for l in lines if today in l and "  FAIL " in l]
             today_errors = [l for l in lines if today in l and ("行情失败" in l or "ERROR" in l)]
-            if today_trades:
-                trade_status = f"Today: {len(today_trades)} order(s) executed (simulation)."
+            if failed:
+                trade_status = f"WARNING: Today filled {len(filled)} order(s), failed {len(failed)} order(s)."
+            elif filled:
+                trade_status = f"Today: {len(filled)} order(s) filled (simulation)."
             elif today_errors:
                 trade_status = f"WARNING: Trading ran but had {len(today_errors)} error(s). Check trade.log."
             else:

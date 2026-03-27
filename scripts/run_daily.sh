@@ -26,6 +26,8 @@ NAS_USER="${NAS_USER:-}"
 NAS_QLIB_PATH="${NAS_QLIB_PATH:-/volume1/docker/quantpilot/qlib_data}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519}"
 DOCKER="${DOCKER:-docker}"
+MAX_WAIT_SECONDS="${MAX_WAIT_SECONDS:-7200}"
+WAIT_INTERVAL_SECONDS="${WAIT_INTERVAL_SECONDS:-60}"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
@@ -35,11 +37,9 @@ log() {
 if [ -n "$NAS_HOST" ] && [ -n "$NAS_USER" ]; then
     log "Step 0: Waiting for NAS data to be ready..."
     TODAY=$(date +%Y-%m-%d)
-    MAX_WAIT=1800  # 30 min timeout
-    INTERVAL=60    # check every 60s
     WAITED=0
     NAS_LAST=""
-    while [ $WAITED -lt $MAX_WAIT ]; do
+    while [ $WAITED -lt $MAX_WAIT_SECONDS ]; do
         NAS_LAST=$(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
             "${NAS_USER}@${NAS_HOST}" \
             "tail -1 ${NAS_QLIB_PATH}/calendars/day.txt" 2>/dev/null | tr -d '[:space:]')
@@ -47,12 +47,12 @@ if [ -n "$NAS_HOST" ] && [ -n "$NAS_USER" ]; then
             log "  NAS data ready (last_date=$NAS_LAST)"
             break
         fi
-        log "  NAS last_date=$NAS_LAST, waiting for $TODAY... (${WAITED}s/${MAX_WAIT}s)"
-        sleep $INTERVAL
-        WAITED=$((WAITED + INTERVAL))
+        log "  NAS last_date=$NAS_LAST, waiting for $TODAY... (${WAITED}s/${MAX_WAIT_SECONDS}s)"
+        sleep $WAIT_INTERVAL_SECONDS
+        WAITED=$((WAITED + WAIT_INTERVAL_SECONDS))
     done
     if [ "$NAS_LAST" != "$TODAY" ]; then
-        log "  WARNING: NAS data not ready after ${MAX_WAIT}s, proceeding with available data ($NAS_LAST)"
+        log "  WARNING: NAS data not ready after ${MAX_WAIT_SECONDS}s, proceeding with available data ($NAS_LAST)"
     fi
 fi
 

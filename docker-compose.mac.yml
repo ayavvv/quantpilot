@@ -41,10 +41,14 @@ services:
     restart: "no"
     environment:
       - TZ=Asia/Shanghai
+      - QLIB_DATA_DIR=/qlib_data
+      - TRADE_LOG=/app_logs/trade.log
     env_file:
       - ./reporter/.env
     volumes:
       - quant_data:/data
+      - ~/quantpilot_data/qlib_data:/qlib_data:ro
+      - ./logs:/app_logs:ro
 
 volumes:
   quant_data:
