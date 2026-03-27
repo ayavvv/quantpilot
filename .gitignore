@@ -7,6 +7,7 @@ __pycache__/
 # Environment & secrets
 .env
 .smtp_env
+reporter/.env
 keys/
 
 # Data (runtime, not code)
