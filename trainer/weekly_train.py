@@ -1,18 +1,20 @@
 """
-Weekly auto retrain + backtest + email report.
+Weekly auto retrain + backtest + trade-signal promotion + email report.
 
 Flow:
 1. Check/sync Qlib bin data (skip sync if data already available)
 2. Train LightGBM model (test end date via env var, not file modification)
 3. Run backtest with new pred_sh.pkl, generate report
 4. Deploy model + pred to shared volume
-5. Send backtest report via email
+5. Promote latest trade signal with the new model
+6. Send backtest report via email
 
 Environment variables:
     QLIB_DATA_DIR   - Qlib data directory (default: /qlib_data)
     STRATEGY_DIR    - Strategy code root (default: /app)
     MODELS_DIR      - Model output directory (default: /data/models)
     OUTPUT_DIR      - Report output directory (default: /data/output)
+    SIGNAL_DIR      - Shared signal directory (default: /data/signals)
     TRADE_PRED_PATH - Deployment path for pred_sh.pkl (default: /data/models/pred_sh.pkl)
     NAS_HOST        - NAS hostname/IP for data sync (empty = skip sync)
     NAS_USER        - NAS SSH username
@@ -46,6 +48,7 @@ STRATEGY_DIR = Path(os.environ.get("STRATEGY_DIR", "/app"))
 QLIB_DATA_DIR = Path(os.environ.get("QLIB_DATA_DIR", "/qlib_data"))
 MODELS_DIR = Path(os.environ.get("MODELS_DIR", "/data/models"))
 OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", "/data/output"))
+SIGNAL_DIR = Path(os.environ.get("SIGNAL_DIR", "/data/signals"))
 TRADE_PRED_PATH = Path(os.environ.get("TRADE_PRED_PATH", "/data/models/pred_sh.pkl"))
 
 # Email configuration (SMTP)
@@ -268,11 +271,49 @@ def deploy_pred():
         log.info(f"  model: already at {dst_model}")
 
 
-# --- Step 5: Send email report ---
+# --- Step 5: Promote latest trade signal ---
+
+def promote_trade_signal():
+    """Run post-train inference and atomically promote fresh latest trade signals."""
+    log.info("Step 5: Promoting latest trade signal...")
+
+    SIGNAL_DIR.mkdir(parents=True, exist_ok=True)
+
+    env = os.environ.copy()
+    env["QLIB_DATA_DIR"] = str(QLIB_DATA_DIR)
+    env["MODEL_DIR"] = str(MODELS_DIR)
+    env["SIGNAL_DIR"] = str(SIGNAL_DIR)
+    env["PROMOTE_LATEST"] = "true"
+
+    result = subprocess.run(
+        [sys.executable, "-m", "inference.run_daily"],
+        cwd=str(STRATEGY_DIR),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=1800,
+    )
+    if result.returncode != 0:
+        log.error(f"Signal promotion stdout:\n{result.stdout[-2000:]}")
+        log.error(f"Signal promotion stderr:\n{result.stderr[-2000:]}")
+        raise RuntimeError("Post-train signal promotion failed")
+
+    latest_pred = SIGNAL_DIR / "pred_sh_latest.pkl"
+    signal_date = "N/A"
+    if latest_pred.exists():
+        with open(latest_pred, "rb") as f:
+            pred = pickle.load(f)
+        dates = sorted(pred.index.get_level_values("datetime").unique())
+        if dates:
+            signal_date = dates[-1].strftime("%Y-%m-%d")
+    log.info(f"  Latest trade signal promoted: {latest_pred} (signal_date={signal_date})")
+
+
+# --- Step 6: Send email report ---
 
 def send_report_email(train_info: dict, metrics: dict, report_path: Path, metrics_path: Path):
     """Send backtest report via SMTP email."""
-    log.info("Step 5: Sending email report...")
+    log.info("Step 6: Sending email report...")
 
     if not SMTP_USER or not EMAIL_TO:
         log.warning("  Email not configured (SMTP_USER or EMAIL_TO missing), skipping")
@@ -367,7 +408,10 @@ def main():
         # 4. Deploy
         deploy_pred()
 
-        # 5. Email
+        # 5. Promote latest trade signal
+        promote_trade_signal()
+
+        # 6. Email
         send_report_email(train_info, metrics, report_path, metrics_path)
 
         elapsed = (datetime.now() - start_time).total_seconds()

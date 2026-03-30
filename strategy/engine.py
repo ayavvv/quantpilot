@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import copy
+import os
 import pickle
 from pathlib import Path
 from typing import Any
@@ -105,7 +106,16 @@ def _this_dir() -> Path:
 
 
 def _models_dir() -> Path:
-    return _this_dir().parent / "models"
+    configured = os.environ.get("MODEL_DIR") or os.environ.get("MODELS_DIR")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return (_this_dir().parent / "models").resolve()
+
+
+def _resolve_models_dir(path: str | Path | None = None) -> Path:
+    if path is not None:
+        return Path(path).expanduser().resolve()
+    return _models_dir()
 
 
 def _load_config(config_path: Path | None = None) -> dict[str, Any]:
@@ -195,8 +205,10 @@ class StrategyEngine:
     def __init__(
         self,
         provider_uri: str | Path = "~/.qlib/qlib_data/my_quant_data",
+        models_dir: str | Path | None = None,
     ) -> None:
         self.provider_uri = str(Path(provider_uri).expanduser().resolve())
+        self.models_dir = _resolve_models_dir(models_dir)
         qlib.init(provider_uri=self.provider_uri, region=REG_CN)
 
     @classmethod
@@ -288,7 +300,7 @@ class StrategyEngine:
             handler_cfg["kwargs"] = h_kwargs
             dataset_cfg["kwargs"]["handler"] = handler_cfg
 
-        models_dir = Path(save_dir) if save_dir else _models_dir()
+        models_dir = _resolve_models_dir(save_dir) if save_dir else self.models_dir
         models_dir.mkdir(parents=True, exist_ok=True)
 
         try:
@@ -380,7 +392,7 @@ class StrategyEngine:
                     pass
 
     def _predict_next_day_impl(self, hk_mode: bool = False) -> pd.DataFrame:
-        models_dir = _models_dir()
+        models_dir = self.models_dir
         if hk_mode:
             model_file = "lightgbm_hk_latest.pkl"
         else:

@@ -39,31 +39,36 @@ mkdir -p "$QLIB_DIR"
 SYNC_TMP="${QLIB_DIR}.sync_tmp"
 rm -rf "$SYNC_TMP"
 mkdir -p "$SYNC_TMP"
+cleanup() {
+    rm -rf "$SYNC_TMP"
+}
+trap cleanup EXIT
+
+if [ "$REPAIR_QLIB_METADATA" != "false" ] && [ ! -x "$PYTHON_BIN" ]; then
+    PYTHON_BIN="${PYTHON_BIN_FALLBACK:-python3}"
+fi
 
 if ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no \
     "${NAS_USER}@${NAS_HOST}" \
     "cd ${NAS_QLIB_PATH} && tar cf - calendars instruments features" | \
     tar xf - -C "$SYNC_TMP/"; then
+    if [ "$REPAIR_QLIB_METADATA" != "false" ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Repairing Qlib instruments metadata..."
+        "$PYTHON_BIN" "$SCRIPT_DIR/repair_qlib_metadata.py" --qlib-dir "$SYNC_TMP"
+    fi
+
     # 同步成功，原子替换各子目录
     for subdir in calendars instruments features; do
         rm -rf "${QLIB_DIR:?}/$subdir"
         mv "$SYNC_TMP/$subdir" "$QLIB_DIR/$subdir"
     done
-    rm -rf "$SYNC_TMP"
 else
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Sync failed, keeping existing data"
-    rm -rf "$SYNC_TMP"
     exit 1
 fi
 
-# Stats
-if [ "$REPAIR_QLIB_METADATA" != "false" ]; then
-    if [ ! -x "$PYTHON_BIN" ]; then
-        PYTHON_BIN="${PYTHON_BIN_FALLBACK:-python3}"
-    fi
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Repairing Qlib instruments metadata..."
-    "$PYTHON_BIN" "$SCRIPT_DIR/repair_qlib_metadata.py" --qlib-dir "$QLIB_DIR"
-fi
+trap - EXIT
+cleanup
 
 N_DAYS=$(wc -l < "$QLIB_DIR/calendars/day.txt" 2>/dev/null | tr -d ' ' || echo 0)
 N_STOCKS=$(ls -d "$QLIB_DIR/features/"* 2>/dev/null | wc -l | tr -d ' ')

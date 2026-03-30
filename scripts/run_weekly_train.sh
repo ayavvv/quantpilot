@@ -4,7 +4,7 @@
 #
 # Steps:
 # 1. Sync latest Qlib data from NAS
-# 2. Run model training + backtest + email report (in venv)
+# 2. Run model training + backtest + signal promotion + email report (in venv)
 
 set -euo pipefail
 
@@ -37,6 +37,7 @@ QLIB_DATA_DIR="$DATA_DIR/qlib_data" \
 STRATEGY_DIR="$PROJECT_DIR" \
 MODELS_DIR="$DATA_DIR/models" \
 OUTPUT_DIR="$DATA_DIR/output" \
+SIGNAL_DIR="$DATA_DIR/signals" \
 TRADE_PRED_PATH="$DATA_DIR/models/pred_sh.pkl" \
     python -m trainer.weekly_train
 

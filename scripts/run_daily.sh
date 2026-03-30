@@ -1,6 +1,6 @@
 #!/bin/bash
 # QuantPilot Daily Pipeline
-# Schedule: cron 17:30 Mon-Fri (after market close + data collection)
+# Schedule: cron 19:00 Mon-Fri (after NAS daily collection flush)
 #
 # Steps:
 # 0. Wait for NAS collector to finish today's data
@@ -28,6 +28,7 @@ SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519}"
 DOCKER="${DOCKER:-docker}"
 MAX_WAIT_SECONDS="${MAX_WAIT_SECONDS:-7200}"
 WAIT_INTERVAL_SECONDS="${WAIT_INTERVAL_SECONDS:-60}"
+ALLOW_STALE_SYNC="${ALLOW_STALE_SYNC:-false}"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
@@ -52,7 +53,12 @@ if [ -n "$NAS_HOST" ] && [ -n "$NAS_USER" ]; then
         WAITED=$((WAITED + WAIT_INTERVAL_SECONDS))
     done
     if [ "$NAS_LAST" != "$TODAY" ]; then
-        log "  WARNING: NAS data not ready after ${MAX_WAIT_SECONDS}s, proceeding with available data ($NAS_LAST)"
+        if [ "$ALLOW_STALE_SYNC" = "true" ]; then
+            log "  WARNING: NAS data not ready after ${MAX_WAIT_SECONDS}s, proceeding with available data ($NAS_LAST)"
+        else
+            log "  ERROR: NAS data not ready after ${MAX_WAIT_SECONDS}s, aborting to avoid stale/inconsistent sync ($NAS_LAST)"
+            exit 1
+        fi
     fi
 fi
 
