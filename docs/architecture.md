@@ -1,10 +1,10 @@
 # QuantPilot 架构文档
 
-> 更新时间: 2026-03-17
+> 更新时间: 2026-03-30
 
 ## 系统概览
 
-全 A 股量化选股 + 模拟盘自动交易系统。单一 Git 仓库，全 Docker 化部署，双机分布式架构。
+全 A 股量化选股 + 模拟盘自动交易系统。单一 Git 仓库，当前生产拓扑为 NAS Docker 数据节点 + Mac mini 宿主机 `crontab` / `.venv` 交易与推理，Reporter 保持 Docker 按需运行。
 
 ```
 ┌─ Mac mini (计算节点) ─────────────────────────────────────────────┐
@@ -12,17 +12,18 @@
 │   Futu OpenD (原生 GUI)                                            │
 │   127.0.0.1:11111                                                  │
 │       ▲                                                            │
-│       │ host.docker.internal                                       │
+│       │ localhost / LAN                                            │
 │       │                                                            │
-│   ┌───┴──────┐  ┌──────────┐  ┌──────────┐  ┌──────────────────┐  │
-│   │ Trader   │  │Inference │  │ Reporter │  │   Scheduler      │  │
-│   │ 14:50    │  │ 17:00    │  │ 17:00    │  │ (crond, 常驻)    │  │
-│   └──────────┘  └──────────┘  └──────────┘  └──────────────────┘  │
-│       │              │             │                               │
-│       ▼              ▼             ▼                               │
-│   ~/quantpilot_data/                                               │
-│   ├── qlib_data/     (Qlib bin, 从 NAS 同步)                      │
-│   ├── signals/       (pred_a.pkl, signal_*.csv)                    │
+│   ┌──────────────────────────────────────────────────────────────┐  │
+│   │ Host crontab + .venv                                         │  │
+│   │ 14:40 sync_data.sh      14:50 run_trade.sh                   │  │
+│   │ 19:00 run_daily.sh      周六 10:00 run_weekly_train.sh       │  │
+│   └───────────────┬──────────────────────────────┬───────────────┘  │
+│                   │                              │                  │
+│                   ▼                              ▼                  │
+│   ~/quantpilot_data/                       docker compose          │
+│   ├── qlib_data/     (Qlib bin, 从 NAS 同步)  reporter (按需)      │
+│   ├── signals/       (pred_sh_latest.pkl, signal_*.csv)            │
 │   ├── models/        (lightgbm_sh_latest.pkl)                      │
 │   └── reports/       (HTML 日报)                                   │
 │                                                                    │
@@ -83,12 +84,13 @@ qlib_data/
 07:00      Collector         US 股 / ETF K 线采集 (Futu + YFinance)
 07:30      Collector         宏观指标采集 (VIX, DXY, TNX, HSI)
 09:30      A 股开盘          —
-14:40      Scheduler         从 NAS 同步 Qlib bin 数据到本地
-14:50      Trader            读信号 → 涨停过滤 → 先卖后买 → Futu 模拟盘下单
+14:40      sync_data.sh      从 NAS 同步 Qlib bin 数据到本地
+14:50      run_trade.sh      读信号 → 绑定模拟账户 → 复核持仓 → 先卖后买
+                             若 OpenD 返回沪深休市，则强制 AUTO DRY RUN
 15:00      A 股收盘          —
 16:30      Collector         A 股日 K 线采集 (baostock, 5000+ 只)
                              HK 股采集 (Futu, 含基本面/做空)
-17:00      Scheduler         触发 Inference + Reporter
+19:00      run_daily.sh      等待 NAS 数据 → 同步 Qlib → 触发 Inference + Reporter
            Inference         验证 Qlib 数据 → LightGBM 预测 → 输出 pred_a.pkl
            Reporter          生成 HTML 日报 → 邮件/本地保存
 ```
@@ -110,23 +112,27 @@ qlib_data/
 docker compose --profile collector --profile observer up -d
 ```
 
-### Mac mini 端 (`docker-compose.mac.yml`)
+### Mac mini 端（宿主机优先）
 
-| 服务 | 功能 | 调度 |
-|------|------|------|
-| scheduler | crond 调度器, 触发其他服务 | 常驻 |
-| trader | 模拟盘自动交易 (Futu OpenD) | 14:50 工作日 |
-| inference | Qlib + LightGBM 模型推理 (x86 Rosetta) | 17:00 工作日 |
-| reporter | HTML 日报 + 邮件 | 17:00 工作日 |
+| 组件 | 运行方式 | 调度 | 说明 |
+|------|----------|------|------|
+| host crontab | 宿主机 | 常驻 | 直接调用仓库脚本 |
+| run_trade.sh | 宿主机 + `.venv` | 14:50 工作日 | 富途模拟盘交易，绑定 `FUTU_SIM_ACC_ID`，默认在休市时自动预演 |
+| run_daily.sh | 宿主机 + `.venv` | 19:00 工作日 | 等待 NAS 数据、同步、推理，然后调用 Reporter |
+| run_weekly_train.sh | 宿主机 + `.venv` | 周六 10:00 | 周训练 + 回测 |
+| reporter | Docker `run --rm` | 按需 | `run_daily.sh` 第 3 步调用 |
+| trader | Docker `run --rm` | 手动 | 调试或隔离执行，非生产主路径 |
 
 ```bash
-# Mac mini 启动
-cd ~/quantpilot
-docker compose -f docker-compose.mac.yml up -d scheduler
-# 手动触发交易
+# Mac mini 查看宿主机调度
+crontab -l
+# 手动触发交易（生产主路径）
+./scripts/run_trade.sh
+# 手动触发日报流水线
+./scripts/run_daily.sh
+# 手动运行 Docker Reporter / Trader
+docker compose -f docker-compose.mac.yml run --rm reporter
 docker compose -f docker-compose.mac.yml run --rm trader
-# 手动触发推理
-docker compose -f docker-compose.mac.yml run --rm inference
 ```
 
 ## 模型参数
@@ -150,6 +156,8 @@ docker compose -f docker-compose.mac.yml run --rm inference
 | POSITION_RATIO | 95% | 仓位比例 |
 | BUY_SLIPPAGE | +1% | 买入滑点 (确保成交) |
 | SELL_SLIPPAGE | -1% | 卖出滑点 |
+| FUTU_SIM_ACC_ID | 0 / 指定值 | 显式绑定模拟账户，0 表示取第一个模拟账户 |
+| ALLOW_OFF_HOURS_TRADING | false | OpenD 若报告沪深休市，则默认强制 AUTO DRY RUN |
 | 安全锁 | TrdEnv.SIMULATE | 硬编码 + assert, 禁止实盘 |
 
 ### 涨停过滤规则
@@ -187,13 +195,13 @@ quantpilot/                          # 单一 Git monorepo
 │   ├── config_a.yaml                # A 股模型配置
 │   └── config_hk.yaml               # 港股模型配置
 │
-├── inference/                       # 每日推理服务
+├── inference/                       # 每日推理服务 (宿主机 venv 主路径)
 │   ├── Dockerfile
 │   └── run_daily.py                 # 验证数据 → 模型预测 → 输出信号
 │
 ├── trader/                          # 自动交易服务
 │   ├── Dockerfile
-│   └── trade_daily.py               # 信号 → 涨停过滤 → Futu 下单
+│   └── trade_daily.py               # 信号 → 涨停过滤 → 账户绑定/持仓复核 → Futu 下单
 │
 ├── trainer/                         # 周训练服务
 │   ├── Dockerfile
@@ -208,7 +216,7 @@ quantpilot/                          # 单一 Git monorepo
 │   ├── Dockerfile
 │   └── app.py                       # Streamlit dashboard
 │
-├── scheduler/                       # Mac mini Docker 调度器
+├── scheduler/                       # Mac mini Docker 调度器（历史方案，当前生产改用宿主机 crontab）
 │   ├── Dockerfile
 │   ├── crontab                      # 定时任务配置
 │   └── scripts/                     # sync / trade / daily 脚本
@@ -216,8 +224,10 @@ quantpilot/                          # 单一 Git monorepo
 ├── dashboard/                       # Streamlit 策略看板
 │   └── app.py
 │
-├── scripts/                         # 运维脚本
+├── scripts/                         # 宿主机运维脚本
 │   ├── sync_data.sh                 # NAS → 本地 Qlib 数据同步
+│   ├── run_trade.sh                 # 宿主机交易入口（支持保留外部 env 覆盖）
+│   ├── run_daily.sh                 # 宿主机每日流水线
 │   ├── run_pipeline.sh              # 完整训练流水线
 │   └── migrate_parquet_to_qlib.py   # 一次性迁移工具
 │
@@ -252,8 +262,8 @@ quantpilot/                          # 单一 Git monorepo
 
 | Remote | URL | 用途 |
 |--------|-----|------|
-| origin | `ssh://theo@NAS/quantpilot.git` | NAS Gitea 备份 |
-| github | `https://github.com/ayavvv/quantpilot` | GitHub 备份 |
+| origin | `ssh://theo@192.168.100.131:22/volume1/homes/projects/quantpilot.git` | NAS bare repo 备份 |
+| github | `https://github.com/ayavvv/quantpilot.git` | GitHub 备份 |
 
 ## 环境依赖
 
@@ -262,5 +272,5 @@ quantpilot/                          # 单一 Git monorepo
 | Python | 3.12 | 策略/推理/交易 |
 | Docker | 28.x | OrbStack (Mac) / Synology (NAS) |
 | Futu OpenD | 10.0.6018 | Mac mini GUI 版, 127.0.0.1:11111 |
-| pyqlib | ≥ 0.9.0 | 仅 amd64 (Mac 上需 Rosetta) |
+| pyqlib | ≥ 0.9.0 | 仅 amd64；生产推理/训练改走宿主机 `.venv` |
 | LightGBM | ≥ 3.3 | 模型训练/推理 |

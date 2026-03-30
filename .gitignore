@@ -20,6 +20,7 @@ output/
 mlruns/
 logs/
 *.log
+models
 
 # Generated
 daily_buy_list.csv

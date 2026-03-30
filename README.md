@@ -31,10 +31,10 @@ A-share quantitative trading system with automated data collection, model traini
 | **collector** | A-share daily K-line data collection via baostock | Daily 16:30 |
 | **converter** | Qlib binary direct writer + parquet migration | Part of collector |
 | **strategy** | Qlib-based LightGBM model with Alpha158Fund features (~170) | - |
-| **inference** | Daily stock score prediction | Daily 17:00 |
-| **trader** | Auto trading via Futu OpenD API (simulation mode) | Daily 14:50 |
+| **inference** | Daily stock score prediction (host venv pipeline) | Daily 19:00 |
+| **trader** | Auto trading via Futu OpenD API (simulation account, auto preview when market is closed) | Daily 14:50 |
 | **trainer** | Weekly model retraining + backtest | Saturday 10:00 |
-| **reporter** | HTML daily report via SMTP email | Daily 17:30 |
+| **reporter** | HTML daily report via SMTP email | Daily 19:00 |
 | **observer** | Streamlit monitoring dashboard | Always-on |
 
 ## Quick Start
@@ -75,11 +75,15 @@ docker compose --profile collector up -d
 # NAS_USER=your_user
 # SSH_KEY=~/.ssh/id_ed25519
 
-# Daily pipeline (sync + inference + report)
+# Trading (host venv; auto preview if SH/SZ market is closed)
+./scripts/run_trade.sh
+
+# Daily pipeline (wait NAS + sync + inference + report)
 ./scripts/run_daily.sh
 
 # Or via cron:
-# 0 17 * * 1-5 /path/to/quantpilot/scripts/run_daily.sh
+# 50 14 * * 1-5 /path/to/quantpilot/scripts/run_trade.sh
+# 0 19 * * 1-5 /path/to/quantpilot/scripts/run_daily.sh
 # 0 10 * * 6   /path/to/quantpilot/scripts/run_weekly_train.sh
 ```
 
@@ -96,8 +100,12 @@ Key settings:
 | `TOP_N` | `5` | Number of positions |
 | `HOLD_BONUS` | `0.05` | Hold inertia score bonus |
 | `STOP_LOSS_PCT` | `-0.08` | Stop-loss threshold (-8%) |
-| `DRY_RUN` | `true` | Dry-run mode (no real trades) |
+| `FUTU_SIM_ACC_ID` | `0` | Bind trader to a specific simulation account; `0` = first SIM account |
+| `DRY_RUN` | `true` | Template default for preview mode; can be disabled in production `.env` |
+| `ALLOW_OFF_HOURS_TRADING` | `false` | Permit order submission when SH/SZ market is closed |
 | `CRON_TIME` | `16:30` | Collector schedule time |
+
+`run_trade.sh` preserves caller-provided overrides before sourcing `.env`, so commands such as `DRY_RUN=true ./scripts/run_trade.sh` stay in preview mode even if `.env` sets `DRY_RUN=false`.
 
 ## Data Flow
 
@@ -129,8 +137,8 @@ Futu OpenD API → simulated/real trades
 - **Selection**: Top-N by model score with hold inertia bonus
 - **Filters**: Dual limit-up filter (signal day + buy day)
 - **Risk**: -8% stop-loss per position
-- **Execution**: Equal-weight, sell-first-then-buy via Futu API
-- **Mode**: Simulation by default (safety lock in code)
+- **Execution**: Equal-weight, sell-first-then-buy with a live position re-check before each sell
+- **Mode**: Simulation only, explicit `acc_id` binding, auto-preview outside live A-share sessions unless `ALLOW_OFF_HOURS_TRADING=true`
 
 ## Project Structure
 
@@ -156,7 +164,8 @@ quantpilot/
 
 - Docker & Docker Compose
 - Python 3.10+ (for pyqlib compatibility)
-- Futu OpenD (for trading, optional for inference-only)
+- Futu OpenD (for trading; trader also reads SH/SZ market state to decide whether to auto-preview)
+- Mac mini production path uses host `crontab` + `.venv`; the Docker trader service is kept for manual runs
 - Apple Silicon note: inference/trainer containers use `platform: linux/amd64` (Rosetta) because pyqlib lacks arm64 wheels
 
 ## License

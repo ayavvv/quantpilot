@@ -1,18 +1,23 @@
 """
-NAS Docker 每日自动交易 — 严格匹配回测时序。
+Mac mini 宿主机每日自动交易 — 严格匹配回测时序。
 
-每个交易日 14:50 由 cron 触发:
+每个交易日 14:50 由宿主机 cron / `scripts/run_trade.sh` 触发:
 1. 从 pred_sh.pkl 提取最近一个交易日的信号（信号日 t）
 2. 从 Qlib bin 格式读取信号日涨跌幅
-3. 查当前持仓，应用持仓惯性
+3. 查当前持仓，剔除失真快照后应用持仓惯性
 4. 获取实时行情，双重涨停过滤（信号日 + 买入日）
 5. Top-N 选股，止损检查
 6. 先卖后买，等权分配
 
+执行保护:
+    - 仅使用模拟盘账户 (`FUTU_SIM_ACC_ID`)
+    - 卖出前逐只复核实时持仓
+    - 若 OpenD 判断沪深休市，则默认自动切换为 dry-run
+
 数据源:
-    pred_sh.pkl  → /models/pred_sh.pkl (mount)
-    Qlib 数据    → /qlib_data/         (mount, features + calendars)
-    futu OpenD   → futu-opend:11111    (Docker network)
+    pred_sh.pkl  → $DATA_DIR/signals/pred_sh_latest.pkl
+    Qlib 数据    → $DATA_DIR/qlib_data
+    futu OpenD   → $FUTU_HOST:$FUTU_PORT
 """
 
 from __future__ import annotations
@@ -23,8 +28,9 @@ import os
 import pickle
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, time as dt_time, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -48,6 +54,8 @@ assert SAFE_TRD_ENV == TrdEnv.SIMULATE, "禁止使用真实交易环境！"
 FUTU_HOST = os.environ.get("FUTU_HOST", "futu-opend")
 FUTU_PORT = int(os.environ.get("FUTU_PORT", "11111"))
 FUTU_RSA_KEY = os.environ.get("FUTU_RSA_KEY", "")
+FUTU_SIM_ACC_ID = int(os.environ.get("FUTU_SIM_ACC_ID", "0") or "0")
+ALLOW_OFF_HOURS_TRADING = os.environ.get("ALLOW_OFF_HOURS_TRADING", "false").lower() == "true"
 
 # ─── RSA 加密（跨网络交易需要）────────────────────────────
 if FUTU_RSA_KEY and Path(FUTU_RSA_KEY).exists():
@@ -66,6 +74,12 @@ BUY_PRICE_SLIPPAGE = 1.01    # 买入价上浮 1% 确保成交
 SELL_PRICE_SLIPPAGE = 0.99   # 卖出价下浮 1% 确保成交
 DRY_RUN = os.environ.get("DRY_RUN", "false").lower() == "true"
 ALLOW_STALE_SIGNAL = os.environ.get("ALLOW_STALE_SIGNAL", "false").lower() == "true"
+CN_TZ = ZoneInfo("Asia/Shanghai")
+A_SHARE_TRADING_SESSIONS = (
+    (dt_time(9, 30), dt_time(11, 30)),
+    (dt_time(13, 0), dt_time(15, 0)),
+)
+A_SHARE_LIVE_MARKET_STATES = {"MORNING", "AFTERNOON", "AUCTION", "TRADE_AT_LAST", "TRADE_AUCTION"}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -91,6 +105,55 @@ def _is_limit_up(code: str, change_rate: float) -> bool:
     if not code.startswith("SH."):
         return False
     return change_rate >= _get_limit_up_pct(code)
+
+
+def _current_cn_datetime() -> datetime:
+    return datetime.now(CN_TZ)
+
+
+def is_a_share_trading_time(now: datetime | None = None) -> tuple[bool, str]:
+    now = now or _current_cn_datetime()
+    now = now.astimezone(CN_TZ)
+    ts = now.strftime("%Y-%m-%d %H:%M:%S")
+
+    if now.weekday() >= 5:
+        return False, f"{ts} 是周末"
+
+    current_time = now.timetz().replace(tzinfo=None)
+    for start, end in A_SHARE_TRADING_SESSIONS:
+        if start <= current_time < end:
+            return True, f"{ts} 在 A 股交易时段"
+
+    return False, f"{ts} 不在 A 股交易时段(09:30-11:30, 13:00-15:00)"
+
+
+def is_a_share_market_live(global_state: dict[str, object]) -> tuple[bool, str]:
+    sh_state = str(global_state.get("market_sh", "N/A")).upper()
+    sz_state = str(global_state.get("market_sz", "N/A")).upper()
+    live = sh_state in A_SHARE_LIVE_MARKET_STATES or sz_state in A_SHARE_LIVE_MARKET_STATES
+    reason = f"OpenD 市场状态: SH={sh_state}, SZ={sz_state}"
+    return live, reason
+
+
+def resolve_dry_run_mode(
+    requested_dry_run: bool,
+    now: datetime | None = None,
+    global_state: dict[str, object] | None = None,
+) -> tuple[bool, str | None]:
+    if requested_dry_run:
+        return True, None
+
+    if global_state is not None:
+        live_allowed, reason = is_a_share_market_live(global_state)
+    else:
+        live_allowed, reason = is_a_share_trading_time(now=now)
+    if live_allowed:
+        return False, None
+
+    if ALLOW_OFF_HOURS_TRADING:
+        return False, reason
+
+    return True, reason
 
 
 # ─── 信号提取（从 pred_sh.pkl）────────────────────────
@@ -209,26 +272,77 @@ def load_signal_day_changes(signal_date: str, codes: list[str]) -> dict[str, flo
 
 # ─── 交易执行 ───────────────────────────────────────────
 
-def get_positions(trd_ctx) -> dict[str, dict]:
-    ret, data = trd_ctx.position_list_query(trd_env=SAFE_TRD_ENV)
-    if ret != RET_OK:
-        log.error(f"查询持仓失败: {data}")
-        return {}
+def _positions_from_frame(data: pd.DataFrame) -> dict[str, dict]:
     positions = {}
+    if data is None or data.empty:
+        return positions
+
     for _, row in data.iterrows():
-        if row["qty"] > 0:
-            positions[row["code"]] = {
-                "qty": int(row["qty"]),
-                "can_sell_qty": int(row.get("can_sell_qty", row["qty"])),
-                "market_val": float(row["market_val"]),
-                "cost_price": float(row["cost_price"]),
-                "pl_ratio": float(row.get("pl_ratio", 0)),
-            }
+        qty_raw = row.get("qty", 0)
+        qty = int(qty_raw) if pd.notna(qty_raw) else 0
+        if qty <= 0:
+            continue
+
+        code = str(row["code"]).upper()
+        can_sell_qty_raw = row.get("can_sell_qty", qty)
+        can_sell_qty = int(can_sell_qty_raw) if pd.notna(can_sell_qty_raw) else qty
+
+        positions[code] = {
+            "qty": qty,
+            "can_sell_qty": can_sell_qty,
+            "market_val": float(row.get("market_val", 0) or 0),
+            "cost_price": float(row.get("cost_price", 0) or 0),
+            "pl_ratio": float(row.get("pl_ratio", 0) or 0),
+        }
+
     return positions
 
 
-def get_account_info(trd_ctx) -> dict:
-    ret, data = trd_ctx.accinfo_query(trd_env=SAFE_TRD_ENV)
+def get_positions(trd_ctx, acc_id: int, code: str = "", refresh_cache: bool = False) -> dict[str, dict]:
+    ret, data = trd_ctx.position_list_query(
+        code=code,
+        trd_env=SAFE_TRD_ENV,
+        acc_id=acc_id,
+        refresh_cache=refresh_cache,
+    )
+    if ret != RET_OK:
+        log.error(f"查询持仓失败: {data}")
+        return {}
+    return _positions_from_frame(data)
+
+
+def get_position(trd_ctx, acc_id: int, code: str, refresh_cache: bool = False) -> dict | None:
+    return get_positions(
+        trd_ctx,
+        acc_id=acc_id,
+        code=code,
+        refresh_cache=refresh_cache,
+    ).get(code.upper())
+
+
+def validate_live_positions(trd_ctx, acc_id: int, positions: dict[str, dict]) -> dict[str, dict]:
+    validated = {}
+    stale_codes = []
+
+    for code in sorted(positions):
+        live_pos = get_position(trd_ctx, acc_id=acc_id, code=code, refresh_cache=True)
+        if live_pos is None:
+            stale_codes.append(code)
+            continue
+        validated[code] = live_pos
+
+    if stale_codes:
+        log.warning(f"剔除失真持仓快照: {stale_codes}")
+
+    return validated
+
+
+def get_account_info(trd_ctx, acc_id: int, refresh_cache: bool = False) -> dict:
+    ret, data = trd_ctx.accinfo_query(
+        trd_env=SAFE_TRD_ENV,
+        acc_id=acc_id,
+        refresh_cache=refresh_cache,
+    )
     if ret != RET_OK:
         log.error(f"查询账户失败: {data}")
         return {}
@@ -262,16 +376,18 @@ def get_latest_prices(quote_ctx, codes: list[str]) -> tuple[dict, dict]:
 
 def run_trade(
     trd_ctx, quote_ctx,
+    acc_id: int,
     signals_df: pd.DataFrame,
     signal_day_changes: dict[str, float],
     dry_run: bool = False,
 ):
     """执行换仓 — 与 backtest.py 完全一致。"""
 
-    account = get_account_info(trd_ctx)
+    account = get_account_info(trd_ctx, acc_id=acc_id, refresh_cache=True)
     if not account:
         return
-    positions = get_positions(trd_ctx)
+    positions = get_positions(trd_ctx, acc_id=acc_id, refresh_cache=True)
+    positions = validate_live_positions(trd_ctx, acc_id=acc_id, positions=positions)
     current_codes = set(positions.keys())
 
     # 持仓惯性（backtest.py 第 88-91 行）
@@ -348,9 +464,14 @@ def run_trade(
     # 先卖（价格下浮确保成交）
     sell_failures = []
     for code in sells:
-        qty = positions[code].get("can_sell_qty", positions[code]["qty"])
+        live_pos = get_position(trd_ctx, acc_id=acc_id, code=code, refresh_cache=True)
+        if live_pos is None:
+            log.warning(f"卖出跳过 {code}: 当前账户无持仓")
+            continue
+
+        qty = live_pos.get("can_sell_qty", live_pos["qty"])
         if qty <= 0:
-            log.warning(f"卖出跳过 {code}: 可卖数量为 0")
+            log.warning(f"卖出跳过 {code}: 当前账户无可卖仓位")
             sell_failures.append(code)
             continue
         price = prices.get(code)
@@ -365,6 +486,7 @@ def run_trade(
                 price=sell_price, qty=qty, code=code,
                 trd_side=TrdSide.SELL, order_type=OrderType.NORMAL,
                 trd_env=SAFE_TRD_ENV,
+                acc_id=acc_id,
             )
             log.info(f"  {'OK' if ret == RET_OK else 'FAIL'} {data}")
             if ret != RET_OK:
@@ -373,7 +495,7 @@ def run_trade(
 
     if sells and not dry_run:
         time.sleep(3)
-        account = get_account_info(trd_ctx)
+        account = get_account_info(trd_ctx, acc_id=acc_id, refresh_cache=True)
 
     if sell_failures:
         log.error(f"卖出失败，停止后续买入: {sorted(set(sell_failures))}")
@@ -401,22 +523,36 @@ def run_trade(
                 price=buy_price, qty=qty, code=code,
                 trd_side=TrdSide.BUY, order_type=OrderType.NORMAL,
                 trd_env=SAFE_TRD_ENV,
+                acc_id=acc_id,
             )
             log.info(f"  {'OK' if ret == RET_OK else 'FAIL'} {data}")
             time.sleep(1)
 
 
+def select_sim_acc_id(acc_list: pd.DataFrame, preferred_acc_id: int = 0) -> int:
+    sim = acc_list[acc_list["trd_env"] == "SIMULATE"]
+    if sim.empty:
+        raise ValueError("无模拟账户")
+
+    sim_ids = [int(acc_id) for acc_id in sim["acc_id"].tolist()]
+    if preferred_acc_id:
+        if preferred_acc_id not in sim_ids:
+            raise ValueError(
+                f"指定模拟账户不存在: preferred={preferred_acc_id}, available={sim_ids}"
+            )
+        return preferred_acc_id
+    return sim_ids[0]
+
+
 # ─── 主流程 ──────────────────────────────────────────
 
 def main():
-    dry_run = DRY_RUN or "--dry-run" in sys.argv
+    requested_dry_run = DRY_RUN or "--dry-run" in sys.argv
+    dry_run, dry_run_reason = resolve_dry_run_mode(requested_dry_run)
     signal_date = None
     for arg in sys.argv[1:]:
         if arg.startswith("--date="):
             signal_date = arg.split("=")[1]
-
-    if dry_run:
-        log.info("=== DRY RUN ===")
 
     log.info(f"配置: TOP_N={TOP_N} HOLD_BONUS={HOLD_BONUS} "
              f"STOP_LOSS={STOP_LOSS_PCT} FUTU={FUTU_HOST}:{FUTU_PORT}")
@@ -484,6 +620,23 @@ def main():
         _signal.alarm(0)
 
     try:
+        ret, global_state = quote_ctx.get_global_state()
+        if ret == RET_OK:
+            dry_run, dry_run_reason = resolve_dry_run_mode(
+                requested_dry_run,
+                global_state=global_state,
+            )
+        elif not requested_dry_run:
+            log.warning(f"获取 OpenD 市场状态失败，回退到本地时段判断: {global_state}")
+
+        if requested_dry_run:
+            log.info("=== DRY RUN ===")
+        elif dry_run:
+            log.warning(f"非交易时段，强制切换为 DRY RUN: {dry_run_reason}")
+            log.info("=== AUTO DRY RUN ===")
+        elif dry_run_reason:
+            log.warning(f"非交易时段，但 ALLOW_OFF_HOURS_TRADING=true，继续运行: {dry_run_reason}")
+
         ret, acc_list = trd_ctx.get_acc_list()
         if ret != RET_OK:
             log.error(f"账户列表失败: {acc_list}")
@@ -491,16 +644,27 @@ def main():
 
         sim = acc_list[acc_list["trd_env"] == "SIMULATE"]
         real = acc_list[acc_list["trd_env"] == "REAL"]
-        if sim.empty:
-            log.error("无模拟账户")
+        try:
+            sim_acc_id = select_sim_acc_id(acc_list, preferred_acc_id=FUTU_SIM_ACC_ID)
+        except ValueError as exc:
+            log.error(str(exc))
             return
+
         log.info(f"模拟账户: {sim['acc_id'].tolist()}")
+        log.info(f"使用模拟账户: {sim_acc_id}")
         if not real.empty:
             log.warning(f"真实账户 {real['acc_id'].tolist()} — 不触碰")
         assert SAFE_TRD_ENV == TrdEnv.SIMULATE
 
         # 4. 执行交易
-        run_trade(trd_ctx, quote_ctx, signals_df, signal_changes, dry_run=dry_run)
+        run_trade(
+            trd_ctx,
+            quote_ctx,
+            sim_acc_id,
+            signals_df,
+            signal_changes,
+            dry_run=dry_run,
+        )
         log.info("完成")
 
     finally:
