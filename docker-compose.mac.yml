@@ -19,18 +19,22 @@ services:
     network_mode: host
     environment:
       - TZ=Asia/Shanghai
-      - FUTU_HOST=192.168.100.248
-      - FUTU_PORT=11111
+      - FUTU_HOST=${FUTU_HOST:-192.168.100.248}
+      - FUTU_PORT=${FUTU_PORT:-11111}
+      - FUTU_SIM_ACC_ID=${FUTU_SIM_ACC_ID:-0}
+      - FUTU_RSA_KEY=/run/secrets/futu_rsa_key.pem
       - PRED_PATH=/data/signals/pred_sh_latest.pkl
       - QLIB_DATA_DIR=/qlib_data
       - SIGNAL_DIR=/data/signals
-      - TOP_N=5
-      - HOLD_BONUS=0.05
-      - STOP_LOSS_PCT=-0.08
-      - DRY_RUN=false
+      - TOP_N=${TOP_N:-5}
+      - HOLD_BONUS=${HOLD_BONUS:-0.05}
+      - STOP_LOSS_PCT=${STOP_LOSS_PCT:--0.08}
+      - DRY_RUN=${DRY_RUN:-false}
+      - ALLOW_OFF_HOURS_TRADING=${ALLOW_OFF_HOURS_TRADING:-false}
     volumes:
       - quant_data:/data
       - ~/quantpilot_data/qlib_data:/qlib_data:ro
+      - ${FUTU_RSA_KEY:-/dev/null}:/run/secrets/futu_rsa_key.pem:ro
 
   # --- 每日邮件报告 ---
   reporter:

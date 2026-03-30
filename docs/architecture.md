@@ -121,7 +121,7 @@ docker compose --profile collector --profile observer up -d
 | run_daily.sh | 宿主机 + `.venv` | 19:00 工作日 | 等待 NAS 数据、同步、推理，然后调用 Reporter |
 | run_weekly_train.sh | 宿主机 + `.venv` | 周六 10:00 | 周训练 + 回测 |
 | reporter | Docker `run --rm` | 按需 | `run_daily.sh` 第 3 步调用 |
-| trader | Docker `run --rm` | 手动 | 调试或隔离执行，非生产主路径 |
+| trader | Docker `run --rm` | 手动 | 调试或隔离执行，非生产主路径；继承 `.env` 中的 OpenD / RSA / 模拟账户配置 |
 
 ```bash
 # Mac mini 查看宿主机调度

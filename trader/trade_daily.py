@@ -58,7 +58,7 @@ FUTU_SIM_ACC_ID = int(os.environ.get("FUTU_SIM_ACC_ID", "0") or "0")
 ALLOW_OFF_HOURS_TRADING = os.environ.get("ALLOW_OFF_HOURS_TRADING", "false").lower() == "true"
 
 # ─── RSA 加密（跨网络交易需要）────────────────────────────
-if FUTU_RSA_KEY and Path(FUTU_RSA_KEY).exists():
+if FUTU_RSA_KEY and Path(FUTU_RSA_KEY).is_file():
     SysConfig.enable_proto_encrypt(True)
     SysConfig.set_init_rsa_file(FUTU_RSA_KEY)
 PRED_PATH = Path(os.environ.get("PRED_PATH", "/models/pred_sh.pkl"))
