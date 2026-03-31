@@ -1,6 +1,7 @@
 """Scheduler - cron job orchestration for data collection."""
 import os
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import List
 import pandas as pd
 from loguru import logger
@@ -372,12 +373,12 @@ class DataCollectorScheduler:
         except Exception as e:
             logger.error(f"Short sell data collection failed: {e}")
 
-    def sync_a_share_kline(self, code: str):
+    def sync_a_share_kline(self, code: str, target_end_date: str | None = None):
         """
         Sync A-share daily K-line using Baostock.
         Writes directly to Qlib bin format (no parquet intermediate).
         """
-        end = datetime.now().strftime("%Y-%m-%d")
+        end = target_end_date or datetime.now().strftime("%Y-%m-%d")
 
         # Check last collected date from Qlib bin
         if self.qlib_writer:
@@ -393,6 +394,9 @@ class DataCollectorScheduler:
             start = (datetime.strptime(end, "%Y-%m-%d") - timedelta(days=365 * 15)).strftime("%Y-%m-%d")
             logger.info(f"Baostock {code} K_DAY first fetch: {start} ~ {end}")
 
+        if start > end:
+            return
+
         data = self.bs_client.get_history_kline(code, start=start, end=end, ktype="K_DAY")
         if data:
             # Write directly to Qlib bin
@@ -403,6 +407,29 @@ class DataCollectorScheduler:
             else:
                 self.db_engine.append_kline(pd.DataFrame(data), code, "K_DAY")
                 self.db_engine.log_job("success", f"Baostock {code} +{len(data)} records", code, "K_DAY")
+
+    def _latest_a_share_date(self) -> str | None:
+        """Read the latest A-share end date from Qlib instruments metadata."""
+        qlib_dir_raw = os.environ.get("QLIB_DATA_DIR", "")
+        if not qlib_dir_raw:
+            return None
+        qlib_dir = Path(qlib_dir_raw)
+
+        inst_path = qlib_dir / "instruments" / "all.txt"
+        if not inst_path.exists():
+            return None
+
+        latest = None
+        for line in inst_path.read_text().splitlines():
+            parts = line.strip().split("\t")
+            if len(parts) < 3:
+                continue
+            code, _, end_date = parts[:3]
+            if not code.startswith(("SH.", "SZ.")):
+                continue
+            if latest is None or end_date > latest:
+                latest = end_date
+        return latest
 
     def sync_ticker(self, code: str):
         """
@@ -451,6 +478,14 @@ class DataCollectorScheduler:
             self.bs_client = BaostockClient(rate_limit=0.3)
 
             self._init_qlib_writer()
+            today = job_start_time.strftime("%Y-%m-%d")
+            target_a_share_date = self.bs_client.latest_trade_date(on_or_before=today)
+            latest_a_share_date = self._latest_a_share_date()
+            logger.info(
+                "A-share target date: %s | current latest: %s",
+                target_a_share_date or "N/A",
+                latest_a_share_date or "N/A",
+            )
 
             # 1. Get target stock pool
 
@@ -488,19 +523,33 @@ class DataCollectorScheduler:
 
             # 2. A-share daily K-line (Baostock)
             if a_share_codes:
-                logger.info(f"=== Baostock A-share collection: {len(a_share_codes)} stocks ===")
-                for idx, code in enumerate(a_share_codes, 1):
-                    try:
-                        self.sync_a_share_kline(code)
-                        if idx % 50 == 0:
-                            elapsed = (datetime.now() - job_start_time).total_seconds()
-                            logger.info(
-                                f"A-share progress: {idx}/{len(a_share_codes)} ({idx*100//len(a_share_codes)}%) | "
-                                f"elapsed: {elapsed/60:.1f} min"
-                            )
-                    except Exception as e:
-                        logger.error(f"[{idx}/{len(a_share_codes)}] Baostock {code} failed: {e}")
-                        continue
+                if not target_a_share_date:
+                    logger.warning("Cannot determine latest A-share trading date, skipping A-share collection")
+                elif latest_a_share_date and latest_a_share_date >= target_a_share_date:
+                    logger.info(
+                        "A-share already up to date: latest=%s target=%s, skipping",
+                        latest_a_share_date,
+                        target_a_share_date,
+                    )
+                else:
+                    logger.info(
+                        f"=== Baostock A-share collection: {len(a_share_codes)} stocks, "
+                        f"target={target_a_share_date} ==="
+                    )
+                    for idx, code in enumerate(a_share_codes, 1):
+                        try:
+                            self.sync_a_share_kline(code, target_end_date=target_a_share_date)
+                            if idx % 50 == 0:
+                                elapsed = (datetime.now() - job_start_time).total_seconds()
+                                logger.info(
+                                    f"A-share progress: {idx}/{len(a_share_codes)} "
+                                    f"({idx*100//len(a_share_codes)}%) | "
+                                    f"elapsed: {elapsed/60:.1f} min | last_code={code} | "
+                                    f"target={target_a_share_date}"
+                                )
+                        except Exception as e:
+                            logger.error(f"[{idx}/{len(a_share_codes)}] Baostock {code} failed: {e}")
+                            continue
 
             # 3. HK stock collection (Futu)
             if hk_codes and futu_ok:
@@ -758,13 +807,13 @@ class DataCollectorScheduler:
 
     def start(self):
         """Start the scheduler."""
-        # Daily 18:00 main job (HK/A-share K-line + fundamentals + short sell).
+        # Weekday 18:00 main job (HK/A-share K-line + fundamentals + short sell).
         # Baostock/Futu daily bars may lag shortly after the close; moving this
         # later avoids the local evening inference pipeline missing the latest
         # A-share session and falling back to stale signals.
         self.scheduler.add_job(
             self.run_daily_job,
-            trigger=CronTrigger(hour=18, minute=0, timezone='Asia/Shanghai'),
+            trigger=CronTrigger(day_of_week='mon-fri', hour=18, minute=0, timezone='Asia/Shanghai'),
             id='daily_data_sync',
             name='Daily data sync',
             replace_existing=True,
@@ -798,7 +847,7 @@ class DataCollectorScheduler:
             misfire_grace_time=3600,
         )
 
-        logger.info("Scheduler started: daily 18:00 main | daily 07:00 US+ETF | 07:30 macro | weekly Mon 08:00 industry")
+        logger.info("Scheduler started: weekdays 18:00 main | daily 07:00 US+ETF | 07:30 macro | weekly Mon 08:00 industry")
         if settings.index_list:
             logger.info(f"Target indexes: {', '.join(settings.index_list)}")
         if settings.extra_codes:

@@ -29,6 +29,10 @@ DOCKER="${DOCKER:-docker}"
 MAX_WAIT_SECONDS="${MAX_WAIT_SECONDS:-7200}"
 WAIT_INTERVAL_SECONDS="${WAIT_INTERVAL_SECONDS:-60}"
 ALLOW_STALE_SYNC="${ALLOW_STALE_SYNC:-false}"
+NAS_COLLECTOR_CONTAINER="${NAS_COLLECTOR_CONTAINER:-quantpilot-collector}"
+TARGET_DATE_LOOKBACK_DAYS="${TARGET_DATE_LOOKBACK_DAYS:-31}"
+PYTHON_BIN="${PYTHON_BIN:-$PROJECT_DIR/.venv/bin/python}"
+PYTHONPATH="${PROJECT_DIR}${PYTHONPATH:+:$PYTHONPATH}"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
@@ -38,25 +42,43 @@ log() {
 if [ -n "$NAS_HOST" ] && [ -n "$NAS_USER" ]; then
     log "Step 0: Waiting for NAS data to be ready..."
     TODAY=$(date +%Y-%m-%d)
+    TARGET_A_SHARE_DATE=$(
+        PYTHONPATH="$PYTHONPATH" "$PYTHON_BIN" -m scripts.a_share_readiness nas-target-date \
+            --nas-host "$NAS_HOST" \
+            --nas-user "$NAS_USER" \
+            --ssh-key "$SSH_KEY" \
+            --today "$TODAY" \
+            --collector-container "$NAS_COLLECTOR_CONTAINER" \
+            --lookback-days "$TARGET_DATE_LOOKBACK_DAYS"
+    )
+    if [ -z "$TARGET_A_SHARE_DATE" ]; then
+        log "  ERROR: failed to resolve target A-share trading date"
+        exit 1
+    fi
+    log "  Target A-share trading date: $TARGET_A_SHARE_DATE"
     WAITED=0
     NAS_LAST=""
     while [ $WAITED -lt $MAX_WAIT_SECONDS ]; do
-        NAS_LAST=$(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
-            "${NAS_USER}@${NAS_HOST}" \
-            "tail -1 ${NAS_QLIB_PATH}/calendars/day.txt" 2>/dev/null | tr -d '[:space:]')
-        if [ "$NAS_LAST" = "$TODAY" ]; then
-            log "  NAS data ready (last_date=$NAS_LAST)"
+        NAS_LAST=$(
+            PYTHONPATH="$PYTHONPATH" "$PYTHON_BIN" -m scripts.a_share_readiness nas-latest-date \
+                --nas-host "$NAS_HOST" \
+                --nas-user "$NAS_USER" \
+                --ssh-key "$SSH_KEY" \
+                --nas-qlib-path "$NAS_QLIB_PATH"
+        )
+        if [ -n "$NAS_LAST" ] && [ "$NAS_LAST" \> "$TARGET_A_SHARE_DATE" -o "$NAS_LAST" = "$TARGET_A_SHARE_DATE" ]; then
+            log "  NAS A-share data ready (latest_a_share=$NAS_LAST)"
             break
         fi
-        log "  NAS last_date=$NAS_LAST, waiting for $TODAY... (${WAITED}s/${MAX_WAIT_SECONDS}s)"
+        log "  NAS latest_a_share=$NAS_LAST, waiting for $TARGET_A_SHARE_DATE... (${WAITED}s/${MAX_WAIT_SECONDS}s)"
         sleep $WAIT_INTERVAL_SECONDS
         WAITED=$((WAITED + WAIT_INTERVAL_SECONDS))
     done
-    if [ "$NAS_LAST" != "$TODAY" ]; then
+    if [ -z "$NAS_LAST" ] || [ "$NAS_LAST" \< "$TARGET_A_SHARE_DATE" ]; then
         if [ "$ALLOW_STALE_SYNC" = "true" ]; then
-            log "  WARNING: NAS data not ready after ${MAX_WAIT_SECONDS}s, proceeding with available data ($NAS_LAST)"
+            log "  WARNING: NAS A-share data not ready after ${MAX_WAIT_SECONDS}s, proceeding with available data ($NAS_LAST)"
         else
-            log "  ERROR: NAS data not ready after ${MAX_WAIT_SECONDS}s, aborting to avoid stale/inconsistent sync ($NAS_LAST)"
+            log "  ERROR: NAS A-share data not ready after ${MAX_WAIT_SECONDS}s, aborting to avoid stale/inconsistent sync ($NAS_LAST)"
             exit 1
         fi
     fi

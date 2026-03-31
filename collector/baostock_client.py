@@ -1,6 +1,7 @@
 """Baostock client - A-share daily K-line data collection."""
 
 import time
+from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 
 import pandas as pd
@@ -66,6 +67,38 @@ class BaostockClient:
         sh_codes = [c for c in all_codes if c.startswith("SH.")]
         logger.info(f"baostock: Shanghai {len(sh_codes)} stocks")
         return sh_codes
+
+    def get_trade_dates(self, start: str = None, end: str = None) -> List[str]:
+        """Return trading dates in ``YYYY-MM-DD`` format within the range."""
+        self._ensure_login()
+        start_date = start or "2015-01-01"
+        end_date = end or pd.Timestamp.now().strftime("%Y-%m-%d")
+
+        rs = self._bs.query_trade_dates(start_date=start_date, end_date=end_date)
+        if rs.error_code != "0":
+            raise RuntimeError(f"query_trade_dates error: {rs.error_msg}")
+
+        field_map = {name: idx for idx, name in enumerate(rs.fields)}
+        cal_idx = field_map.get("calendar_date")
+        trade_idx = field_map.get("is_trading_day")
+        if cal_idx is None or trade_idx is None:
+            raise RuntimeError(f"query_trade_dates unexpected fields: {rs.fields}")
+
+        dates: List[str] = []
+        while rs.next():
+            row = rs.get_row_data()
+            if row[trade_idx] == "1":
+                dates.append(row[cal_idx])
+        return dates
+
+    def latest_trade_date(self, on_or_before: str = None, lookback_days: int = 31) -> Optional[str]:
+        """Return the latest A-share trading day on or before the given date."""
+        end_date = on_or_before or pd.Timestamp.now().strftime("%Y-%m-%d")
+        start_date = (
+            datetime.strptime(end_date, "%Y-%m-%d") - timedelta(days=lookback_days)
+        ).strftime("%Y-%m-%d")
+        dates = self.get_trade_dates(start=start_date, end=end_date)
+        return dates[-1] if dates else None
 
     # --- Daily K-line ---------------------------------------------------------
 
