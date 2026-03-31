@@ -60,17 +60,17 @@ if [ -n "$NAS_HOST" ] && [ -n "$NAS_USER" ]; then
     NAS_LAST=""
     while [ $WAITED -lt $MAX_WAIT_SECONDS ]; do
         NAS_LAST=$(
-            PYTHONPATH="$PYTHONPATH" "$PYTHON_BIN" -m scripts.a_share_readiness nas-latest-date \
+            PYTHONPATH="$PYTHONPATH" "$PYTHON_BIN" -m scripts.a_share_readiness nas-completed-date \
                 --nas-host "$NAS_HOST" \
                 --nas-user "$NAS_USER" \
                 --ssh-key "$SSH_KEY" \
                 --nas-qlib-path "$NAS_QLIB_PATH"
         )
         if [ -n "$NAS_LAST" ] && [ "$NAS_LAST" \> "$TARGET_A_SHARE_DATE" -o "$NAS_LAST" = "$TARGET_A_SHARE_DATE" ]; then
-            log "  NAS A-share data ready (latest_a_share=$NAS_LAST)"
+            log "  NAS A-share data ready (completed_a_share=$NAS_LAST)"
             break
         fi
-        log "  NAS latest_a_share=$NAS_LAST, waiting for $TARGET_A_SHARE_DATE... (${WAITED}s/${MAX_WAIT_SECONDS}s)"
+        log "  NAS completed_a_share=$NAS_LAST, waiting for $TARGET_A_SHARE_DATE... (${WAITED}s/${MAX_WAIT_SECONDS}s)"
         sleep $WAIT_INTERVAL_SECONDS
         WAITED=$((WAITED + WAIT_INTERVAL_SECONDS))
     done

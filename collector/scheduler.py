@@ -1,4 +1,5 @@
 """Scheduler - cron job orchestration for data collection."""
+import json
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -17,6 +18,8 @@ from collector.baostock_client import BaostockClient
 
 class DataCollectorScheduler:
     """Data collection scheduler."""
+
+    A_SHARE_SYNC_STATUS_METADATA = "a_share_sync_status"
 
     def __init__(self):
         """Initialize scheduler."""
@@ -431,6 +434,42 @@ class DataCollectorScheduler:
                 latest = end_date
         return latest
 
+    def _load_a_share_sync_status(self) -> dict | None:
+        """Load A-share collection completion metadata."""
+        if self.qlib_writer:
+            status = self.qlib_writer.load_metadata(self.A_SHARE_SYNC_STATUS_METADATA)
+            return status if isinstance(status, dict) else None
+
+        meta_path = settings.data_path / "metadata" / f"{self.A_SHARE_SYNC_STATUS_METADATA}.json"
+        if not meta_path.exists():
+            return None
+        data = json.loads(meta_path.read_text())
+        return data if isinstance(data, dict) else None
+
+    def _latest_completed_a_share_date(self) -> str | None:
+        """Return the latest fully completed A-share trading date."""
+        status = self._load_a_share_sync_status() or {}
+        completed = status.get("last_completed_trade_date")
+        return completed if isinstance(completed, str) and completed else None
+
+    def _mark_a_share_sync_completed(self, target_date: str, total_codes: int, started_at: datetime):
+        """Persist the latest fully completed A-share collection target date."""
+        data = {
+            "last_completed_trade_date": target_date,
+            "completed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "started_at": started_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "total_codes": total_codes,
+        }
+        if self.qlib_writer:
+            self.qlib_writer.save_metadata(self.A_SHARE_SYNC_STATUS_METADATA, data)
+            return
+
+        meta_dir = settings.data_path / "metadata"
+        meta_dir.mkdir(parents=True, exist_ok=True)
+        meta_path = meta_dir / f"{self.A_SHARE_SYNC_STATUS_METADATA}.json"
+        meta_path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        logger.info(f"A-share completion metadata saved: {meta_path}")
+
     def sync_ticker(self, code: str):
         """
         Sync tick data (current day only, skip if already collected).
@@ -480,12 +519,15 @@ class DataCollectorScheduler:
             self._init_qlib_writer()
             today = job_start_time.strftime("%Y-%m-%d")
             target_a_share_date = self.bs_client.latest_trade_date(on_or_before=today)
+            completed_a_share_date = self._latest_completed_a_share_date()
             latest_a_share_date = self._latest_a_share_date()
             logger.info(
-                "A-share target date: %s | current latest: %s",
+                "A-share target date: {} | latest completed: {} | latest observed: {}",
                 target_a_share_date or "N/A",
+                completed_a_share_date or "N/A",
                 latest_a_share_date or "N/A",
             )
+            completed_a_share_target = None
 
             # 1. Get target stock pool
 
@@ -525,10 +567,10 @@ class DataCollectorScheduler:
             if a_share_codes:
                 if not target_a_share_date:
                     logger.warning("Cannot determine latest A-share trading date, skipping A-share collection")
-                elif latest_a_share_date and latest_a_share_date >= target_a_share_date:
+                elif completed_a_share_date and completed_a_share_date >= target_a_share_date:
                     logger.info(
-                        "A-share already up to date: latest=%s target=%s, skipping",
-                        latest_a_share_date,
+                        "A-share already up to date: completed={} target={}, skipping",
+                        completed_a_share_date,
                         target_a_share_date,
                     )
                 else:
@@ -550,6 +592,7 @@ class DataCollectorScheduler:
                         except Exception as e:
                             logger.error(f"[{idx}/{len(a_share_codes)}] Baostock {code} failed: {e}")
                             continue
+                    completed_a_share_target = target_a_share_date
 
             # 3. HK stock collection (Futu)
             if hk_codes and futu_ok:
@@ -592,6 +635,13 @@ class DataCollectorScheduler:
             if self.qlib_writer:
                 self.qlib_writer.flush()
                 logger.info("Qlib bin data flushed")
+            if completed_a_share_target:
+                self._mark_a_share_sync_completed(
+                    completed_a_share_target,
+                    len(a_share_codes),
+                    job_start_time,
+                )
+                logger.info("A-share completion metadata updated: {}", completed_a_share_target)
 
             # Log job completion
             duration = (datetime.now() - job_start_time).total_seconds()

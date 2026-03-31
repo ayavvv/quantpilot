@@ -80,6 +80,39 @@ print(latest)
     )
 
 
+def latest_nas_a_share_completed_date(
+    *,
+    nas_host: str,
+    nas_user: str,
+    ssh_key: str,
+    nas_qlib_path: str,
+) -> str:
+    script = """
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+if not path.exists():
+    print("")
+else:
+    data = json.loads(path.read_text())
+    print(data.get("last_completed_trade_date", ""))
+""".strip()
+    remote_command = (
+        f"python3 -c {shlex.quote(script)} "
+        f"{shlex.quote(f'{nas_qlib_path}/metadata/a_share_sync_status.json')}"
+    )
+    return _last_date_line(
+        _run_ssh_command(
+            nas_host=nas_host,
+            nas_user=nas_user,
+            ssh_key=ssh_key,
+            remote_command=remote_command,
+        )
+    )
+
+
 def latest_trade_date_via_collector(
     *,
     nas_host: str,
@@ -147,6 +180,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     latest_parser = subparsers.add_parser("nas-latest-date", parents=[common])
     latest_parser.add_argument("--nas-qlib-path", required=True)
 
+    completed_parser = subparsers.add_parser("nas-completed-date", parents=[common])
+    completed_parser.add_argument("--nas-qlib-path", required=True)
+
     target_parser = subparsers.add_parser("nas-target-date", parents=[common])
     target_parser.add_argument(
         "--today",
@@ -171,6 +207,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "nas-latest-date":
         print(
             latest_nas_a_share_date(
+                nas_host=args.nas_host,
+                nas_user=args.nas_user,
+                ssh_key=args.ssh_key,
+                nas_qlib_path=args.nas_qlib_path,
+            )
+        )
+        return 0
+
+    if args.command == "nas-completed-date":
+        print(
+            latest_nas_a_share_completed_date(
                 nas_host=args.nas_host,
                 nas_user=args.nas_user,
                 ssh_key=args.ssh_key,

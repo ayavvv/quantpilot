@@ -28,6 +28,25 @@ def test_latest_nas_a_share_date_uses_instruments_metadata(monkeypatch):
     assert "/volume1/docker/quantpilot/qlib_data/instruments/all.txt" in captured["cmd"][-1]
 
 
+def test_latest_nas_a_share_completed_date_uses_status_metadata(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, check, capture_output, text):
+        captured["cmd"] = cmd
+        return _Result(stdout="2026-03-30\n")
+
+    monkeypatch.setattr(a_share_readiness.subprocess, "run", fake_run)
+    latest = a_share_readiness.latest_nas_a_share_completed_date(
+        nas_host="192.168.100.131",
+        nas_user="theo",
+        ssh_key="/tmp/nas_key",
+        nas_qlib_path="/volume1/docker/quantpilot/qlib_data",
+    )
+
+    assert latest == "2026-03-30"
+    assert "/volume1/docker/quantpilot/qlib_data/metadata/a_share_sync_status.json" in captured["cmd"][-1]
+
+
 def test_latest_trade_date_via_collector_runs_in_collector_container(monkeypatch):
     captured = {}
 
