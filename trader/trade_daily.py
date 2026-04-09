@@ -72,6 +72,7 @@ POSITION_RATIO = 0.95
 MIN_LOT_SH = 100
 BUY_PRICE_SLIPPAGE = 1.01    # 买入价上浮 1% 确保成交
 SELL_PRICE_SLIPPAGE = 0.99   # 卖出价下浮 1% 确保成交
+DEFAULT_PRICE_TICK = 0.01
 DRY_RUN = os.environ.get("DRY_RUN", "false").lower() == "true"
 ALLOW_STALE_SIGNAL = os.environ.get("ALLOW_STALE_SIGNAL", "false").lower() == "true"
 CN_TZ = ZoneInfo("Asia/Shanghai")
@@ -91,14 +92,147 @@ log = logging.getLogger("trader")
 
 # ─── 工具函数 ───────────────────────────────────────────
 
-def _round_lot(qty: float) -> int:
-    return max(int(qty // MIN_LOT_SH) * MIN_LOT_SH, 0)
+def _round_lot(qty: float, lot_size: int = MIN_LOT_SH) -> int:
+    return max(int(qty // max(lot_size, 1)) * max(lot_size, 1), 0)
 
 
-def _get_limit_up_pct(code: str) -> float:
-    if code.startswith("SH.300") or code.startswith("SH.688"):
+def _get_price_tick(code: str) -> float:
+    return DEFAULT_PRICE_TICK
+
+
+def _is_st_stock(snapshot: dict[str, object] | None = None) -> bool:
+    if not snapshot:
+        return False
+    for key in ("name", "stock_name"):
+        value = snapshot.get(key)
+        if not value:
+            continue
+        normalized = str(value).strip().upper()
+        if normalized.startswith(("ST", "*ST", "SST", "*SST")):
+            return True
+    return False
+
+
+def _coerce_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(num) or num <= 0:
+        return None
+    return num
+
+
+def _snapshot_value(snapshot: dict[str, object], *keys: str) -> float | None:
+    for key in keys:
+        if key in snapshot:
+            value = _coerce_float(snapshot[key])
+            if value is not None:
+                return value
+    return None
+
+
+def _round_to_tick(price: float, tick: float, side: TrdSide) -> float:
+    if tick <= 0:
+        return round(price, 2)
+    scaled = price / tick
+    if side == TrdSide.SELL:
+        adjusted = np.floor(scaled + 1e-9)
+    else:
+        adjusted = np.ceil(scaled - 1e-9)
+    return round(float(adjusted * tick), 4)
+
+
+def _extract_price_limits(snapshot: dict[str, object]) -> tuple[float | None, float | None]:
+    lower = _snapshot_value(
+        snapshot,
+        "lower_limit_price",
+        "lower_limit",
+    )
+    upper = _snapshot_value(
+        snapshot,
+        "upper_limit_price",
+        "upper_limit",
+    )
+    return lower, upper
+
+
+def _derive_price_limits(code: str, snapshot: dict[str, object]) -> tuple[float | None, float | None]:
+    prev_close = _snapshot_value(snapshot, "prev_close_price", "prev_close")
+    if prev_close is None:
+        return None, None
+
+    limit_pct = _get_limit_up_pct(code, snapshot=snapshot) / 100.0
+    lower = round(prev_close * (1 - limit_pct), 2)
+    upper = round(prev_close * (1 + limit_pct), 2)
+    return lower, upper
+
+
+def _resolve_price_limits(code: str, snapshot: dict[str, object]) -> tuple[float | None, float | None]:
+    lower, upper = _extract_price_limits(snapshot)
+    if lower is not None and upper is not None:
+        return lower, upper
+    return _derive_price_limits(code, snapshot)
+
+
+def _clamp_price_to_limits(
+    price: float,
+    lower: float | None,
+    upper: float | None,
+    tick: float,
+    side: TrdSide,
+) -> float:
+    clamped = price
+    if lower is not None:
+        clamped = max(clamped, lower)
+    if upper is not None:
+        clamped = min(clamped, upper)
+    clamped = _round_to_tick(clamped, tick, side)
+    if lower is not None and clamped < lower:
+        clamped = _round_to_tick(lower, tick, TrdSide.BUY)
+    if upper is not None and clamped > upper:
+        clamped = _round_to_tick(upper, tick, TrdSide.SELL)
+    return round(clamped, 2)
+
+
+def build_order_price(
+    code: str,
+    side: TrdSide,
+    snapshot: dict[str, object],
+    slippage: float,
+) -> float | None:
+    reference_price = _snapshot_value(
+        snapshot,
+        "last_price",
+        "nominal_price",
+        "open_price",
+        "prev_close_price",
+    )
+    if reference_price is None:
+        return None
+
+    tick = _get_price_tick(code)
+    lower_limit, upper_limit = _resolve_price_limits(code, snapshot)
+    if lower_limit is None or upper_limit is None:
+        log.warning(f"{code}: snapshot 缺少合法价格区间，跳过真实下单")
+        return None
+    target = reference_price * slippage
+    target = _round_to_tick(target, tick, side)
+    return _clamp_price_to_limits(target, lower_limit, upper_limit, tick, side)
+
+
+def _get_limit_up_pct(code: str, snapshot: dict[str, object] | None = None) -> float:
+    if _is_st_stock(snapshot):
+        return 5.0
+    if code.startswith("SZ.300") or code.startswith("SH.688"):
         return 19.5
     return 9.5
+
+
+def _order_adjust_limit(side: TrdSide) -> float:
+    return -0.01 if side == TrdSide.BUY else 0.01
 
 
 def _is_limit_up(code: str, change_rate: float) -> bool:
@@ -311,32 +445,6 @@ def get_positions(trd_ctx, acc_id: int, code: str = "", refresh_cache: bool = Fa
     return _positions_from_frame(data)
 
 
-def get_position(trd_ctx, acc_id: int, code: str, refresh_cache: bool = False) -> dict | None:
-    return get_positions(
-        trd_ctx,
-        acc_id=acc_id,
-        code=code,
-        refresh_cache=refresh_cache,
-    ).get(code.upper())
-
-
-def validate_live_positions(trd_ctx, acc_id: int, positions: dict[str, dict]) -> dict[str, dict]:
-    validated = {}
-    stale_codes = []
-
-    for code in sorted(positions):
-        live_pos = get_position(trd_ctx, acc_id=acc_id, code=code, refresh_cache=True)
-        if live_pos is None:
-            stale_codes.append(code)
-            continue
-        validated[code] = live_pos
-
-    if stale_codes:
-        log.warning(f"剔除失真持仓快照: {stale_codes}")
-
-    return validated
-
-
 def get_account_info(trd_ctx, acc_id: int, refresh_cache: bool = False) -> dict:
     ret, data = trd_ctx.accinfo_query(
         trd_env=SAFE_TRD_ENV,
@@ -357,21 +465,30 @@ def get_account_info(trd_ctx, acc_id: int, refresh_cache: bool = False) -> dict:
     return info
 
 
-def get_latest_prices(quote_ctx, codes: list[str]) -> tuple[dict, dict]:
-    prices, changes = {}, {}
-    for code in codes:
-        ret, data = quote_ctx.get_market_snapshot([code])
-        if ret == RET_OK and not data.empty:
-            row = data.iloc[0]
-            prices[code] = float(row["last_price"])
-            changes[code] = float(row.get("change_rate", 0))
-        else:
-            log.warning(f"行情失败: {code} | ret={ret} | data={data}")
+def get_market_snapshots(quote_ctx, codes: list[str]) -> dict[str, dict[str, object]]:
+    snapshots: dict[str, dict[str, object]] = {}
+    if not codes:
+        return snapshots
+
+    batch_size = 200
+    for i in range(0, len(codes), batch_size):
+        batch = codes[i:i + batch_size]
+        ret, data = quote_ctx.get_market_snapshot(batch)
+        if ret != RET_OK or data is None or data.empty:
+            log.warning(f"行情失败: batch={batch} | ret={ret} | data={data}")
+            time.sleep(0.3)
+            continue
+
+        for _, row in data.iterrows():
+            code = str(row.get("code", "")).upper()
+            if not code:
+                continue
+            snapshots[code] = row.to_dict()
         time.sleep(0.3)
 
-    if len(prices) < len(codes):
-        log.warning(f"行情汇总: {len(prices)}/{len(codes)} 成功")
-    return prices, changes
+    if len(snapshots) < len(codes):
+        log.warning(f"行情汇总: {len(snapshots)}/{len(codes)} 成功")
+    return snapshots
 
 
 def run_trade(
@@ -387,10 +504,8 @@ def run_trade(
     if not account:
         return
     positions = get_positions(trd_ctx, acc_id=acc_id, refresh_cache=True)
-    positions = validate_live_positions(trd_ctx, acc_id=acc_id, positions=positions)
     current_codes = set(positions.keys())
 
-    # 持仓惯性（backtest.py 第 88-91 行）
     candidates = signals_df.copy()
     if HOLD_BONUS > 0 and current_codes:
         held = candidates["code"].isin(current_codes)
@@ -401,28 +516,23 @@ def run_trade(
         candidates = candidates.sort_values("score", ascending=False)
 
     codes_ordered = candidates["code"].tolist()
-
-    # 获取实时行情
     query_codes = list(set(codes_ordered[:TOP_N * 3]) | current_codes)
-    prices, buy_day_chg = get_latest_prices(quote_ctx, query_codes)
+    snapshots = get_market_snapshots(quote_ctx, query_codes)
 
-    # 候选筛选（backtest.py 第 96-115 行）
     filtered = []
     for code in codes_ordered:
-        if code not in prices:
+        snapshot = snapshots.get(code)
+        if not snapshot:
             continue
 
         if code.startswith("SH."):
-            limit_pct = _get_limit_up_pct(code)
-
-            # 信号日涨停（backtest.py 第 108 行）
+            limit_pct = _get_limit_up_pct(code, snapshot=snapshot)
             chg_t = signal_day_changes.get(code, float("nan"))
             if pd.notna(chg_t) and chg_t >= limit_pct:
                 log.warning(f"涨停过滤(信号日): {code} {chg_t:.1f}%")
                 continue
 
-            # 买入日涨停（backtest.py 第 109 行）
-            chg_t1 = buy_day_chg.get(code, 0)
+            chg_t1 = _snapshot_value(snapshot, "change_rate") or 0
             if chg_t1 >= limit_pct:
                 log.warning(f"涨停过滤(买入日): {code} {chg_t1:.1f}%")
                 continue
@@ -434,12 +544,10 @@ def run_trade(
     target_set = set(filtered)
     log.info(f"目标持仓 Top-{TOP_N}: {filtered}")
 
-    # 行情异常保护: 大面积行情失败时保持现有持仓
-    if not target_set and current_codes and len(prices) < len(query_codes) * 0.5:
-        log.warning(f"行情异常保护: 仅 {len(prices)}/{len(query_codes)} 行情成功，保持现有持仓不动")
+    if not target_set and current_codes and len(snapshots) < len(query_codes) * 0.5:
+        log.warning(f"行情异常保护: 仅 {len(snapshots)}/{len(query_codes)} 行情成功，保持现有持仓不动")
         return
 
-    # 止损
     stop_loss_sells = set()
     for code, pos in positions.items():
         pl_ratio = pos.get("pl_ratio", 0) / 100.0
@@ -448,60 +556,84 @@ def run_trade(
             stop_loss_sells.add(code)
             target_set.discard(code)
 
-    # 买卖计算（backtest.py 第 131-133 行）
     sells = (current_codes - target_set) | stop_loss_sells
-    buys = target_set - current_codes
+    planned_buys = target_set - current_codes
     holds = current_codes & target_set
 
     log.info(f"当前: {sorted(current_codes) or '空仓'}")
-    log.info(f"卖出: {sorted(sells) or '无'}  买入: {sorted(buys) or '无'}  "
-             f"持有: {sorted(holds) or '无'}")
+    log.info(f"卖出: {sorted(sells) or '无'}  买入: {sorted(planned_buys) or '无'}  持有: {sorted(holds) or '无'}")
 
-    if not sells and not buys:
+    if not sells and not planned_buys:
         log.info("无需调仓")
         return
 
-    # 先卖（价格下浮确保成交）
     sell_failures = []
-    for code in sells:
-        live_pos = get_position(trd_ctx, acc_id=acc_id, code=code, refresh_cache=True)
-        if live_pos is None:
+    sell_results = []
+    for code in sorted(sells):
+        pos = positions.get(code)
+        if pos is None:
             log.warning(f"卖出跳过 {code}: 当前账户无持仓")
+            sell_results.append((code, "missing_position"))
             continue
 
-        qty = live_pos.get("can_sell_qty", live_pos["qty"])
+        qty = pos.get("can_sell_qty", pos["qty"])
         if qty <= 0:
             log.warning(f"卖出跳过 {code}: 当前账户无可卖仓位")
             sell_failures.append(code)
+            sell_results.append((code, "no_sell_qty"))
             continue
-        price = prices.get(code)
-        if not price:
+
+        snapshot = snapshots.get(code)
+        if not snapshot:
             log.warning(f"卖出跳过 {code}: 行情缺失")
             sell_failures.append(code)
+            sell_results.append((code, "missing_snapshot"))
             continue
-        sell_price = round(price * SELL_PRICE_SLIPPAGE, 2)
-        log.info(f"卖出 {code}: {qty}股 @ {sell_price:.2f} (市价{price:.2f})")
-        if not dry_run:
-            ret, data = trd_ctx.place_order(
-                price=sell_price, qty=qty, code=code,
-                trd_side=TrdSide.SELL, order_type=OrderType.NORMAL,
-                trd_env=SAFE_TRD_ENV,
-                acc_id=acc_id,
-            )
-            log.info(f"  {'OK' if ret == RET_OK else 'FAIL'} {data}")
-            if ret != RET_OK:
-                sell_failures.append(code)
-            time.sleep(1)
 
-    if sells and not dry_run:
+        sell_price = build_order_price(code, TrdSide.SELL, snapshot, SELL_PRICE_SLIPPAGE)
+        market_price = _snapshot_value(snapshot, "last_price")
+        if sell_price is None or market_price is None:
+            log.warning(f"卖出跳过 {code}: 无法生成合法卖价")
+            sell_failures.append(code)
+            sell_results.append((code, "invalid_sell_price"))
+            continue
+
+        log.info(f"卖出 {code}: {qty}股 @ {sell_price:.2f} (市价{market_price:.2f})")
+        if dry_run:
+            sell_results.append((code, "dry_run"))
+            continue
+
+        ret, data = trd_ctx.place_order(
+            price=sell_price, qty=qty, code=code,
+            trd_side=TrdSide.SELL, order_type=OrderType.NORMAL,
+            adjust_limit=_order_adjust_limit(TrdSide.SELL),
+            trd_env=SAFE_TRD_ENV,
+            acc_id=acc_id,
+        )
+        log.info(f"  {'OK' if ret == RET_OK else 'FAIL'} {data}")
+        if ret != RET_OK:
+            sell_failures.append(code)
+            sell_results.append((code, "failed"))
+        else:
+            sell_results.append((code, "ok"))
+        time.sleep(1)
+
+    if sells:
+        log.info(f"卖出结果汇总: {sell_results}")
+
+    attempted_live_sells = any(status in {"ok", "failed"} for _, status in sell_results)
+    if attempted_live_sells and not dry_run:
         time.sleep(3)
         account = get_account_info(trd_ctx, acc_id=acc_id, refresh_cache=True)
+        positions = get_positions(trd_ctx, acc_id=acc_id, refresh_cache=True)
+        current_codes = set(positions.keys())
+        log.info(f"卖后刷新持仓: {sorted(current_codes) or '空仓'}")
 
     if sell_failures:
-        log.error(f"卖出失败，停止后续买入: {sorted(set(sell_failures))}")
-        return
+        log.warning(f"卖出失败但继续保守买入: {sorted(set(sell_failures))}")
 
-    # 后买
+    available_slots = max(TOP_N - len(current_codes), 0)
+    buys = [code for code in filtered if code not in current_codes][:available_slots]
     if not buys:
         return
 
@@ -509,19 +641,25 @@ def run_trade(
     log.info(f"每只预算: {budget:,.0f}")
 
     for code in buys:
-        price = prices.get(code)
-        if not price or price <= 0:
+        snapshot = snapshots.get(code)
+        if not snapshot:
             continue
-        buy_price = round(price * BUY_PRICE_SLIPPAGE, 2)
-        qty = _round_lot(budget / buy_price)
+        buy_price = build_order_price(code, TrdSide.BUY, snapshot, BUY_PRICE_SLIPPAGE)
+        market_price = _snapshot_value(snapshot, "last_price")
+        if buy_price is None or market_price is None:
+            log.warning(f"跳过 {code}: 无法生成合法买价")
+            continue
+        lot_size = int(_snapshot_value(snapshot, "lot_size") or MIN_LOT_SH)
+        qty = _round_lot(budget / buy_price, lot_size=lot_size)
         if qty <= 0:
             log.warning(f"跳过 {code}: 资金不足")
             continue
-        log.info(f"买入 {code}: {qty}股 @ {buy_price:.2f} (市价{price:.2f}) = {qty * buy_price:,.0f}")
+        log.info(f"买入 {code}: {qty}股 @ {buy_price:.2f} (市价{market_price:.2f}) = {qty * buy_price:,.0f}")
         if not dry_run:
             ret, data = trd_ctx.place_order(
                 price=buy_price, qty=qty, code=code,
                 trd_side=TrdSide.BUY, order_type=OrderType.NORMAL,
+                adjust_limit=_order_adjust_limit(TrdSide.BUY),
                 trd_env=SAFE_TRD_ENV,
                 acc_id=acc_id,
             )

@@ -87,3 +87,67 @@ def test_is_a_share_ready_compares_dates_lexicographically():
     assert a_share_readiness.is_a_share_ready("2026-03-31", "2026-03-30") is True
     assert a_share_readiness.is_a_share_ready("2026-03-27", "2026-03-30") is False
     assert a_share_readiness.is_a_share_ready("", "2026-03-30") is False
+
+
+def test_validate_staged_qlib_snapshot_accepts_matching_dates(tmp_path):
+    qlib_dir = tmp_path / "qlib"
+    (qlib_dir / "metadata").mkdir(parents=True)
+    (qlib_dir / "instruments").mkdir(parents=True)
+    (qlib_dir / "metadata" / "a_share_sync_status.json").write_text(
+        '{"last_completed_trade_date": "2026-03-30"}'
+    )
+    (qlib_dir / "instruments" / "all.txt").write_text(
+        "SH.600000\t2006-01-03\t2026-03-30\nUS.SPY\t2006-01-03\t2026-03-29\n"
+    )
+
+    completed, latest = a_share_readiness.validate_staged_qlib_snapshot(
+        qlib_dir=qlib_dir,
+        expected_target_date="2026-03-30",
+    )
+
+    assert completed == "2026-03-30"
+    assert latest == "2026-03-30"
+
+
+def test_validate_staged_qlib_snapshot_rejects_mismatched_metadata(tmp_path):
+    qlib_dir = tmp_path / "qlib"
+    (qlib_dir / "metadata").mkdir(parents=True)
+    (qlib_dir / "instruments").mkdir(parents=True)
+    (qlib_dir / "metadata" / "a_share_sync_status.json").write_text(
+        '{"last_completed_trade_date": "2026-03-29"}'
+    )
+    (qlib_dir / "instruments" / "all.txt").write_text(
+        "SH.600000\t2006-01-03\t2026-03-30\n"
+    )
+
+    try:
+        a_share_readiness.validate_staged_qlib_snapshot(
+            qlib_dir=qlib_dir,
+            expected_target_date="2026-03-30",
+        )
+    except RuntimeError as exc:
+        assert "completed_a_share=2026-03-29" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError")
+
+
+def test_validate_staged_qlib_snapshot_rejects_mismatched_instruments(tmp_path):
+    qlib_dir = tmp_path / "qlib"
+    (qlib_dir / "metadata").mkdir(parents=True)
+    (qlib_dir / "instruments").mkdir(parents=True)
+    (qlib_dir / "metadata" / "a_share_sync_status.json").write_text(
+        '{"last_completed_trade_date": "2026-03-30"}'
+    )
+    (qlib_dir / "instruments" / "all.txt").write_text(
+        "SH.600000\t2006-01-03\t2026-03-29\n"
+    )
+
+    try:
+        a_share_readiness.validate_staged_qlib_snapshot(
+            qlib_dir=qlib_dir,
+            expected_target_date="2026-03-30",
+        )
+    except RuntimeError as exc:
+        assert "latest_a_share=2026-03-29" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError")

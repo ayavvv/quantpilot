@@ -58,6 +58,8 @@ SMTP_USER = os.environ.get("SMTP_USER", "")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 EMAIL_FROM = os.environ.get("EMAIL_FROM", "")
 EMAIL_TO = os.environ.get("EMAIL_TO", "")
+REPORT_FROM = os.environ.get("REPORT_FROM", "")
+REPORT_TO = os.environ.get("REPORT_TO", "")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,6 +67,48 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger("weekly_train")
+
+
+def resolve_email_config() -> dict[str, str]:
+    report_from = EMAIL_FROM or REPORT_FROM or SMTP_USER
+    report_to = EMAIL_TO or REPORT_TO
+    return {
+        "smtp_host": SMTP_HOST,
+        "smtp_port": str(SMTP_PORT),
+        "smtp_user": SMTP_USER,
+        "smtp_password": SMTP_PASSWORD,
+        "report_from": report_from,
+        "report_to": report_to,
+    }
+
+
+def log_email_config_status(config: dict[str, str]):
+    missing = [
+        name
+        for name, value in {
+            "SMTP_USER": config["smtp_user"],
+            "SMTP_PASSWORD": config["smtp_password"],
+            "REPORT_TO": config["report_to"],
+        }.items()
+        if not value
+    ]
+    log.info(
+        "  SMTP config status: "
+        f"host={config['smtp_host']} port={config['smtp_port']} "
+        f"user={'set' if config['smtp_user'] else 'missing'} "
+        f"password={'set' if config['smtp_password'] else 'missing'} "
+        f"report_to={'set' if config['report_to'] else 'missing'} "
+        f"report_from={'set' if config['report_from'] else 'missing'}"
+    )
+    return missing
+
+
+def save_report_locally(filename: str, body_text: str):
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    report_path = OUTPUT_DIR / filename
+    report_path.write_text(body_text, encoding="utf-8")
+    log.info(f"  Report saved locally: {report_path}")
+    return report_path
 
 
 # --- Step 1: Check/Sync Qlib data ---
@@ -315,10 +359,6 @@ def send_report_email(train_info: dict, metrics: dict, report_path: Path, metric
     """Send backtest report via SMTP email."""
     log.info("Step 6: Sending email report...")
 
-    if not SMTP_USER or not EMAIL_TO:
-        log.warning("  Email not configured (SMTP_USER or EMAIL_TO missing), skipping")
-        return False
-
     today = datetime.now().strftime("%Y-%m-%d")
     subject = f"Quant Weekly Report {today} | IC={train_info.get('ic', 'N/A')} | {metrics.get('ann_return', 'N/A')}"
 
@@ -335,56 +375,76 @@ def send_report_email(train_info: dict, metrics: dict, report_path: Path, metric
     for k, v in metrics.items():
         body_lines.append(f"  {k}: {v}")
 
+    attachment_paths = [filepath for filepath in [report_path, metrics_path] if filepath.exists()]
+    if attachment_paths:
+        body_lines.extend([
+            "",
+            "[Artifacts]",
+            *[f"  {filepath}" for filepath in attachment_paths],
+        ])
+
     body_text = "\n".join(body_lines)
+    config = resolve_email_config()
+    missing = log_email_config_status(config)
+    if missing:
+        log.warning(f"  Email not configured, missing: {', '.join(missing)}. Saving report locally.")
+        save_report_locally(f"weekly_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt", body_text)
+        return False
 
     try:
         msg = MIMEMultipart()
-        msg["From"] = EMAIL_FROM or SMTP_USER
-        msg["To"] = EMAIL_TO
+        msg["From"] = config["report_from"]
+        msg["To"] = config["report_to"]
         msg["Subject"] = subject
         msg.attach(MIMEText(body_text, "plain", "utf-8"))
 
-        for filepath in [report_path, metrics_path]:
-            if filepath.exists():
-                with open(filepath, "rb") as f:
-                    part = MIMEBase("application", "octet-stream")
-                    part.set_payload(f.read())
-                encoders.encode_base64(part)
-                part.add_header("Content-Disposition", f"attachment; filename={filepath.name}")
-                msg.attach(part)
+        for filepath in attachment_paths:
+            with open(filepath, "rb") as f:
+                part = MIMEBase("application", "octet-stream")
+                part.set_payload(f.read())
+            encoders.encode_base64(part)
+            part.add_header("Content-Disposition", f"attachment; filename={filepath.name}")
+            msg.attach(part)
 
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+        with smtplib.SMTP(config["smtp_host"], int(config["smtp_port"])) as server:
             server.starttls()
-            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.login(config["smtp_user"], config["smtp_password"])
             server.send_message(msg)
 
-        log.info(f"  Email sent to {EMAIL_TO}")
+        log.info(f"  Email sent to {config['report_to']}")
         return True
 
     except Exception as e:
         log.error(f"  Email sending failed: {e}")
+        save_report_locally(f"weekly_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt", body_text)
         return False
 
 
 def send_failure_email(error: Exception):
     """Send failure notification via SMTP email."""
-    if not SMTP_USER or not EMAIL_TO:
+    today = datetime.now().strftime("%Y-%m-%d")
+    body_text = f"Weekly training pipeline failed:\n\n{error}"
+    config = resolve_email_config()
+    missing = log_email_config_status(config)
+    if missing:
+        log.warning(f"  Failure email not configured, missing: {', '.join(missing)}. Saving notice locally.")
+        save_report_locally(f"weekly_report_failed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt", body_text)
         return
 
-    today = datetime.now().strftime("%Y-%m-%d")
     try:
         msg = MIMEMultipart()
-        msg["From"] = EMAIL_FROM or SMTP_USER
-        msg["To"] = EMAIL_TO
+        msg["From"] = config["report_from"]
+        msg["To"] = config["report_to"]
         msg["Subject"] = f"[FAILED] Quant Weekly Report {today}"
-        msg.attach(MIMEText(f"Weekly training pipeline failed:\n\n{error}", "plain", "utf-8"))
+        msg.attach(MIMEText(body_text, "plain", "utf-8"))
 
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+        with smtplib.SMTP(config["smtp_host"], int(config["smtp_port"])) as server:
             server.starttls()
-            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.login(config["smtp_user"], config["smtp_password"])
             server.send_message(msg)
-    except Exception:
-        pass
+    except Exception as exc:
+        log.error(f"  Failure email sending failed: {exc}")
+        save_report_locally(f"weekly_report_failed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt", body_text)
 
 
 # --- Main ---

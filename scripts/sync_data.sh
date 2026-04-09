@@ -30,6 +30,32 @@ if [ -z "$NAS_HOST" ] || [ -z "$NAS_USER" ]; then
 fi
 
 QLIB_DIR="${QLIB_DATA_DIR:-$DATA_DIR/qlib_data}"
+EXPECTED_TARGET_A_SHARE_DATE="${EXPECTED_TARGET_A_SHARE_DATE:-}"
+
+validate_staged_snapshot() {
+    if [ -z "$EXPECTED_TARGET_A_SHARE_DATE" ]; then
+        return 0
+    fi
+
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Validating staged Qlib snapshot for target A-share date ${EXPECTED_TARGET_A_SHARE_DATE}..."
+    "$PYTHON_BIN" - <<'PY' "$SYNC_TMP" "$EXPECTED_TARGET_A_SHARE_DATE" "$PROJECT_DIR"
+import sys
+from pathlib import Path
+
+qlib_dir = Path(sys.argv[1])
+expected = sys.argv[2]
+project_dir = Path(sys.argv[3])
+sys.path.insert(0, str(project_dir))
+
+from scripts.a_share_readiness import validate_staged_qlib_snapshot
+
+completed, latest = validate_staged_qlib_snapshot(
+    qlib_dir=qlib_dir,
+    expected_target_date=expected,
+)
+print(f"validated staged snapshot: completed_a_share={completed}, latest_a_share={latest}")
+PY
+}
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Syncing Qlib data from ${NAS_USER}@${NAS_HOST}:${NAS_QLIB_PATH}..."
 
@@ -50,15 +76,17 @@ fi
 
 if ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no \
     "${NAS_USER}@${NAS_HOST}" \
-    "cd ${NAS_QLIB_PATH} && tar cf - calendars instruments features" | \
+    "cd ${NAS_QLIB_PATH} && tar cf - calendars instruments features metadata" | \
     tar xf - -C "$SYNC_TMP/"; then
     if [ "$REPAIR_QLIB_METADATA" != "false" ]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Repairing Qlib instruments metadata..."
         "$PYTHON_BIN" "$SCRIPT_DIR/repair_qlib_metadata.py" --qlib-dir "$SYNC_TMP"
     fi
 
+    validate_staged_snapshot
+
     # 同步成功，原子替换各子目录
-    for subdir in calendars instruments features; do
+    for subdir in calendars instruments features metadata; do
         rm -rf "${QLIB_DIR:?}/$subdir"
         mv "$SYNC_TMP/$subdir" "$QLIB_DIR/$subdir"
     done

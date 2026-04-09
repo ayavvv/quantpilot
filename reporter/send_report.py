@@ -168,8 +168,26 @@ def send_email(html_content, subject):
     report_to = os.environ.get("REPORT_TO", "")
     report_from = os.environ.get("REPORT_FROM", smtp_user)
 
-    if not all([smtp_user, smtp_pass, report_to]):
-        print("Email not configured, saving report locally.")
+    missing = [
+        name
+        for name, value in {
+            "SMTP_USER": smtp_user,
+            "SMTP_PASSWORD": smtp_pass,
+            "REPORT_TO": report_to,
+        }.items()
+        if not value
+    ]
+    print(
+        "SMTP config status: "
+        f"host={smtp_host} port={smtp_port} "
+        f"user={'set' if smtp_user else 'missing'} "
+        f"password={'set' if smtp_pass else 'missing'} "
+        f"report_to={'set' if report_to else 'missing'} "
+        f"report_from={'set' if report_from else 'missing'}"
+    )
+
+    if missing:
+        print(f"Email not configured, missing: {', '.join(missing)}. Saving report locally.")
         report_path = REPORT_DIR / f"report_{datetime.now().strftime('%Y%m%d')}.html"
         REPORT_DIR.mkdir(parents=True, exist_ok=True)
         report_path.write_text(html_content, encoding="utf-8")

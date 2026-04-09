@@ -20,6 +20,10 @@ class DataCollectorScheduler:
     """Data collection scheduler."""
 
     A_SHARE_SYNC_STATUS_METADATA = "a_share_sync_status"
+    A_SHARE_SYNC_SUMMARY_METADATA = "a_share_sync_summary"
+    DEFAULT_ALLOWED_A_SHARE_FAILURES = 0
+    TOLERABLE_A_SHARE_GAP_REASONS = frozenset({"empty_data", "target_not_reached"})
+    TOLERABLE_A_SHARE_QUERY_STATUSES = frozenset({"ok", "empty_data"})
 
     def __init__(self):
         """Initialize scheduler."""
@@ -376,10 +380,11 @@ class DataCollectorScheduler:
         except Exception as e:
             logger.error(f"Short sell data collection failed: {e}")
 
-    def sync_a_share_kline(self, code: str, target_end_date: str | None = None):
+    def sync_a_share_kline(self, code: str, target_end_date: str | None = None) -> dict:
         """
         Sync A-share daily K-line using Baostock.
         Writes directly to Qlib bin format (no parquet intermediate).
+        Returns a diagnostic result dict including success and failure reason.
         """
         end = target_end_date or datetime.now().strftime("%Y-%m-%d")
 
@@ -391,25 +396,62 @@ class DataCollectorScheduler:
 
         if max_date is not None:
             if max_date >= end:
-                return  # Already up to date
+                return {
+                    "ok": True,
+                    "reason": "already_up_to_date",
+                    "code": code,
+                    "target_end_date": end,
+                    "latest_date": max_date,
+                }
             start = (datetime.strptime(max_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
         else:
             start = (datetime.strptime(end, "%Y-%m-%d") - timedelta(days=365 * 15)).strftime("%Y-%m-%d")
             logger.info(f"Baostock {code} K_DAY first fetch: {start} ~ {end}")
 
         if start > end:
-            return
+            return {
+                "ok": True,
+                "reason": "already_up_to_date",
+                "code": code,
+                "target_end_date": end,
+                "latest_date": max_date,
+            }
 
         data = self.bs_client.get_history_kline(code, start=start, end=end, ktype="K_DAY")
-        if data:
-            # Write directly to Qlib bin
-            if self.qlib_writer:
-                n = self.qlib_writer.write_stock_records(code, data)
-                if n > 0:
-                    self.db_engine.log_job("success", f"Baostock {code} +{n} days (qlib)", code, "K_DAY")
-            else:
-                self.db_engine.append_kline(pd.DataFrame(data), code, "K_DAY")
-                self.db_engine.log_job("success", f"Baostock {code} +{len(data)} records", code, "K_DAY")
+        query_status = self.bs_client.get_last_history_kline_status() or {}
+        if not data:
+            reason = query_status.get("status") or "empty_data"
+            logger.warning(f"Baostock {code} returned no usable data for target={end}, reason={reason}")
+            return {
+                "ok": False,
+                "reason": reason,
+                "code": code,
+                "target_end_date": end,
+                "latest_date": max_date,
+                "query_status": query_status,
+            }
+
+        # Write directly to Qlib bin
+        if self.qlib_writer:
+            n = self.qlib_writer.write_stock_records(code, data)
+            if n > 0:
+                self.db_engine.log_job("success", f"Baostock {code} +{n} days (qlib)", code, "K_DAY")
+            refreshed_max_date = self.qlib_writer.get_stock_last_date(code)
+        else:
+            self.db_engine.append_kline(pd.DataFrame(data), code, "K_DAY")
+            self.db_engine.log_job("success", f"Baostock {code} +{len(data)} records", code, "K_DAY")
+            refreshed_max_date = self.db_engine.get_kline_max_date(code, "K_DAY")
+
+        ok = bool(refreshed_max_date) and refreshed_max_date >= end
+        return {
+            "ok": ok,
+            "reason": "ok" if ok else "target_not_reached",
+            "code": code,
+            "target_end_date": end,
+            "latest_date": refreshed_max_date,
+            "query_status": query_status,
+            "rows": len(data),
+        }
 
     def _latest_a_share_date(self) -> str | None:
         """Read the latest A-share end date from Qlib instruments metadata."""
@@ -436,15 +478,13 @@ class DataCollectorScheduler:
 
     def _load_a_share_sync_status(self) -> dict | None:
         """Load A-share collection completion metadata."""
-        if self.qlib_writer:
-            status = self.qlib_writer.load_metadata(self.A_SHARE_SYNC_STATUS_METADATA)
-            return status if isinstance(status, dict) else None
-
-        meta_path = settings.data_path / "metadata" / f"{self.A_SHARE_SYNC_STATUS_METADATA}.json"
-        if not meta_path.exists():
+        self._init_qlib_writer()
+        if not self.qlib_writer:
+            logger.warning("Qlib direct writer unavailable; A-share completion metadata is disabled")
             return None
-        data = json.loads(meta_path.read_text())
-        return data if isinstance(data, dict) else None
+
+        status = self.qlib_writer.load_metadata(self.A_SHARE_SYNC_STATUS_METADATA)
+        return status if isinstance(status, dict) else None
 
     def _latest_completed_a_share_date(self) -> str | None:
         """Return the latest fully completed A-share trading date."""
@@ -452,23 +492,62 @@ class DataCollectorScheduler:
         completed = status.get("last_completed_trade_date")
         return completed if isinstance(completed, str) and completed else None
 
+    def _allowed_a_share_failures(self) -> int:
+        raw = os.environ.get("ALLOWED_A_SHARE_FAILURES")
+        if raw is None or raw == "":
+            return self.DEFAULT_ALLOWED_A_SHARE_FAILURES
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            logger.warning("Invalid ALLOWED_A_SHARE_FAILURES=%r, using default=%d", raw, self.DEFAULT_ALLOWED_A_SHARE_FAILURES)
+            return self.DEFAULT_ALLOWED_A_SHARE_FAILURES
+
+    def _is_tolerable_a_share_gap(self, result: dict, target_date: str) -> bool:
+        """Treat non-trading symbols as gaps, not blocking collector failures."""
+        if result.get("ok"):
+            return False
+
+        reason = str(result.get("reason") or "")
+        if reason not in self.TOLERABLE_A_SHARE_GAP_REASONS:
+            return False
+
+        if result.get("error"):
+            return False
+
+        query_status = result.get("query_status") or {}
+        if (query_status.get("error") or ""):
+            return False
+
+        status = str(query_status.get("status") or "")
+        if status and status not in self.TOLERABLE_A_SHARE_QUERY_STATUSES:
+            return False
+
+        latest_date = result.get("latest_date")
+        if latest_date and latest_date >= target_date:
+            return False
+
+        return True
+
+    def _save_a_share_sync_summary(self, summary: dict):
+        """Persist A-share run summary metadata for diagnostics."""
+        self._init_qlib_writer()
+        if not self.qlib_writer:
+            raise RuntimeError("QLIB_DATA_DIR is required to persist A-share summary metadata")
+        self.qlib_writer.save_metadata(self.A_SHARE_SYNC_SUMMARY_METADATA, summary)
+
     def _mark_a_share_sync_completed(self, target_date: str, total_codes: int, started_at: datetime):
         """Persist the latest fully completed A-share collection target date."""
+        self._init_qlib_writer()
+        if not self.qlib_writer:
+            raise RuntimeError("QLIB_DATA_DIR is required to persist A-share completion metadata")
+
         data = {
             "last_completed_trade_date": target_date,
             "completed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "started_at": started_at.strftime("%Y-%m-%d %H:%M:%S"),
             "total_codes": total_codes,
         }
-        if self.qlib_writer:
-            self.qlib_writer.save_metadata(self.A_SHARE_SYNC_STATUS_METADATA, data)
-            return
-
-        meta_dir = settings.data_path / "metadata"
-        meta_dir.mkdir(parents=True, exist_ok=True)
-        meta_path = meta_dir / f"{self.A_SHARE_SYNC_STATUS_METADATA}.json"
-        meta_path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
-        logger.info(f"A-share completion metadata saved: {meta_path}")
+        self.qlib_writer.save_metadata(self.A_SHARE_SYNC_STATUS_METADATA, data)
 
     def sync_ticker(self, code: str):
         """
@@ -578,21 +657,129 @@ class DataCollectorScheduler:
                         f"=== Baostock A-share collection: {len(a_share_codes)} stocks, "
                         f"target={target_a_share_date} ==="
                     )
+                    failed_a_share_runs = []
                     for idx, code in enumerate(a_share_codes, 1):
                         try:
-                            self.sync_a_share_kline(code, target_end_date=target_a_share_date)
+                            result = self.sync_a_share_kline(code, target_end_date=target_a_share_date)
+                            if not result.get("ok"):
+                                failed_a_share_runs.append(result)
                             if idx % 50 == 0:
                                 elapsed = (datetime.now() - job_start_time).total_seconds()
                                 logger.info(
                                     f"A-share progress: {idx}/{len(a_share_codes)} "
                                     f"({idx*100//len(a_share_codes)}%) | "
                                     f"elapsed: {elapsed/60:.1f} min | last_code={code} | "
-                                    f"target={target_a_share_date}"
+                                    f"target={target_a_share_date} | pending_failures={len(failed_a_share_runs)}"
                                 )
                         except Exception as e:
+                            failed_a_share_runs.append(
+                                {
+                                    "ok": False,
+                                    "reason": "exception",
+                                    "code": code,
+                                    "target_end_date": target_a_share_date,
+                                    "error": str(e),
+                                }
+                            )
                             logger.error(f"[{idx}/{len(a_share_codes)}] Baostock {code} failed: {e}")
                             continue
-                    completed_a_share_target = target_a_share_date
+
+                    latest_a_share_date = self._latest_a_share_date()
+                    allowed_failures = self._allowed_a_share_failures()
+                    tolerated_gap_runs = [
+                        item for item in failed_a_share_runs
+                        if self._is_tolerable_a_share_gap(item, target_a_share_date)
+                    ]
+                    blocking_failures = [
+                        item for item in failed_a_share_runs
+                        if item not in tolerated_gap_runs
+                    ]
+                    failure_preview = [
+                        {
+                            "code": item.get("code"),
+                            "reason": item.get("reason"),
+                            "latest_date": item.get("latest_date"),
+                            "error": item.get("error") or (item.get("query_status") or {}).get("error"),
+                        }
+                        for item in failed_a_share_runs[:10]
+                    ]
+                    blocking_failure_preview = [
+                        {
+                            "code": item.get("code"),
+                            "reason": item.get("reason"),
+                            "latest_date": item.get("latest_date"),
+                            "error": item.get("error") or (item.get("query_status") or {}).get("error"),
+                        }
+                        for item in blocking_failures[:10]
+                    ]
+                    tolerated_gap_preview = [
+                        {
+                            "code": item.get("code"),
+                            "reason": item.get("reason"),
+                            "latest_date": item.get("latest_date"),
+                            "error": item.get("error") or (item.get("query_status") or {}).get("error"),
+                        }
+                        for item in tolerated_gap_runs[:10]
+                    ]
+                    summary_status = "complete"
+                    if failed_a_share_runs:
+                        if latest_a_share_date and latest_a_share_date >= target_a_share_date and len(blocking_failures) <= allowed_failures:
+                            summary_status = (
+                                "complete_with_tolerated_failures"
+                                if blocking_failures
+                                else "complete_with_tolerated_gaps"
+                            )
+                            completed_a_share_target = target_a_share_date
+                            logger.warning(
+                                "A-share completion metadata updated: target={} latest={} blocking_failures={} tolerated_gaps={} allowed_failures={} blocking_preview={} gap_preview={}",
+                                target_a_share_date,
+                                latest_a_share_date,
+                                len(blocking_failures),
+                                len(tolerated_gap_runs),
+                                allowed_failures,
+                                ",".join(item["code"] for item in blocking_failure_preview if item.get("code")) or "-",
+                                ",".join(item["code"] for item in tolerated_gap_preview if item.get("code")) or "-",
+                            )
+                        else:
+                            summary_status = "incomplete"
+                            logger.warning(
+                                "A-share completion metadata not updated; target={} latest={} blocking_failures={} tolerated_gaps={} allowed_failures={} blocking_preview={} gap_preview={}",
+                                target_a_share_date,
+                                latest_a_share_date or "N/A",
+                                len(blocking_failures),
+                                len(tolerated_gap_runs),
+                                allowed_failures,
+                                ",".join(item["code"] for item in blocking_failure_preview if item.get("code")) or "-",
+                                ",".join(item["code"] for item in tolerated_gap_preview if item.get("code")) or "-",
+                            )
+                    else:
+                        completed_a_share_target = target_a_share_date
+
+                    self._save_a_share_sync_summary(
+                        {
+                            "status": summary_status,
+                            "target_trade_date": target_a_share_date,
+                            "latest_observed_trade_date": latest_a_share_date,
+                            "started_at": job_start_time.strftime("%Y-%m-%d %H:%M:%S"),
+                            "completed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "total_codes": len(a_share_codes),
+                            "success_count": len(a_share_codes) - len(failed_a_share_runs),
+                            "failed_count": len(failed_a_share_runs),
+                            "blocking_failed_count": len(blocking_failures),
+                            "tolerated_gap_count": len(tolerated_gap_runs),
+                            "allowed_failures": allowed_failures,
+                            "failed_codes_preview": [item["code"] for item in failure_preview if item.get("code")],
+                            "failed_runs_preview": failure_preview,
+                            "blocking_failed_codes_preview": [
+                                item["code"] for item in blocking_failure_preview if item.get("code")
+                            ],
+                            "blocking_failed_runs_preview": blocking_failure_preview,
+                            "tolerated_gap_codes_preview": [
+                                item["code"] for item in tolerated_gap_preview if item.get("code")
+                            ],
+                            "tolerated_gap_runs_preview": tolerated_gap_preview,
+                        }
+                    )
 
             # 3. HK stock collection (Futu)
             if hk_codes and futu_ok:

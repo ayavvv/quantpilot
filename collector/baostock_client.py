@@ -11,11 +11,14 @@ from loguru import logger
 class BaostockClient:
     """A-share data client (powered by baostock, API-compatible with FutuClient)."""
 
+    LOGIN_EXPIRED_MARKERS = ("用户未登录", "未登录")
+
     def __init__(self, rate_limit: float = 0.3, max_retries: int = 3):
         self.rate_limit = rate_limit
         self.max_retries = max_retries
         self._bs = None
         self._logged_in = False
+        self._last_history_kline_status: dict[str, Any] | None = None
 
     def _ensure_login(self):
         if not self._logged_in:
@@ -27,11 +30,37 @@ class BaostockClient:
             self._logged_in = True
             logger.info("baostock: logged in")
 
+    def _reset_login_state(self):
+        self._logged_in = False
+
+    def _is_login_expired_error(self, error_msg: str) -> bool:
+        return any(marker in error_msg for marker in self.LOGIN_EXPIRED_MARKERS)
+
+    def _run_query(self, query_fn, *args, allow_relogin: bool = True, **kwargs):
+        self._ensure_login()
+        rs = query_fn(*args, **kwargs)
+        if rs.error_code == "0":
+            return rs
+
+        error_msg = rs.error_msg or f"error_code={rs.error_code}"
+        if allow_relogin and self._is_login_expired_error(error_msg):
+            logger.warning("baostock session expired, re-authenticating...")
+            self._reset_login_state()
+            self._ensure_login()
+            rs = query_fn(*args, **kwargs)
+            if rs.error_code == "0":
+                return rs
+            error_msg = rs.error_msg or f"error_code={rs.error_code}"
+
+        raise RuntimeError(f"query error: {error_msg}")
+
     def close(self):
         if self._logged_in:
-            self._bs.logout()
-            self._logged_in = False
-            logger.info("baostock: logged out")
+            try:
+                self._bs.logout()
+                logger.info("baostock: logged out")
+            finally:
+                self._reset_login_state()
 
     # --- Stock list -----------------------------------------------------------
 
@@ -40,10 +69,9 @@ class BaostockClient:
         Get all A-share stock codes in SH./SZ. format.
         Only returns currently listed stocks (status=1).
         """
-        self._ensure_login()
         logger.info("baostock: fetching A-share stock list...")
 
-        rs = self._bs.query_stock_basic(code_name="")
+        rs = self._run_query(lambda **kwargs: self._bs.query_stock_basic(**kwargs), code_name="")
         data = []
         while rs.next():
             data.append(rs.get_row_data())
@@ -70,13 +98,14 @@ class BaostockClient:
 
     def get_trade_dates(self, start: str = None, end: str = None) -> List[str]:
         """Return trading dates in ``YYYY-MM-DD`` format within the range."""
-        self._ensure_login()
         start_date = start or "2015-01-01"
         end_date = end or pd.Timestamp.now().strftime("%Y-%m-%d")
 
-        rs = self._bs.query_trade_dates(start_date=start_date, end_date=end_date)
-        if rs.error_code != "0":
-            raise RuntimeError(f"query_trade_dates error: {rs.error_msg}")
+        rs = self._run_query(
+            lambda **kwargs: self._bs.query_trade_dates(**kwargs),
+            start_date=start_date,
+            end_date=end_date,
+        )
 
         field_map = {name: idx for idx, name in enumerate(rs.fields)}
         cal_idx = field_map.get("calendar_date")
@@ -102,6 +131,10 @@ class BaostockClient:
 
     # --- Daily K-line ---------------------------------------------------------
 
+    def get_last_history_kline_status(self) -> dict[str, Any] | None:
+        """Return the latest history K-line query status for diagnostics."""
+        return self._last_history_kline_status
+
     def get_history_kline(
         self,
         code: str,
@@ -119,22 +152,39 @@ class BaostockClient:
             end: End date (YYYY-MM-DD)
             ktype: K-line type (only K_DAY supported)
         """
+        self._last_history_kline_status = None
+
         if ktype != "K_DAY":
             logger.warning(f"baostock only supports daily K-line, skipping {code} {ktype}")
+            self._last_history_kline_status = {
+                "code": code,
+                "start": start,
+                "end": end,
+                "ktype": ktype,
+                "status": "unsupported_ktype",
+            }
             return []
 
-        self._ensure_login()
         bs_code = self._to_bs_code(code)
         if not bs_code:
             logger.warning(f"Cannot convert code: {code}")
+            self._last_history_kline_status = {
+                "code": code,
+                "start": start,
+                "end": end,
+                "ktype": ktype,
+                "status": "invalid_code",
+            }
             return []
 
         start_date = start or "1990-01-01"
         end_date = end or pd.Timestamp.now().strftime("%Y-%m-%d")
+        last_error = None
 
         for attempt in range(self.max_retries):
             try:
-                rs = self._bs.query_history_k_data_plus(
+                rs = self._run_query(
+                    lambda *query_args, **query_kwargs: self._bs.query_history_k_data_plus(*query_args, **query_kwargs),
                     bs_code,
                     "date,code,open,high,low,close,volume,amount,turn,pctChg",
                     start_date=start_date,
@@ -142,8 +192,6 @@ class BaostockClient:
                     frequency="d",
                     adjustflag="2",  # forward-adjusted
                 )
-                if rs.error_code != "0":
-                    raise RuntimeError(f"query error: {rs.error_msg}")
 
                 data = []
                 while rs.next():
@@ -152,17 +200,45 @@ class BaostockClient:
                 time.sleep(self.rate_limit)
 
                 if not data:
+                    self._last_history_kline_status = {
+                        "code": code,
+                        "start": start_date,
+                        "end": end_date,
+                        "ktype": ktype,
+                        "status": "empty_data",
+                        "attempt": attempt + 1,
+                    }
                     return []
 
                 df = pd.DataFrame(data, columns=rs.fields)
-                return self._convert_kline(df, code)
+                converted = self._convert_kline(df, code)
+                self._last_history_kline_status = {
+                    "code": code,
+                    "start": start_date,
+                    "end": end_date,
+                    "ktype": ktype,
+                    "status": "ok",
+                    "attempt": attempt + 1,
+                    "rows": len(converted),
+                }
+                return converted
 
             except Exception as e:
+                last_error = str(e)
                 logger.warning(f"baostock {code} attempt {attempt+1}/{self.max_retries} failed: {e}")
                 if attempt < self.max_retries - 1:
                     time.sleep(self.rate_limit * 2)
                 else:
                     logger.error(f"baostock {code} all retries exhausted")
+                    self._last_history_kline_status = {
+                        "code": code,
+                        "start": start_date,
+                        "end": end_date,
+                        "ktype": ktype,
+                        "status": "query_failed",
+                        "attempt": attempt + 1,
+                        "error": last_error,
+                    }
                     return []
 
     # --- Format conversion ----------------------------------------------------

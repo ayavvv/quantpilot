@@ -154,8 +154,8 @@ docker compose -f docker-compose.mac.yml run --rm trader
 | HOLD_BONUS | 0.05 | 持仓惯性加分 |
 | STOP_LOSS_PCT | -8% | 止损线 |
 | POSITION_RATIO | 95% | 仓位比例 |
-| BUY_SLIPPAGE | +1% | 买入滑点 (确保成交) |
-| SELL_SLIPPAGE | -1% | 卖出滑点 |
+| BUY_SLIPPAGE | +1% | 买入目标滑点；实际下单价仍需做 tick 对齐并约束在当日合法价格区间内 |
+| SELL_SLIPPAGE | -1% | 卖出目标滑点；实际下单价仍需做 tick 对齐并约束在当日合法价格区间内 |
 | FUTU_SIM_ACC_ID | 0 / 指定值 | 显式绑定模拟账户，0 表示取第一个模拟账户 |
 | ALLOW_OFF_HOURS_TRADING | false | OpenD 若报告沪深休市，则默认强制 AUTO DRY RUN |
 | 安全锁 | TrdEnv.SIMULATE | 硬编码 + assert, 禁止实盘 |
@@ -169,6 +169,8 @@ docker compose -f docker-compose.mac.yml run --rm trader
 | 科创板 (688xxx) | ≥ 19.5% | 200 股 |
 
 双重过滤: 信号日涨停 + 买入日涨停, 两者都排除。
+
+执行语义：交易前刷新一次全量持仓；若卖出阶段发生真实下单，则卖后再刷新账户与全量持仓，并按刷新后的实际现金与剩余仓位保守决定后续买入，而不是因为单只卖单失败就全局停止。
 
 ## 仓库结构
 

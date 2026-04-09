@@ -10,8 +10,11 @@
 
 set -euo pipefail
 
+export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_DIR"
 
 # Load .env if exists
 if [ -f "$PROJECT_DIR/.env" ]; then
@@ -58,6 +61,7 @@ if [ -n "$NAS_HOST" ] && [ -n "$NAS_USER" ]; then
     log "  Target A-share trading date: $TARGET_A_SHARE_DATE"
     WAITED=0
     NAS_LAST=""
+    SYNC_TARGET_A_SHARE_DATE="$TARGET_A_SHARE_DATE"
     while [ $WAITED -lt $MAX_WAIT_SECONDS ]; do
         NAS_LAST=$(
             PYTHONPATH="$PYTHONPATH" "$PYTHON_BIN" -m scripts.a_share_readiness nas-completed-date \
@@ -77,6 +81,11 @@ if [ -n "$NAS_HOST" ] && [ -n "$NAS_USER" ]; then
     if [ -z "$NAS_LAST" ] || [ "$NAS_LAST" \< "$TARGET_A_SHARE_DATE" ]; then
         if [ "$ALLOW_STALE_SYNC" = "true" ]; then
             log "  WARNING: NAS A-share data not ready after ${MAX_WAIT_SECONDS}s, proceeding with available data ($NAS_LAST)"
+            if [ -n "$NAS_LAST" ]; then
+                SYNC_TARGET_A_SHARE_DATE="$NAS_LAST"
+            else
+                SYNC_TARGET_A_SHARE_DATE=""
+            fi
         else
             log "  ERROR: NAS A-share data not ready after ${MAX_WAIT_SECONDS}s, aborting to avoid stale/inconsistent sync ($NAS_LAST)"
             exit 1
@@ -87,7 +96,7 @@ fi
 # Step 1: Sync Qlib data from NAS (if NAS_HOST is configured)
 if [ -n "$NAS_HOST" ]; then
     log "Step 1: Syncing Qlib data from NAS..."
-    "$SCRIPT_DIR/sync_data.sh"
+    EXPECTED_TARGET_A_SHARE_DATE="${SYNC_TARGET_A_SHARE_DATE:-}" "$SCRIPT_DIR/sync_data.sh"
     log "  Sync complete"
 else
     log "Step 1: Skipped (NAS_HOST not configured, single-machine mode)"
@@ -95,7 +104,6 @@ fi
 
 # Step 2: Run inference natively (no Docker, avoids Rosetta OOM)
 log "Step 2: Running inference..."
-cd "$PROJECT_DIR"
 source .venv/bin/activate
 QLIB_DATA_DIR="$DATA_DIR/qlib_data" \
 MODEL_DIR="$DATA_DIR/models" \
@@ -105,7 +113,10 @@ log "  Inference complete"
 
 # Step 3: Run reporter via Docker
 log "Step 3: Running reporter..."
-$DOCKER compose -f docker-compose.mac.yml run --rm reporter
+log "  Working directory: $PROJECT_DIR"
+log "  Docker binary: $(command -v "$DOCKER" || true)"
+log "  Reporter env file: $PROJECT_DIR/reporter/.env"
+$DOCKER compose -f "$PROJECT_DIR/docker-compose.mac.yml" run --rm reporter
 log "  Report complete"
 
 log "Daily pipeline finished!"

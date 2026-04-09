@@ -4,6 +4,21 @@ from zoneinfo import ZoneInfo
 from trader import trade_daily
 
 
+class _QuoteCtx:
+    def __init__(self, snapshots_by_code):
+        self.snapshots_by_code = snapshots_by_code
+        self.calls = []
+
+    def get_market_snapshot(self, codes):
+        self.calls.append(list(codes))
+        rows = []
+        for code in codes:
+            row = {"code": code}
+            row.update(self.snapshots_by_code.get(code, {}))
+            rows.append(row)
+        return trade_daily.RET_OK, pd.DataFrame(rows)
+
+
 def test_resolve_dry_run_forces_preview_outside_session(monkeypatch):
     monkeypatch.setattr(trade_daily, "ALLOW_OFF_HOURS_TRADING", False)
     dry_run, reason = trade_daily.resolve_dry_run_mode(
@@ -95,7 +110,155 @@ def test_get_positions_binds_account_and_refreshes_cache():
     ]
 
 
-def test_run_trade_skips_sell_when_live_position_is_missing(monkeypatch):
+def test_build_order_price_sell_clamps_to_limit_down():
+    snapshot = {
+        "last_price": 2.92,
+        "lower_limit_price": 2.9,
+        "upper_limit_price": 3.54,
+    }
+
+    price = trade_daily.build_order_price(
+        "SH.600381",
+        trade_daily.TrdSide.SELL,
+        snapshot,
+        trade_daily.SELL_PRICE_SLIPPAGE,
+    )
+
+    assert price == 2.90
+
+
+def test_build_order_price_buy_clamps_to_limit_up():
+    snapshot = {
+        "last_price": 9.95,
+        "lower_limit_price": 9.0,
+        "upper_limit_price": 10.0,
+    }
+
+    price = trade_daily.build_order_price(
+        "SH.600000",
+        trade_daily.TrdSide.BUY,
+        snapshot,
+        trade_daily.BUY_PRICE_SLIPPAGE,
+    )
+
+    assert price == 10.00
+
+
+def test_build_order_price_derives_limits_from_prev_close_when_snapshot_omits_them():
+    snapshot = {
+        "last_price": 2.77,
+        "prev_close_price": 2.77,
+        "low_price": 2.63,
+        "high_price": 2.75,
+    }
+
+    price = trade_daily.build_order_price(
+        "SH.600381",
+        trade_daily.TrdSide.SELL,
+        snapshot,
+        trade_daily.SELL_PRICE_SLIPPAGE,
+    )
+
+    assert price == 2.74
+
+
+def test_run_trade_continues_buy_after_sell_failure(monkeypatch):
+    class FakeTradeContext:
+        def __init__(self):
+            self.order_calls = []
+            self.position_calls = []
+            self._position_query_count = 0
+
+        def accinfo_query(self, **kwargs):
+            return trade_daily.RET_OK, pd.DataFrame(
+                [{"total_assets": 100000, "cash": 50000, "market_val": 50000}]
+            )
+
+        def position_list_query(self, **kwargs):
+            self.position_calls.append(kwargs)
+            self._position_query_count += 1
+            if self._position_query_count == 1:
+                return trade_daily.RET_OK, pd.DataFrame(
+                    [{
+                        "code": "SH.600381",
+                        "qty": 1000,
+                        "can_sell_qty": 1000,
+                        "market_val": 3000,
+                        "cost_price": 3.0,
+                        "pl_ratio": 0,
+                    }]
+                )
+            return trade_daily.RET_OK, pd.DataFrame(
+                [{
+                    "code": "SH.600381",
+                    "qty": 1000,
+                    "can_sell_qty": 1000,
+                    "market_val": 3000,
+                    "cost_price": 3.0,
+                    "pl_ratio": 0,
+                }]
+            )
+
+        def place_order(self, **kwargs):
+            self.order_calls.append(kwargs)
+            if kwargs["trd_side"] == trade_daily.TrdSide.SELL:
+                return -1, "price not in the limit move"
+            return trade_daily.RET_OK, "ok"
+
+    monkeypatch.setattr(trade_daily, "TOP_N", 2)
+    monkeypatch.setattr(trade_daily, "HOLD_BONUS", 0.0)
+
+    quote_ctx = _QuoteCtx(
+        {
+            "SH.600381": {
+                "last_price": 2.92,
+                "change_rate": 0.0,
+                "lower_limit_price": 2.90,
+                "upper_limit_price": 3.54,
+                "lot_size": 100,
+            },
+            "SH.600000": {
+                "last_price": 10.0,
+                "change_rate": 0.0,
+                "lower_limit_price": 9.0,
+                "upper_limit_price": 11.0,
+                "lot_size": 100,
+            },
+            "SH.600010": {
+                "last_price": 5.0,
+                "change_rate": 0.0,
+                "lower_limit_price": 4.5,
+                "upper_limit_price": 5.5,
+                "lot_size": 100,
+            },
+        }
+    )
+
+    signals_df = pd.DataFrame(
+        [
+            {"code": "SH.600000", "score": 1.0},
+            {"code": "SH.600010", "score": 0.9},
+        ]
+    )
+
+    trd_ctx = FakeTradeContext()
+    trade_daily.run_trade(
+        trd_ctx,
+        quote_ctx=quote_ctx,
+        acc_id=3523785,
+        signals_df=signals_df,
+        signal_day_changes={},
+        dry_run=False,
+    )
+
+    assert any(call["trd_side"] == trade_daily.TrdSide.SELL for call in trd_ctx.order_calls)
+    assert any(call["trd_side"] == trade_daily.TrdSide.BUY for call in trd_ctx.order_calls)
+    assert all("adjust_limit" in call for call in trd_ctx.order_calls)
+    assert any(call["adjust_limit"] == 0.01 for call in trd_ctx.order_calls if call["trd_side"] == trade_daily.TrdSide.SELL)
+    assert any(call["adjust_limit"] == -0.01 for call in trd_ctx.order_calls if call["trd_side"] == trade_daily.TrdSide.BUY)
+
+
+def test_run_trade_skips_live_order_when_price_limits_missing(monkeypatch):
     class FakeTradeContext:
         def __init__(self):
             self.order_calls = []
@@ -103,31 +266,20 @@ def test_run_trade_skips_sell_when_live_position_is_missing(monkeypatch):
 
         def accinfo_query(self, **kwargs):
             return trade_daily.RET_OK, pd.DataFrame(
-                [
-                    {
-                        "total_assets": 100000,
-                        "cash": 50000,
-                        "market_val": 0,
-                    }
-                ]
+                [{"total_assets": 100000, "cash": 50000, "market_val": 50000}]
             )
 
         def position_list_query(self, **kwargs):
             self.position_calls.append(kwargs)
-            code = kwargs.get("code", "")
-            if code:
-                return trade_daily.RET_OK, pd.DataFrame()
             return trade_daily.RET_OK, pd.DataFrame(
-                [
-                    {
-                        "code": "SH.688066",
-                        "qty": 1000,
-                        "can_sell_qty": 1000,
-                        "market_val": 20000,
-                        "cost_price": 20,
-                        "pl_ratio": 0,
-                    }
-                ]
+                [{
+                    "code": "SH.600381",
+                    "qty": 1000,
+                    "can_sell_qty": 1000,
+                    "market_val": 3000,
+                    "cost_price": 3.0,
+                    "pl_ratio": 0,
+                }]
             )
 
         def place_order(self, **kwargs):
@@ -136,98 +288,92 @@ def test_run_trade_skips_sell_when_live_position_is_missing(monkeypatch):
 
     monkeypatch.setattr(trade_daily, "TOP_N", 1)
     monkeypatch.setattr(trade_daily, "HOLD_BONUS", 0.0)
-    monkeypatch.setattr(
-        trade_daily,
-        "get_latest_prices",
-        lambda quote_ctx, codes: (
-            {"SH.688066": 20.0, "SH.600000": 10.0},
-            {"SH.688066": 0.0, "SH.600000": 0.0},
-        ),
+
+    quote_ctx = _QuoteCtx(
+        {
+            "SH.600381": {"last_price": 2.92, "change_rate": 0.0, "lot_size": 100},
+            "SH.600000": {"last_price": 10.0, "change_rate": 0.0, "lot_size": 100},
+        }
     )
 
-    signals_df = pd.DataFrame(
-        [
-            {"code": "SH.600000", "score": 1.0},
-            {"code": "SH.688066", "score": 0.5},
-        ]
-    )
+    signals_df = pd.DataFrame([{"code": "SH.600000", "score": 1.0}])
 
     trd_ctx = FakeTradeContext()
     trade_daily.run_trade(
         trd_ctx,
-        quote_ctx=None,
+        quote_ctx=quote_ctx,
         acc_id=3523785,
         signals_df=signals_df,
         signal_day_changes={},
         dry_run=False,
     )
 
-    assert len(trd_ctx.order_calls) == 1
-    assert trd_ctx.order_calls[0]["trd_side"] == trade_daily.TrdSide.BUY
-    assert trd_ctx.order_calls[0]["code"] == "SH.600000"
-    assert trd_ctx.order_calls[0]["acc_id"] == 3523785
+    assert trd_ctx.order_calls == []
 
 
-def test_run_trade_removes_stale_position_before_hold_calculation(monkeypatch):
+def test_run_trade_uses_bounded_position_refreshes(monkeypatch):
     class FakeTradeContext:
         def __init__(self):
             self.order_calls = []
+            self.position_calls = []
 
         def accinfo_query(self, **kwargs):
             return trade_daily.RET_OK, pd.DataFrame(
-                [
-                    {
-                        "total_assets": 100000,
-                        "cash": 50000,
-                        "market_val": 0,
-                    }
-                ]
+                [{"total_assets": 100000, "cash": 50000, "market_val": 50000}]
             )
 
         def position_list_query(self, **kwargs):
-            code = kwargs.get("code", "")
-            if code:
-                return trade_daily.RET_OK, pd.DataFrame()
-            return trade_daily.RET_OK, pd.DataFrame(
-                [
-                    {
-                        "code": "SH.688066",
+            self.position_calls.append(kwargs)
+            if len(self.position_calls) == 1:
+                return trade_daily.RET_OK, pd.DataFrame(
+                    [{
+                        "code": "SH.600381",
                         "qty": 1000,
                         "can_sell_qty": 1000,
-                        "market_val": 20000,
-                        "cost_price": 20,
+                        "market_val": 3000,
+                        "cost_price": 3.0,
                         "pl_ratio": 0,
-                    }
-                ]
-            )
+                    }]
+                )
+            return trade_daily.RET_OK, pd.DataFrame()
 
         def place_order(self, **kwargs):
             self.order_calls.append(kwargs)
             return trade_daily.RET_OK, "ok"
 
     monkeypatch.setattr(trade_daily, "TOP_N", 1)
-    monkeypatch.setattr(trade_daily, "HOLD_BONUS", 0.05)
-    monkeypatch.setattr(
-        trade_daily,
-        "get_latest_prices",
-        lambda quote_ctx, codes: (
-            {"SH.688066": 20.0},
-            {"SH.688066": 0.0},
-        ),
+    monkeypatch.setattr(trade_daily, "HOLD_BONUS", 0.0)
+
+    quote_ctx = _QuoteCtx(
+        {
+            "SH.600381": {
+                "last_price": 2.92,
+                "change_rate": 0.0,
+                "lower_limit_price": 2.90,
+                "upper_limit_price": 3.54,
+                "lot_size": 100,
+            },
+            "SH.600000": {
+                "last_price": 10.0,
+                "change_rate": 0.0,
+                "lower_limit_price": 9.0,
+                "upper_limit_price": 11.0,
+                "lot_size": 100,
+            },
+        }
     )
 
-    signals_df = pd.DataFrame([{"code": "SH.688066", "score": 1.0}])
+    signals_df = pd.DataFrame([{"code": "SH.600000", "score": 1.0}])
 
     trd_ctx = FakeTradeContext()
     trade_daily.run_trade(
         trd_ctx,
-        quote_ctx=None,
+        quote_ctx=quote_ctx,
         acc_id=3523785,
         signals_df=signals_df,
         signal_day_changes={},
         dry_run=False,
     )
 
-    assert len(trd_ctx.order_calls) == 1
-    assert trd_ctx.order_calls[0]["trd_side"] == trade_daily.TrdSide.BUY
-    assert trd_ctx.order_calls[0]["code"] == "SH.688066"
+    assert len(trd_ctx.position_calls) == 2
+    assert all(call["code"] == "" for call in trd_ctx.position_calls)

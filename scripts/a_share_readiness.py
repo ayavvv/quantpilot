@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import shlex
 import subprocess
 import sys
 from datetime import datetime
+from pathlib import Path
 
 
 def _run_ssh_command(
@@ -166,6 +168,54 @@ finally:
 
 def is_a_share_ready(latest_date: str, target_date: str) -> bool:
     return bool(latest_date) and latest_date >= target_date
+
+
+def latest_a_share_date_from_instruments(instruments_path: str | Path) -> str:
+    latest = ""
+    for line in Path(instruments_path).read_text().splitlines():
+        parts = line.strip().split("\t")
+        if len(parts) < 3:
+            continue
+        code, _, end_date = parts[:3]
+        if code.startswith(("SH.", "SZ.")) and end_date > latest:
+            latest = end_date
+    return latest
+
+
+def latest_completed_a_share_date_from_status(status_path: str | Path) -> str:
+    path = Path(status_path)
+    if not path.exists():
+        return ""
+    data = json.loads(path.read_text())
+    completed = data.get("last_completed_trade_date", "")
+    return completed if isinstance(completed, str) else ""
+
+
+def validate_staged_qlib_snapshot(
+    *,
+    qlib_dir: str | Path,
+    expected_target_date: str,
+) -> tuple[str, str]:
+    qlib_path = Path(qlib_dir)
+    completed_date = latest_completed_a_share_date_from_status(
+        qlib_path / "metadata" / "a_share_sync_status.json"
+    )
+    if completed_date != expected_target_date:
+        raise RuntimeError(
+            "Staged NAS completion metadata mismatch: "
+            f"completed_a_share={completed_date or 'N/A'}, expected={expected_target_date}"
+        )
+
+    latest_instruments_date = latest_a_share_date_from_instruments(
+        qlib_path / "instruments" / "all.txt"
+    )
+    if latest_instruments_date != expected_target_date:
+        raise RuntimeError(
+            "Staged NAS instruments mismatch: "
+            f"latest_a_share={latest_instruments_date or 'N/A'}, expected={expected_target_date}"
+        )
+
+    return completed_date, latest_instruments_date
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
