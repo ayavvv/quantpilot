@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import pickle
 import re
 import shlex
 import subprocess
@@ -191,6 +192,31 @@ def latest_completed_a_share_date_from_status(status_path: str | Path) -> str:
     return completed if isinstance(completed, str) else ""
 
 
+def latest_signal_date_from_prediction(pred_path: str | Path) -> str:
+    path = Path(pred_path)
+    if not path.exists():
+        return ""
+
+    with path.open("rb") as handle:
+        pred = pickle.load(handle)
+
+    if not hasattr(pred, "index"):
+        return ""
+
+    try:
+        dates = sorted(pred.index.get_level_values("datetime").unique())
+    except (KeyError, AttributeError, TypeError, ValueError):
+        return ""
+
+    if not dates:
+        return ""
+
+    latest = dates[-1]
+    if hasattr(latest, "strftime"):
+        return latest.strftime("%Y-%m-%d")
+    return str(latest)
+
+
 def validate_staged_qlib_snapshot(
     *,
     qlib_dir: str | Path,
@@ -248,6 +274,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         default=31,
     )
 
+    signal_parser = subparsers.add_parser("pred-latest-signal-date")
+    signal_parser.add_argument("--pred-path", required=True)
+
     return parser.parse_args(argv)
 
 
@@ -287,6 +316,10 @@ def main(argv: list[str] | None = None) -> int:
                 lookback_days=args.lookback_days,
             )
         )
+        return 0
+
+    if args.command == "pred-latest-signal-date":
+        print(latest_signal_date_from_prediction(args.pred_path))
         return 0
 
     raise AssertionError(f"Unhandled command: {args.command}")

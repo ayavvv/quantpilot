@@ -32,8 +32,11 @@ DOCKER="${DOCKER:-docker}"
 MAX_WAIT_SECONDS="${MAX_WAIT_SECONDS:-7200}"
 WAIT_INTERVAL_SECONDS="${WAIT_INTERVAL_SECONDS:-60}"
 ALLOW_STALE_SYNC="${ALLOW_STALE_SYNC:-false}"
+AUTO_RETRY_ON_NAS_READY="${AUTO_RETRY_ON_NAS_READY:-true}"
+AUTO_RETRY_LOG_PATH="${AUTO_RETRY_LOG_PATH:-$PROJECT_DIR/logs/daily_retry.log}"
 NAS_COLLECTOR_CONTAINER="${NAS_COLLECTOR_CONTAINER:-quantpilot-collector}"
 TARGET_DATE_LOOKBACK_DAYS="${TARGET_DATE_LOOKBACK_DAYS:-31}"
+TARGET_A_SHARE_DATE_OVERRIDE="${TARGET_A_SHARE_DATE_OVERRIDE:-}"
 PYTHON_BIN="${PYTHON_BIN:-$PROJECT_DIR/.venv/bin/python}"
 PYTHONPATH="${PROJECT_DIR}${PYTHONPATH:+:$PYTHONPATH}"
 
@@ -41,19 +44,40 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
 }
 
+spawn_ready_retry() {
+    local target_date="$1"
+    if [ "$AUTO_RETRY_ON_NAS_READY" != "true" ] || [ -z "$target_date" ]; then
+        return 0
+    fi
+
+    if [ ! -x "$SCRIPT_DIR/run_daily_when_ready.sh" ]; then
+        log "  WARNING: retry watcher script missing, skip auto retry"
+        return 0
+    fi
+
+    mkdir -p "$(dirname "$AUTO_RETRY_LOG_PATH")"
+    nohup "$SCRIPT_DIR/run_daily_when_ready.sh" "$target_date" >> "$AUTO_RETRY_LOG_PATH" 2>&1 </dev/null &
+    log "  Auto retry watcher started for target=$target_date (pid=$!)"
+}
+
 # Step 0: Wait for NAS collector to finish today's data
 if [ -n "$NAS_HOST" ] && [ -n "$NAS_USER" ]; then
     log "Step 0: Waiting for NAS data to be ready..."
-    TODAY=$(date +%Y-%m-%d)
-    TARGET_A_SHARE_DATE=$(
-        PYTHONPATH="$PYTHONPATH" "$PYTHON_BIN" -m scripts.a_share_readiness nas-target-date \
-            --nas-host "$NAS_HOST" \
-            --nas-user "$NAS_USER" \
-            --ssh-key "$SSH_KEY" \
-            --today "$TODAY" \
-            --collector-container "$NAS_COLLECTOR_CONTAINER" \
-            --lookback-days "$TARGET_DATE_LOOKBACK_DAYS"
-    )
+    if [ -n "$TARGET_A_SHARE_DATE_OVERRIDE" ]; then
+        TARGET_A_SHARE_DATE="$TARGET_A_SHARE_DATE_OVERRIDE"
+        log "  Target A-share trading date override: $TARGET_A_SHARE_DATE"
+    else
+        TODAY=$(date +%Y-%m-%d)
+        TARGET_A_SHARE_DATE=$(
+            PYTHONPATH="$PYTHONPATH" "$PYTHON_BIN" -m scripts.a_share_readiness nas-target-date \
+                --nas-host "$NAS_HOST" \
+                --nas-user "$NAS_USER" \
+                --ssh-key "$SSH_KEY" \
+                --today "$TODAY" \
+                --collector-container "$NAS_COLLECTOR_CONTAINER" \
+                --lookback-days "$TARGET_DATE_LOOKBACK_DAYS"
+        )
+    fi
     if [ -z "$TARGET_A_SHARE_DATE" ]; then
         log "  ERROR: failed to resolve target A-share trading date"
         exit 1
@@ -87,6 +111,7 @@ if [ -n "$NAS_HOST" ] && [ -n "$NAS_USER" ]; then
                 SYNC_TARGET_A_SHARE_DATE=""
             fi
         else
+            spawn_ready_retry "$TARGET_A_SHARE_DATE"
             log "  ERROR: NAS A-share data not ready after ${MAX_WAIT_SECONDS}s, aborting to avoid stale/inconsistent sync ($NAS_LAST)"
             exit 1
         fi

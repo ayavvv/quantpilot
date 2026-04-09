@@ -1,3 +1,8 @@
+import pickle
+from pathlib import Path
+
+import pandas as pd
+
 from scripts import a_share_readiness
 
 
@@ -151,3 +156,26 @@ def test_validate_staged_qlib_snapshot_rejects_mismatched_instruments(tmp_path):
         assert "latest_a_share=2026-03-29" in str(exc)
     else:
         raise AssertionError("expected RuntimeError")
+
+
+def test_latest_signal_date_from_prediction_reads_latest_datetime(tmp_path):
+    pred_path = tmp_path / "pred.pkl"
+    index = pd.MultiIndex.from_tuples(
+        [
+            (pd.Timestamp("2026-04-08"), "SH.600000"),
+            (pd.Timestamp("2026-04-09"), "SH.600000"),
+        ],
+        names=["datetime", "instrument"],
+    )
+    series = pd.Series([0.1, 0.2], index=index)
+    with pred_path.open("wb") as handle:
+        pickle.dump(series, handle)
+
+    latest = a_share_readiness.latest_signal_date_from_prediction(pred_path)
+
+    assert latest == "2026-04-09"
+
+
+def test_latest_signal_date_from_prediction_handles_missing_file(tmp_path):
+    latest = a_share_readiness.latest_signal_date_from_prediction(tmp_path / "missing.pkl")
+    assert latest == ""

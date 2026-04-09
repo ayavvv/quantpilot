@@ -34,7 +34,7 @@
 │   ┌──────────────────┐    ┌──────────────┐                         │
 │   │ Collector        │    │ Observer     │                         │
 │   │ (APScheduler)    │    │ (Streamlit)  │                         │
-│   │ 16:30 / 07:00    │    │ :8501        │                         │
+│   │ 18:00 / 07:00    │    │ :8501        │                         │
 │   └────────┬─────────┘    └──────────────┘                         │
 │            ▼                                                       │
 │   /volume1/docker/quantpilot/                                      │
@@ -88,9 +88,10 @@ qlib_data/
 14:50      run_trade.sh      读信号 → 绑定模拟账户 → 复核持仓 → 先卖后买
                              若 OpenD 返回沪深休市，则强制 AUTO DRY RUN
 15:00      A 股收盘          —
-16:30      Collector         A 股日 K 线采集 (baostock, 5000+ 只)
+18:00      Collector         A 股日 K 线采集 (baostock, 5000+ 只)
                              HK 股采集 (Futu, 含基本面/做空)
 19:00      run_daily.sh      等待 NAS 数据 → 同步 Qlib → 触发 Inference + Reporter
+                             若等待超时，则挂起 watcher，待 NAS ready 后自动补跑一次
            Inference         验证 Qlib 数据 → LightGBM 预测 → 输出 pred_a.pkl
            Reporter          生成 HTML 日报 → 邮件/本地保存
 ```
@@ -118,7 +119,7 @@ docker compose --profile collector --profile observer up -d
 |------|----------|------|------|
 | host crontab | 宿主机 | 常驻 | 直接调用仓库脚本 |
 | run_trade.sh | 宿主机 + `.venv` | 14:50 工作日 | 富途模拟盘交易，绑定 `FUTU_SIM_ACC_ID`，默认在休市时自动预演 |
-| run_daily.sh | 宿主机 + `.venv` | 19:00 工作日 | 等待 NAS 数据、同步、推理，然后调用 Reporter |
+| run_daily.sh | 宿主机 + `.venv` | 19:00 工作日 | 等待 NAS 数据、同步、推理；若 NAS 晚到则自动补跑一次 |
 | run_weekly_train.sh | 宿主机 + `.venv` | 周六 10:00 | 周训练 + 回测 |
 | reporter | Docker `run --rm` | 按需 | `run_daily.sh` 第 3 步调用 |
 | trader | Docker `run --rm` | 手动 | 调试或隔离执行，非生产主路径；继承 `.env` 中的 OpenD / RSA / 模拟账户配置 |
