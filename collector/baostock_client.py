@@ -217,9 +217,10 @@ class BaostockClient:
                     "start": start_date,
                     "end": end_date,
                     "ktype": ktype,
-                    "status": "ok",
+                    "status": "ok" if converted else "converted_empty",
                     "attempt": attempt + 1,
                     "rows": len(converted),
+                    "raw_rows": len(df),
                 }
                 return converted
 

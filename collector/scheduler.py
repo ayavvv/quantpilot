@@ -22,8 +22,10 @@ class DataCollectorScheduler:
     A_SHARE_SYNC_STATUS_METADATA = "a_share_sync_status"
     A_SHARE_SYNC_SUMMARY_METADATA = "a_share_sync_summary"
     DEFAULT_ALLOWED_A_SHARE_FAILURES = 0
-    TOLERABLE_A_SHARE_GAP_REASONS = frozenset({"empty_data", "target_not_reached"})
-    TOLERABLE_A_SHARE_QUERY_STATUSES = frozenset({"ok", "empty_data"})
+    DEFAULT_MIN_A_SHARE_TARGET_HIT_RATIO = 0.995
+    DEFAULT_MAX_NON_BLOCKING_A_SHARE_GAPS = 20
+    TOLERABLE_A_SHARE_GAP_REASONS = frozenset({"empty_data", "target_not_reached", "converted_empty"})
+    TOLERABLE_A_SHARE_QUERY_STATUSES = frozenset({"ok", "empty_data", "converted_empty"})
 
     def __init__(self):
         """Initialize scheduler."""
@@ -420,7 +422,8 @@ class DataCollectorScheduler:
         data = self.bs_client.get_history_kline(code, start=start, end=end, ktype="K_DAY")
         query_status = self.bs_client.get_last_history_kline_status() or {}
         if not data:
-            reason = query_status.get("status") or "empty_data"
+            raw_status = str(query_status.get("status") or "")
+            reason = "empty_data" if raw_status in {"", "ok"} else raw_status
             logger.warning(f"Baostock {code} returned no usable data for target={end}, reason={reason}")
             return {
                 "ok": False,
@@ -502,6 +505,35 @@ class DataCollectorScheduler:
             logger.warning("Invalid ALLOWED_A_SHARE_FAILURES=%r, using default=%d", raw, self.DEFAULT_ALLOWED_A_SHARE_FAILURES)
             return self.DEFAULT_ALLOWED_A_SHARE_FAILURES
 
+    def _min_a_share_target_hit_ratio(self) -> float:
+        raw = os.environ.get("A_SHARE_MIN_TARGET_HIT_RATIO")
+        if raw is None or raw == "":
+            return self.DEFAULT_MIN_A_SHARE_TARGET_HIT_RATIO
+        try:
+            value = float(raw)
+        except ValueError:
+            logger.warning(
+                "Invalid A_SHARE_MIN_TARGET_HIT_RATIO=%r, using default=%s",
+                raw,
+                self.DEFAULT_MIN_A_SHARE_TARGET_HIT_RATIO,
+            )
+            return self.DEFAULT_MIN_A_SHARE_TARGET_HIT_RATIO
+        return min(max(value, 0.0), 1.0)
+
+    def _max_non_blocking_a_share_gaps(self) -> int:
+        raw = os.environ.get("A_SHARE_MAX_NON_BLOCKING_GAPS")
+        if raw is None or raw == "":
+            return self.DEFAULT_MAX_NON_BLOCKING_A_SHARE_GAPS
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            logger.warning(
+                "Invalid A_SHARE_MAX_NON_BLOCKING_GAPS=%r, using default=%d",
+                raw,
+                self.DEFAULT_MAX_NON_BLOCKING_A_SHARE_GAPS,
+            )
+            return self.DEFAULT_MAX_NON_BLOCKING_A_SHARE_GAPS
+
     def _is_tolerable_a_share_gap(self, result: dict, target_date: str) -> bool:
         """Treat non-trading symbols as gaps, not blocking collector failures."""
         if result.get("ok"):
@@ -527,6 +559,113 @@ class DataCollectorScheduler:
             return False
 
         return True
+
+    def _a_share_target_hit_ratio(self, total_codes: int, failed_a_share_runs: list[dict]) -> float:
+        if total_codes <= 0:
+            return 0.0
+        target_hit_count = max(total_codes - len(failed_a_share_runs), 0)
+        return target_hit_count / total_codes
+
+    def _is_a_share_market_ready(
+        self,
+        *,
+        total_codes: int,
+        failed_a_share_runs: list[dict],
+        latest_a_share_date: str | None,
+        target_date: str,
+        non_blocking_gap_count: int,
+    ) -> bool:
+        """Determine whether the market-level A-share dataset is ready for downstream nightly jobs."""
+        if not latest_a_share_date or latest_a_share_date < target_date:
+            return False
+
+        target_hit_ratio = self._a_share_target_hit_ratio(total_codes, failed_a_share_runs)
+        return (
+            target_hit_ratio >= self._min_a_share_target_hit_ratio()
+            or non_blocking_gap_count <= self._max_non_blocking_a_share_gaps()
+        )
+
+    def _evaluate_a_share_sync_completion(
+        self,
+        *,
+        total_codes: int,
+        failed_a_share_runs: list[dict],
+        latest_a_share_date: str | None,
+        target_a_share_date: str,
+        allowed_failures: int,
+    ) -> dict:
+        """Classify A-share gaps and decide whether completion metadata can advance."""
+        failure_preview = [
+            {
+                "code": item.get("code"),
+                "reason": item.get("reason"),
+                "latest_date": item.get("latest_date"),
+                "error": item.get("error") or (item.get("query_status") or {}).get("error"),
+            }
+            for item in failed_a_share_runs[:10]
+        ]
+        non_blocking_gap_runs = [
+            item for item in failed_a_share_runs
+            if self._is_tolerable_a_share_gap(item, target_a_share_date)
+        ]
+        blocking_failures = [
+            item for item in failed_a_share_runs
+            if item not in non_blocking_gap_runs
+        ]
+        blocking_failure_preview = [
+            {
+                "code": item.get("code"),
+                "reason": item.get("reason"),
+                "latest_date": item.get("latest_date"),
+                "error": item.get("error") or (item.get("query_status") or {}).get("error"),
+            }
+            for item in blocking_failures[:10]
+        ]
+        non_blocking_gap_preview = [
+            {
+                "code": item.get("code"),
+                "reason": item.get("reason"),
+                "latest_date": item.get("latest_date"),
+                "error": item.get("error") or (item.get("query_status") or {}).get("error"),
+            }
+            for item in non_blocking_gap_runs[:10]
+        ]
+        target_hit_ratio = self._a_share_target_hit_ratio(total_codes, failed_a_share_runs)
+        market_ready = self._is_a_share_market_ready(
+            total_codes=total_codes,
+            failed_a_share_runs=failed_a_share_runs,
+            latest_a_share_date=latest_a_share_date,
+            target_date=target_a_share_date,
+            non_blocking_gap_count=len(non_blocking_gap_runs),
+        )
+        completed_a_share_target = None
+        summary_status = "complete"
+        if failed_a_share_runs:
+            if market_ready and len(blocking_failures) <= allowed_failures:
+                completed_a_share_target = target_a_share_date
+                if blocking_failures:
+                    summary_status = "complete_with_tolerated_failures"
+                elif non_blocking_gap_runs:
+                    summary_status = "complete_with_non_blocking_gaps"
+            else:
+                summary_status = "incomplete"
+        else:
+            completed_a_share_target = target_a_share_date
+
+        return {
+            "status": summary_status,
+            "completed_a_share_target": completed_a_share_target,
+            "target_hit_ratio": target_hit_ratio,
+            "target_hit_count": max(total_codes - len(failed_a_share_runs), 0),
+            "min_target_hit_ratio": self._min_a_share_target_hit_ratio(),
+            "max_non_blocking_gap_count": self._max_non_blocking_a_share_gaps(),
+            "market_ready": market_ready,
+            "failure_preview": failure_preview,
+            "blocking_failures": blocking_failures,
+            "blocking_failure_preview": blocking_failure_preview,
+            "non_blocking_gap_runs": non_blocking_gap_runs,
+            "non_blocking_gap_preview": non_blocking_gap_preview,
+        }
 
     def _save_a_share_sync_summary(self, summary: dict):
         """Persist A-share run summary metadata for diagnostics."""
@@ -686,74 +825,47 @@ class DataCollectorScheduler:
 
                     latest_a_share_date = self._latest_a_share_date()
                     allowed_failures = self._allowed_a_share_failures()
-                    tolerated_gap_runs = [
-                        item for item in failed_a_share_runs
-                        if self._is_tolerable_a_share_gap(item, target_a_share_date)
-                    ]
-                    blocking_failures = [
-                        item for item in failed_a_share_runs
-                        if item not in tolerated_gap_runs
-                    ]
-                    failure_preview = [
-                        {
-                            "code": item.get("code"),
-                            "reason": item.get("reason"),
-                            "latest_date": item.get("latest_date"),
-                            "error": item.get("error") or (item.get("query_status") or {}).get("error"),
-                        }
-                        for item in failed_a_share_runs[:10]
-                    ]
-                    blocking_failure_preview = [
-                        {
-                            "code": item.get("code"),
-                            "reason": item.get("reason"),
-                            "latest_date": item.get("latest_date"),
-                            "error": item.get("error") or (item.get("query_status") or {}).get("error"),
-                        }
-                        for item in blocking_failures[:10]
-                    ]
-                    tolerated_gap_preview = [
-                        {
-                            "code": item.get("code"),
-                            "reason": item.get("reason"),
-                            "latest_date": item.get("latest_date"),
-                            "error": item.get("error") or (item.get("query_status") or {}).get("error"),
-                        }
-                        for item in tolerated_gap_runs[:10]
-                    ]
-                    summary_status = "complete"
-                    if failed_a_share_runs:
-                        if latest_a_share_date and latest_a_share_date >= target_a_share_date and len(blocking_failures) <= allowed_failures:
-                            summary_status = (
-                                "complete_with_tolerated_failures"
-                                if blocking_failures
-                                else "complete_with_tolerated_gaps"
-                            )
-                            completed_a_share_target = target_a_share_date
-                            logger.warning(
-                                "A-share completion metadata updated: target={} latest={} blocking_failures={} tolerated_gaps={} allowed_failures={} blocking_preview={} gap_preview={}",
-                                target_a_share_date,
-                                latest_a_share_date,
-                                len(blocking_failures),
-                                len(tolerated_gap_runs),
-                                allowed_failures,
-                                ",".join(item["code"] for item in blocking_failure_preview if item.get("code")) or "-",
-                                ",".join(item["code"] for item in tolerated_gap_preview if item.get("code")) or "-",
-                            )
-                        else:
-                            summary_status = "incomplete"
-                            logger.warning(
-                                "A-share completion metadata not updated; target={} latest={} blocking_failures={} tolerated_gaps={} allowed_failures={} blocking_preview={} gap_preview={}",
-                                target_a_share_date,
-                                latest_a_share_date or "N/A",
-                                len(blocking_failures),
-                                len(tolerated_gap_runs),
-                                allowed_failures,
-                                ",".join(item["code"] for item in blocking_failure_preview if item.get("code")) or "-",
-                                ",".join(item["code"] for item in tolerated_gap_preview if item.get("code")) or "-",
-                            )
+                    completion = self._evaluate_a_share_sync_completion(
+                        total_codes=len(a_share_codes),
+                        failed_a_share_runs=failed_a_share_runs,
+                        latest_a_share_date=latest_a_share_date,
+                        target_a_share_date=target_a_share_date,
+                        allowed_failures=allowed_failures,
+                    )
+                    summary_status = completion["status"]
+                    completed_a_share_target = completion["completed_a_share_target"]
+                    blocking_failures = completion["blocking_failures"]
+                    blocking_failure_preview = completion["blocking_failure_preview"]
+                    non_blocking_gap_runs = completion["non_blocking_gap_runs"]
+                    non_blocking_gap_preview = completion["non_blocking_gap_preview"]
+                    failure_preview = completion["failure_preview"]
+
+                    if completed_a_share_target:
+                        logger.warning(
+                            "A-share completion metadata updated: target={} latest={} blocking_failures={} non_blocking_gaps={} allowed_failures={} target_hit_ratio={:.4f} blocking_preview={} gap_preview={}",
+                            target_a_share_date,
+                            latest_a_share_date,
+                            len(blocking_failures),
+                            len(non_blocking_gap_runs),
+                            allowed_failures,
+                            completion["target_hit_ratio"],
+                            ",".join(item["code"] for item in blocking_failure_preview if item.get("code")) or "-",
+                            ",".join(item["code"] for item in non_blocking_gap_preview if item.get("code")) or "-",
+                        )
                     else:
-                        completed_a_share_target = target_a_share_date
+                        logger.warning(
+                            "A-share completion metadata not updated; target={} latest={} blocking_failures={} non_blocking_gaps={} allowed_failures={} target_hit_ratio={:.4f} min_target_hit_ratio={:.4f} max_non_blocking_gaps={} blocking_preview={} gap_preview={}",
+                            target_a_share_date,
+                            latest_a_share_date or "N/A",
+                            len(blocking_failures),
+                            len(non_blocking_gap_runs),
+                            allowed_failures,
+                            completion["target_hit_ratio"],
+                            completion["min_target_hit_ratio"],
+                            completion["max_non_blocking_gap_count"],
+                            ",".join(item["code"] for item in blocking_failure_preview if item.get("code")) or "-",
+                            ",".join(item["code"] for item in non_blocking_gap_preview if item.get("code")) or "-",
+                        )
 
                     self._save_a_share_sync_summary(
                         {
@@ -765,8 +877,14 @@ class DataCollectorScheduler:
                             "total_codes": len(a_share_codes),
                             "success_count": len(a_share_codes) - len(failed_a_share_runs),
                             "failed_count": len(failed_a_share_runs),
+                            "target_hit_count": completion["target_hit_count"],
+                            "target_hit_ratio": completion["target_hit_ratio"],
+                            "market_ready": completion["market_ready"],
+                            "min_target_hit_ratio": completion["min_target_hit_ratio"],
+                            "max_non_blocking_gap_count": completion["max_non_blocking_gap_count"],
                             "blocking_failed_count": len(blocking_failures),
-                            "tolerated_gap_count": len(tolerated_gap_runs),
+                            "non_blocking_gap_count": len(non_blocking_gap_runs),
+                            "tolerated_gap_count": len(non_blocking_gap_runs),
                             "allowed_failures": allowed_failures,
                             "failed_codes_preview": [item["code"] for item in failure_preview if item.get("code")],
                             "failed_runs_preview": failure_preview,
@@ -774,10 +892,14 @@ class DataCollectorScheduler:
                                 item["code"] for item in blocking_failure_preview if item.get("code")
                             ],
                             "blocking_failed_runs_preview": blocking_failure_preview,
-                            "tolerated_gap_codes_preview": [
-                                item["code"] for item in tolerated_gap_preview if item.get("code")
+                            "non_blocking_gap_codes_preview": [
+                                item["code"] for item in non_blocking_gap_preview if item.get("code")
                             ],
-                            "tolerated_gap_runs_preview": tolerated_gap_preview,
+                            "non_blocking_gap_runs_preview": non_blocking_gap_preview,
+                            "tolerated_gap_codes_preview": [
+                                item["code"] for item in non_blocking_gap_preview if item.get("code")
+                            ],
+                            "tolerated_gap_runs_preview": non_blocking_gap_preview,
                         }
                     )
 

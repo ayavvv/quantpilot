@@ -125,6 +125,33 @@ def test_sync_a_share_kline_reports_empty_data_reason():
     assert result["code"] == "SH.600000"
 
 
+def test_sync_a_share_kline_normalizes_empty_ok_status():
+    scheduler = DataCollectorScheduler()
+
+    class _FakeDBEngine:
+        def get_kline_max_date(self, code, ktype):
+            return "2026-04-03"
+
+        def log_job(self, *args, **kwargs):
+            return None
+
+    class _FakeBaostockClient:
+        def get_history_kline(self, code, start, end, ktype):
+            return []
+
+        def get_last_history_kline_status(self):
+            return {"status": "ok", "rows": 0, "raw_rows": 1}
+
+    scheduler.db_engine = _FakeDBEngine()
+    scheduler.bs_client = _FakeBaostockClient()
+    scheduler.qlib_writer = None
+
+    result = scheduler.sync_a_share_kline("SH.600355", target_end_date="2026-04-09")
+    assert result["ok"] is False
+    assert result["reason"] == "empty_data"
+    assert result["latest_date"] == "2026-04-03"
+
+
 def test_sync_a_share_kline_reports_target_not_reached():
     scheduler = DataCollectorScheduler()
 
@@ -203,6 +230,20 @@ def test_tolerable_a_share_gap_accepts_non_trading_symbol():
     assert scheduler._is_tolerable_a_share_gap(result, "2026-04-08") is True
 
 
+def test_tolerable_a_share_gap_accepts_converted_empty_symbol():
+    scheduler = DataCollectorScheduler()
+
+    result = {
+        "ok": False,
+        "reason": "converted_empty",
+        "code": "SH.600355",
+        "latest_date": "2026-04-03",
+        "query_status": {"status": "converted_empty", "rows": 0, "raw_rows": 1},
+    }
+
+    assert scheduler._is_tolerable_a_share_gap(result, "2026-04-08") is True
+
+
 def test_tolerable_a_share_gap_rejects_query_failures():
     scheduler = DataCollectorScheduler()
 
@@ -215,3 +256,94 @@ def test_tolerable_a_share_gap_rejects_query_failures():
     }
 
     assert scheduler._is_tolerable_a_share_gap(result, "2026-04-08") is False
+
+
+def test_a_share_completion_allows_non_blocking_gaps():
+    scheduler = DataCollectorScheduler()
+
+    failed_runs = [
+        {
+            "ok": False,
+            "reason": "target_not_reached",
+            "code": "SH.600355",
+            "latest_date": "2026-04-03",
+            "query_status": {"status": "ok", "rows": 2},
+        },
+        {
+            "ok": False,
+            "reason": "empty_data",
+            "code": "SZ.300067",
+            "latest_date": "2026-04-07",
+            "query_status": {"status": "converted_empty", "rows": 0, "raw_rows": 1},
+        },
+    ]
+
+    result = scheduler._evaluate_a_share_sync_completion(
+        total_codes=5195,
+        failed_a_share_runs=failed_runs,
+        latest_a_share_date="2026-04-09",
+        target_a_share_date="2026-04-09",
+        allowed_failures=0,
+    )
+
+    assert result["status"] == "complete_with_non_blocking_gaps"
+    assert result["completed_a_share_target"] == "2026-04-09"
+    assert result["market_ready"] is True
+    assert len(result["blocking_failures"]) == 0
+    assert len(result["non_blocking_gap_runs"]) == 2
+    assert result["target_hit_count"] == 5193
+    assert result["target_hit_ratio"] == pytest.approx(5193 / 5195)
+
+
+def test_a_share_completion_blocks_when_market_not_ready():
+    scheduler = DataCollectorScheduler()
+
+    failed_runs = [
+        {
+            "ok": False,
+            "reason": "target_not_reached",
+            "code": "SH.600355",
+            "latest_date": "2026-04-03",
+            "query_status": {"status": "ok", "rows": 2},
+        }
+    ]
+
+    result = scheduler._evaluate_a_share_sync_completion(
+        total_codes=5195,
+        failed_a_share_runs=failed_runs,
+        latest_a_share_date="2026-04-08",
+        target_a_share_date="2026-04-09",
+        allowed_failures=0,
+    )
+
+    assert result["status"] == "incomplete"
+    assert result["completed_a_share_target"] is None
+    assert result["market_ready"] is False
+
+
+def test_a_share_completion_blocks_hard_failures():
+    scheduler = DataCollectorScheduler()
+
+    failed_runs = [
+        {
+            "ok": False,
+            "reason": "query_failed",
+            "code": "SH.600355",
+            "latest_date": "2026-04-08",
+            "query_status": {"status": "query_failed", "error": "socket timeout"},
+            "error": "socket timeout",
+        }
+    ]
+
+    result = scheduler._evaluate_a_share_sync_completion(
+        total_codes=5195,
+        failed_a_share_runs=failed_runs,
+        latest_a_share_date="2026-04-09",
+        target_a_share_date="2026-04-09",
+        allowed_failures=0,
+    )
+
+    assert result["status"] == "incomplete"
+    assert result["completed_a_share_target"] is None
+    assert result["market_ready"] is True
+    assert len(result["blocking_failures"]) == 1
