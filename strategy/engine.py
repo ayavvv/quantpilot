@@ -5,9 +5,11 @@
 from __future__ import annotations
 
 import copy
+import importlib
 import os
 import pickle
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 import numpy as np
@@ -172,6 +174,8 @@ HK_FIXED_SEGMENTS = {
     "test":  ["2024-07-01", "2026-03-03"],
 }
 HK_WARMUP_START = "2016-01-04"
+DEFAULT_INFER_WARMUP_TRADING_DAYS = int(os.environ.get("INFER_WARMUP_TRADING_DAYS", "180"))
+DEFAULT_DIRECT_INFER_CHUNK_SIZE = int(os.environ.get("DIRECT_INFER_CHUNK_SIZE", "250"))
 
 
 def _segments_from_calendar(first_date: str, last_date: str) -> dict[str, list[str]]:
@@ -197,6 +201,70 @@ def _segments_from_calendar(first_date: str, last_date: str) -> dict[str, list[s
         "valid": [valid_start, test_start],
         "test": [test_start, last_date],
     }
+
+
+def _resolve_infer_window(
+    calendar_values: list | pd.Index,
+    last_date: str,
+    warmup_trading_days: int | None = None,
+) -> tuple[str, int]:
+    """Return a compact history window for daily inference.
+
+    Live inference only needs enough bars to cover rolling factor warmup.
+    Rebuilding the full history on every run is unnecessarily expensive.
+    """
+    dates = [pd.Timestamp(value).strftime("%Y-%m-%d") for value in calendar_values]
+    if not dates:
+        return last_date, 1
+
+    warmup_days = DEFAULT_INFER_WARMUP_TRADING_DAYS if warmup_trading_days is None else max(int(warmup_trading_days), 0)
+    try:
+        last_pos = len(dates) - 1 - dates[::-1].index(last_date)
+    except ValueError:
+        last_pos = len(dates) - 1
+        last_date = dates[last_pos]
+
+    start_pos = max(last_pos - warmup_days, 0)
+    return dates[start_pos], last_pos - start_pos + 1
+
+
+def _resolve_handler_feature_config(handler_cfg: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """Return feature expressions/names from a handler config without building a DatasetH."""
+    class_name = handler_cfg.get("class")
+    if not class_name:
+        raise ValueError("handler config missing class")
+
+    module_path = handler_cfg.get("module_path", "qlib.contrib.data.handler")
+    module = importlib.import_module(module_path)
+    handler_cls = getattr(module, class_name)
+    handler = handler_cls.__new__(handler_cls)
+    return handler.get_feature_config()
+
+
+def _active_a_share_instruments(provider_uri: str, last_date: str) -> list[str]:
+    inst_path = Path(provider_uri) / "instruments" / "all.txt"
+    if not inst_path.exists():
+        return []
+
+    codes: list[str] = []
+    for line in inst_path.read_text().splitlines():
+        parts = line.strip().split("\t")
+        if len(parts) < 3:
+            continue
+        code, _, end_date = parts[:3]
+        if code.startswith(("SH.", "SZ.")) and end_date >= last_date:
+            codes.append(code)
+    return codes
+
+
+class _PreparedFeatureDataset:
+    """Minimal dataset shim for qlib LightGBM model.predict."""
+
+    def __init__(self, features: pd.DataFrame) -> None:
+        self.features = features
+
+    def prepare(self, segment="infer", col_set="feature", data_key=None) -> pd.DataFrame:
+        return self.features
 
 
 class StrategyEngine:
@@ -392,6 +460,7 @@ class StrategyEngine:
                     pass
 
     def _predict_next_day_impl(self, hk_mode: bool = False) -> pd.DataFrame:
+        total_start = perf_counter()
         models_dir = self.models_dir
         if hk_mode:
             model_file = "lightgbm_hk_latest.pkl"
@@ -442,10 +511,75 @@ class StrategyEngine:
                     print(f"[WARN] 日历最后一天 {last_date} 超过 A 股数据范围 {max_a_end}，回退到 {max_a_end}")
                     last_date = max_a_end
 
+        infer_start_date, infer_window_bars = _resolve_infer_window(cal, last_date)
+        print(
+            f"[INFO] 推理窗口: {infer_start_date} ~ {last_date} "
+            f"({infer_window_bars} 个交易日, warmup={DEFAULT_INFER_WARMUP_TRADING_DAYS})"
+        )
+
         dataset_cfg = copy.deepcopy(task["dataset"])
         kwargs = dataset_cfg.get("kwargs", {}).copy()
         handler_cfg = kwargs.get("handler", {}).copy()
+        if not hk_mode:
+            direct_fetch_start = perf_counter()
+            try:
+                instruments = _active_a_share_instruments(self.provider_uri, last_date)
+                if not instruments:
+                    raise ValueError(f"未找到可用于 {last_date} 推理的 A 股 instruments")
+                exprs, _ = _resolve_handler_feature_config(handler_cfg)
+                chunk_size = max(DEFAULT_DIRECT_INFER_CHUNK_SIZE, 1)
+                feature_chunks: list[pd.DataFrame] = []
+                total = len(instruments)
+                for start_idx in range(0, total, chunk_size):
+                    chunk = instruments[start_idx:start_idx + chunk_size]
+                    chunk_start = perf_counter()
+                    feature_chunks.append(D.features(chunk, exprs, start_time=last_date, end_time=last_date))
+                    done = min(start_idx + chunk_size, total)
+                    print(
+                        f"[INFO] 直接特征抓取进度: {done}/{total} "
+                        f"(chunk={len(chunk)}), chunk耗时 {perf_counter() - chunk_start:.1f}s"
+                    )
+                features = pd.concat(feature_chunks).sort_index()
+                print(
+                    f"[INFO] 直接特征抓取完成: rows={len(features)} cols={features.shape[1]}, "
+                    f"耗时 {perf_counter() - direct_fetch_start:.1f}s"
+                )
+                predict_start = perf_counter()
+                pred = model.predict(_PreparedFeatureDataset(features), segment="infer")
+                print(f"[INFO] 模型预测完成, 耗时 {perf_counter() - predict_start:.1f}s")
+                if pred is None or (hasattr(pred, "empty") and pred.empty):
+                    df = pd.DataFrame(columns=["code", "score", "rank", "top5"])
+                    df.attrs["infer_date"] = last_date
+                    return df
+
+                infer_date = _pred_infer_date(pred, last_date)
+                if hasattr(pred, "index") and isinstance(pred.index, pd.MultiIndex):
+                    level_instrument = "instrument" if "instrument" in pred.index.names else pred.index.names[1]
+                    codes = pred.index.get_level_values(level_instrument).astype(str).tolist()
+                elif hasattr(pred, "index"):
+                    codes = pred.index.astype(str).tolist()
+                else:
+                    codes = list(range(len(pred)))
+                if isinstance(pred, pd.Series):
+                    scores = pred.values.flatten()
+                elif hasattr(pred, "iloc") and pred.ndim >= 2:
+                    scores = pred.iloc[:, 0].values
+                else:
+                    scores = np.asarray(pred).flatten()
+                df = pd.DataFrame({"code": codes, "score": scores})
+                df = df.dropna(subset=["score"])
+                df = df.sort_values("score", ascending=False).reset_index(drop=True)
+                df["rank"] = range(1, len(df) + 1)
+                df["top5"] = df["rank"] <= 5
+                result = df[["code", "score", "rank", "top5"]]
+                result.attrs["infer_date"] = infer_date
+                print(f"[INFO] 推理总耗时 {perf_counter() - total_start:.1f}s")
+                return result
+            except Exception as e:
+                print(f"[WARN] 直接特征推理失败，回退 DatasetH: {e}")
+
         h_kwargs = handler_cfg.get("kwargs", {}).copy()
+        h_kwargs["start_time"] = infer_start_date
         h_kwargs["end_time"] = last_date
         h_kwargs["fit_end_time"] = last_date
         handler_cfg["kwargs"] = h_kwargs
@@ -455,14 +589,20 @@ class StrategyEngine:
         kwargs["segments"] = segs
         dataset_cfg["kwargs"] = kwargs
 
+        dataset_start = perf_counter()
         dataset = init_instance_by_config(dataset_cfg)
+        print(f"[INFO] Dataset 初始化完成, 耗时 {perf_counter() - dataset_start:.1f}s")
 
         try:
+            prepare_start = perf_counter()
             dataset.prepare("infer", col_set=["feature"])
+            print(f"[INFO] 推理特征准备完成, 耗时 {perf_counter() - prepare_start:.1f}s")
         except Exception as e:
             raise RuntimeError(f"准备推理数据失败（{last_date}）: {e}") from e
 
+        predict_start = perf_counter()
         pred = model.predict(dataset, segment="infer")
+        print(f"[INFO] 模型预测完成, 耗时 {perf_counter() - predict_start:.1f}s")
         if pred is None or (hasattr(pred, "empty") and pred.empty):
             df = pd.DataFrame(columns=["code", "score", "rank", "top5"])
             df.attrs["infer_date"] = last_date
@@ -490,4 +630,5 @@ class StrategyEngine:
         df["top5"] = df["rank"] <= 5
         result = df[["code", "score", "rank", "top5"]]
         result.attrs["infer_date"] = infer_date
+        print(f"[INFO] 推理总耗时 {perf_counter() - total_start:.1f}s")
         return result
