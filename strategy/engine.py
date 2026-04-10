@@ -457,18 +457,26 @@ class StrategyEngine:
     def predict_next_day(self, hk_mode: bool | None = None) -> pd.DataFrame:
         if hk_mode is None:
             hk_mode = "hk_quant_data" in self.provider_uri
+        backend_override = os.environ.get("QLIB_PREDICT_JOBLIB_BACKEND")
+        max_tasks_override = os.environ.get("QLIB_PREDICT_MAXTASKSPERCHILD")
         try:
             from qlib.config import C
             _old_backend = getattr(C, "joblib_backend", None)
-            C.joblib_backend = "sequential"
+            _old_maxtasksperchild = getattr(C, "maxtasksperchild", None)
+            if backend_override:
+                C.joblib_backend = backend_override
+            if max_tasks_override:
+                C.maxtasksperchild = int(max_tasks_override)
         except Exception:
             _old_backend = None
+            _old_maxtasksperchild = None
         try:
             return self._predict_next_day_impl(hk_mode=hk_mode)
         finally:
             if _old_backend is not None:
                 try:
                     C.joblib_backend = _old_backend
+                    C.maxtasksperchild = _old_maxtasksperchild
                 except Exception:
                     pass
 
