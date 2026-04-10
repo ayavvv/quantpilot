@@ -44,6 +44,14 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
 }
 
+run_healthcheck() {
+    local phase="${1:-nightly}"
+    local alert_on="${2:-error}"
+    PYTHONPATH="$PYTHONPATH" "$PYTHON_BIN" -m scripts.daily_healthcheck \
+        --phase "$phase" \
+        --alert-on "$alert_on" || true
+}
+
 spawn_ready_retry() {
     local target_date="$1"
     if [ "$AUTO_RETRY_ON_NAS_READY" != "true" ] || [ -z "$target_date" ]; then
@@ -112,6 +120,7 @@ if [ -n "$NAS_HOST" ] && [ -n "$NAS_USER" ]; then
             fi
         else
             spawn_ready_retry "$TARGET_A_SHARE_DATE"
+            run_healthcheck nightly error
             log "  ERROR: NAS A-share data not ready after ${MAX_WAIT_SECONDS}s, aborting to avoid stale/inconsistent sync ($NAS_LAST)"
             exit 1
         fi
@@ -130,10 +139,17 @@ fi
 # Step 2: Run inference natively (no Docker, avoids Rosetta OOM)
 log "Step 2: Running inference..."
 source .venv/bin/activate
-QLIB_DATA_DIR="$DATA_DIR/qlib_data" \
-MODEL_DIR="$DATA_DIR/models" \
-SIGNAL_DIR="$DATA_DIR/signals" \
-    python -m inference.run_daily
+INFERENCE_RC=0
+if ! QLIB_DATA_DIR="$DATA_DIR/qlib_data" \
+    MODEL_DIR="$DATA_DIR/models" \
+    SIGNAL_DIR="$DATA_DIR/signals" \
+    python -m inference.run_daily; then
+    INFERENCE_RC=$?
+fi
+if [ "$INFERENCE_RC" -ne 0 ]; then
+    run_healthcheck nightly error
+    exit "$INFERENCE_RC"
+fi
 log "  Inference complete"
 
 # Step 3: Run reporter via Docker
@@ -141,7 +157,14 @@ log "Step 3: Running reporter..."
 log "  Working directory: $PROJECT_DIR"
 log "  Docker binary: $(command -v "$DOCKER" || true)"
 log "  Reporter env file: $PROJECT_DIR/reporter/.env"
-$DOCKER compose -f "$PROJECT_DIR/docker-compose.mac.yml" run --rm reporter
+REPORTER_RC=0
+if ! $DOCKER compose -f "$PROJECT_DIR/docker-compose.mac.yml" run --rm reporter; then
+    REPORTER_RC=$?
+fi
+run_healthcheck nightly error
+if [ "$REPORTER_RC" -ne 0 ]; then
+    exit "$REPORTER_RC"
+fi
 log "  Report complete"
 
 log "Daily pipeline finished!"

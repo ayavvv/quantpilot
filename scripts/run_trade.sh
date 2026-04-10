@@ -36,9 +36,17 @@ fi
 [ -n "$EXTERNAL_DRY_RUN" ] && DRY_RUN="$EXTERNAL_DRY_RUN"
 
 DATA_DIR="${DATA_DIR:-$HOME/quantpilot_data}"
+PYTHON_BIN="${PYTHON_BIN:-$PROJECT_DIR/.venv/bin/python}"
+PYTHONPATH="${PROJECT_DIR}${PYTHONPATH:+:$PYTHONPATH}"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
+
+run_healthcheck() {
+    PYTHONPATH="$PYTHONPATH" "$PYTHON_BIN" -m scripts.daily_healthcheck \
+        --phase trade \
+        --alert-on error || true
 }
 
 DOW=$(date +%u)
@@ -51,7 +59,8 @@ log "run_trade: start"
 cd "$PROJECT_DIR"
 source .venv/bin/activate
 
-FUTU_HOST="${FUTU_HOST:-192.168.100.248}" \
+TRADE_RC=0
+if ! FUTU_HOST="${FUTU_HOST:-192.168.100.248}" \
 FUTU_PORT="${FUTU_PORT:-11111}" \
 FUTU_SIM_ACC_ID="${FUTU_SIM_ACC_ID:-0}" \
 FUTU_RSA_KEY="${FUTU_RSA_KEY:-}" \
@@ -62,6 +71,10 @@ TOP_N="${TOP_N:-5}" \
 HOLD_BONUS="${HOLD_BONUS:-0.05}" \
 STOP_LOSS_PCT="${STOP_LOSS_PCT:--0.08}" \
 DRY_RUN="${DRY_RUN:-false}" \
-    python -m trader.trade_daily
+    python -m trader.trade_daily; then
+    TRADE_RC=$?
+fi
 
 log "run_trade: done"
+run_healthcheck
+exit "$TRADE_RC"

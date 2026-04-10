@@ -1,0 +1,116 @@
+from datetime import datetime
+
+from scripts import daily_healthcheck
+
+
+def test_build_snapshot_pretrade_flags_stale_signal_and_nas_lag(monkeypatch):
+    monkeypatch.setattr(daily_healthcheck, "latest_local_completed_date", lambda: "2026-04-08")
+    monkeypatch.setattr(daily_healthcheck, "latest_local_a_share_date", lambda: "2026-04-09")
+    monkeypatch.setattr(daily_healthcheck, "latest_signal_date", lambda: "2026-04-08")
+    monkeypatch.setattr(daily_healthcheck, "latest_nas_completed_date", lambda: ("2026-04-09", ""))
+    monkeypatch.setattr(
+        daily_healthcheck,
+        "analyze_trade_log",
+        lambda today: {
+            "starts": 0,
+            "done": 0,
+            "order_failures": 0,
+            "order_fills": 0,
+            "errors": 0,
+            "stale_signal_errors": [],
+            "latest_line": "",
+        },
+    )
+    monkeypatch.setattr(
+        daily_healthcheck,
+        "analyze_daily_logs",
+        lambda today: {
+            "timeouts": 0,
+            "inference_failures": 0,
+            "retry_activity": 0,
+            "latest_daily_line": "",
+            "latest_retry_line": "",
+        },
+    )
+    monkeypatch.setattr(daily_healthcheck, "process_running", lambda patterns: False)
+
+    snapshot = daily_healthcheck.build_snapshot("pretrade", now=datetime(2026, 4, 10, 10, 0, 0))
+
+    assert snapshot["overall_status"] == "error"
+    assert any("Signal stale" in issue for issue in snapshot["issues"])
+    assert any("lags NAS" in issue for issue in snapshot["issues"])
+
+
+def test_build_snapshot_trade_warns_on_failed_orders(monkeypatch):
+    monkeypatch.setattr(daily_healthcheck, "latest_local_completed_date", lambda: "2026-04-09")
+    monkeypatch.setattr(daily_healthcheck, "latest_local_a_share_date", lambda: "2026-04-09")
+    monkeypatch.setattr(daily_healthcheck, "latest_signal_date", lambda: "2026-04-09")
+    monkeypatch.setattr(daily_healthcheck, "latest_nas_completed_date", lambda: ("2026-04-09", ""))
+    monkeypatch.setattr(
+        daily_healthcheck,
+        "analyze_trade_log",
+        lambda today: {
+            "starts": 1,
+            "done": 1,
+            "order_failures": 1,
+            "order_fills": 3,
+            "errors": 0,
+            "stale_signal_errors": [],
+            "latest_line": "done",
+        },
+    )
+    monkeypatch.setattr(
+        daily_healthcheck,
+        "analyze_daily_logs",
+        lambda today: {
+            "timeouts": 0,
+            "inference_failures": 0,
+            "retry_activity": 0,
+            "latest_daily_line": "",
+            "latest_retry_line": "",
+        },
+    )
+    monkeypatch.setattr(daily_healthcheck, "process_running", lambda patterns: False)
+
+    snapshot = daily_healthcheck.build_snapshot("trade", now=datetime(2026, 4, 10, 15, 0, 0))
+
+    assert snapshot["overall_status"] == "warn"
+    assert any("failed order" in issue for issue in snapshot["issues"])
+
+
+def test_maybe_send_alert_deduplicates(monkeypatch, tmp_path):
+    monkeypatch.setattr(daily_healthcheck, "HEALTH_DIR", tmp_path)
+    sent_subjects: list[str] = []
+    monkeypatch.setattr(
+        daily_healthcheck,
+        "send_email",
+        lambda html, subject: sent_subjects.append(subject),
+    )
+    snapshot = {
+        "phase": "pretrade",
+        "overall_status": "error",
+        "issues": ["Signal stale"],
+        "date": "2026-04-10",
+        "timestamp": "2026-04-10 10:00:00",
+        "local": {
+            "completed_a_share_date": "2026-04-09",
+            "latest_a_share_date": "2026-04-09",
+            "latest_signal_date": "2026-04-08",
+            "signal_aligned": False,
+        },
+        "nas": {
+            "completed_a_share_date": "2026-04-09",
+            "query_error": "",
+        },
+        "trade": {
+            "starts": 0,
+            "done": 0,
+            "order_fills": 0,
+            "order_failures": 0,
+            "errors": 0,
+        },
+    }
+
+    assert daily_healthcheck.maybe_send_alert(snapshot, "error") is True
+    assert daily_healthcheck.maybe_send_alert(snapshot, "error") is False
+    assert len(sent_subjects) == 1
