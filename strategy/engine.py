@@ -257,6 +257,19 @@ def _active_a_share_instruments(provider_uri: str, last_date: str) -> list[str]:
     return codes
 
 
+def _apply_instrument_filter(dataset_cfg: dict[str, Any], instruments: list[str]) -> dict[str, Any]:
+    """Clone dataset config and pin the handler universe to a concrete instrument list."""
+    filtered_cfg = copy.deepcopy(dataset_cfg)
+    kwargs = filtered_cfg.get("kwargs", {}).copy()
+    handler_cfg = kwargs.get("handler", {}).copy()
+    handler_kwargs = handler_cfg.get("kwargs", {}).copy()
+    handler_kwargs["instruments"] = instruments
+    handler_cfg["kwargs"] = handler_kwargs
+    kwargs["handler"] = handler_cfg
+    filtered_cfg["kwargs"] = kwargs
+    return filtered_cfg
+
+
 class _PreparedFeatureDataset:
     """Minimal dataset shim for qlib LightGBM model.predict."""
 
@@ -520,18 +533,19 @@ class StrategyEngine:
         dataset_cfg = copy.deepcopy(task["dataset"])
         kwargs = dataset_cfg.get("kwargs", {}).copy()
         handler_cfg = kwargs.get("handler", {}).copy()
+        active_a_instruments: list[str] | None = None
         if not hk_mode:
+            active_a_instruments = _active_a_share_instruments(self.provider_uri, last_date)
+            if not active_a_instruments:
+                raise ValueError(f"未找到可用于 {last_date} 推理的 A 股 instruments")
             direct_fetch_start = perf_counter()
             try:
-                instruments = _active_a_share_instruments(self.provider_uri, last_date)
-                if not instruments:
-                    raise ValueError(f"未找到可用于 {last_date} 推理的 A 股 instruments")
                 exprs, _ = _resolve_handler_feature_config(handler_cfg)
                 chunk_size = max(DEFAULT_DIRECT_INFER_CHUNK_SIZE, 1)
                 feature_chunks: list[pd.DataFrame] = []
-                total = len(instruments)
+                total = len(active_a_instruments)
                 for start_idx in range(0, total, chunk_size):
-                    chunk = instruments[start_idx:start_idx + chunk_size]
+                    chunk = active_a_instruments[start_idx:start_idx + chunk_size]
                     chunk_start = perf_counter()
                     feature_chunks.append(D.features(chunk, exprs, start_time=last_date, end_time=last_date))
                     done = min(start_idx + chunk_size, total)
@@ -588,6 +602,8 @@ class StrategyEngine:
         segs["infer"] = [last_date, last_date]
         kwargs["segments"] = segs
         dataset_cfg["kwargs"] = kwargs
+        if active_a_instruments is not None:
+            dataset_cfg = _apply_instrument_filter(dataset_cfg, active_a_instruments)
 
         dataset_start = perf_counter()
         dataset = init_instance_by_config(dataset_cfg)

@@ -49,7 +49,7 @@ def test_predict_next_day_uses_compact_infer_window(tmp_path, monkeypatch):
 
     monkeypatch.setattr(engine.qlib, "init", lambda **kwargs: None)
     monkeypatch.setattr(engine, "DEFAULT_INFER_WARMUP_TRADING_DAYS", 3)
-    monkeypatch.setattr(engine, "_active_a_share_instruments", lambda provider_uri, last_date: [])
+    monkeypatch.setattr(engine, "_active_a_share_instruments", lambda provider_uri, last_date: ["SH.600000"])
     monkeypatch.setattr(
         engine,
         "_load_config",
@@ -95,11 +95,20 @@ def test_predict_next_day_uses_compact_infer_window(tmp_path, monkeypatch):
         ),
         raising=False,
     )
+    monkeypatch.setattr(
+        engine.D,
+        "features",
+        lambda instruments, fields, start_time, end_time: (_ for _ in ()).throw(
+            ValueError("force fallback")
+        ),
+        raising=False,
+    )
 
     strategy_engine = engine.StrategyEngine(provider_uri=qlib_dir, models_dir=models_dir)
     result = strategy_engine._predict_next_day_impl(hk_mode=False)
 
     handler_kwargs = captured["dataset_cfg"]["kwargs"]["handler"]["kwargs"]
+    assert handler_kwargs["instruments"] == ["SH.600000"]
     assert handler_kwargs["start_time"] == "2026-04-03"
     assert handler_kwargs["end_time"] == "2026-04-08"
     assert handler_kwargs["fit_start_time"] == "2017-07-01"
@@ -168,5 +177,71 @@ def test_predict_next_day_prefers_direct_feature_fetch_for_a_share(tmp_path, mon
 
     assert captured["instruments"] == ["SH.600000"]
     assert captured["field_count"] > 100
+    assert result.attrs["infer_date"] == "2026-04-08"
+    assert result["code"].tolist() == ["SH.600000"]
+
+
+def test_predict_next_day_fallback_keeps_a_share_instruments_only(tmp_path, monkeypatch):
+    qlib_dir = tmp_path / "qlib"
+    inst_dir = qlib_dir / "instruments"
+    inst_dir.mkdir(parents=True)
+    (inst_dir / "all.txt").write_text(
+        "HK.00267\t2006-01-03\t2026-04-08\nSH.600000\t2006-01-03\t2026-04-08\nSZ.000001\t2006-01-03\t2026-04-08\n",
+        encoding="utf-8",
+    )
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    with open(models_dir / "lightgbm_sh_latest.pkl", "wb") as f:
+        pickle.dump(DummyModel(), f)
+
+    monkeypatch.setattr(engine.qlib, "init", lambda **kwargs: None)
+    monkeypatch.setattr(
+        engine,
+        "_load_config",
+        lambda path=None: {
+            "task": {
+                "dataset": {
+                    "class": "DatasetH",
+                    "kwargs": {
+                        "handler": {
+                            "class": "Alpha158Fund",
+                            "module_path": "strategy.alpha_hk",
+                            "kwargs": {},
+                        },
+                        "segments": {},
+                    },
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        engine.D,
+        "calendar",
+        lambda start_time, end_time, freq="day": pd.DatetimeIndex(["2026-04-08"]),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        engine.D,
+        "features",
+        lambda instruments, fields, start_time, end_time: (_ for _ in ()).throw(
+            ValueError("force fallback")
+        ),
+        raising=False,
+    )
+
+    captured = {}
+
+    def fake_init_instance_by_config(cfg):
+        captured["dataset_cfg"] = cfg
+        return DummyDataset()
+
+    monkeypatch.setattr(engine, "init_instance_by_config", fake_init_instance_by_config)
+
+    strategy_engine = engine.StrategyEngine(provider_uri=qlib_dir, models_dir=models_dir)
+    result = strategy_engine._predict_next_day_impl(hk_mode=False)
+
+    handler_kwargs = captured["dataset_cfg"]["kwargs"]["handler"]["kwargs"]
+    assert handler_kwargs["instruments"] == ["SH.600000", "SZ.000001"]
     assert result.attrs["infer_date"] == "2026-04-08"
     assert result["code"].tolist() == ["SH.600000"]
