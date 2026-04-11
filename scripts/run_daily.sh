@@ -47,9 +47,14 @@ log() {
 run_healthcheck() {
     local phase="${1:-nightly}"
     local alert_on="${2:-error}"
+    local target_args=()
+    if [ -n "${TARGET_A_SHARE_DATE:-}" ]; then
+        target_args+=(--target-a-share-date "$TARGET_A_SHARE_DATE")
+    fi
     PYTHONPATH="$PYTHONPATH" "$PYTHON_BIN" -m scripts.daily_healthcheck \
         --phase "$phase" \
-        --alert-on "$alert_on" || true
+        --alert-on "$alert_on" \
+        "${target_args[@]}" || true
 }
 
 spawn_ready_retry() {

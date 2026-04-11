@@ -217,7 +217,17 @@ class QlibDirectWriter:
     # --- Public API ---
 
     def get_stock_last_date(self, code: str) -> str | None:
-        """Get the last collected date for a stock (from bin file)."""
+        """Get the last collected date for a stock.
+
+        Prefer instruments metadata because collector updates it in memory on every
+        successful write. Fall back to bin inspection when metadata is missing.
+        """
+        instrument_range = self.instruments.get(code)
+        if instrument_range:
+            _, end_date = instrument_range
+            if end_date:
+                return end_date
+
         feat_dir = self._get_feat_dir(code)
         bin_path = feat_dir / f"close.{FREQ}.bin"
         result = self._read_bin(bin_path)

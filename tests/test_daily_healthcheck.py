@@ -78,6 +78,48 @@ def test_build_snapshot_trade_warns_on_failed_orders(monkeypatch):
     assert any("failed order" in issue for issue in snapshot["issues"])
 
 
+def test_build_snapshot_nightly_flags_target_date_not_reached(monkeypatch):
+    monkeypatch.setattr(daily_healthcheck, "latest_local_completed_date", lambda: "2026-04-09")
+    monkeypatch.setattr(daily_healthcheck, "latest_local_a_share_date", lambda: "2026-04-09")
+    monkeypatch.setattr(daily_healthcheck, "latest_signal_date", lambda: "2026-04-09")
+    monkeypatch.setattr(daily_healthcheck, "latest_nas_completed_date", lambda: ("2026-04-09", ""))
+    monkeypatch.setattr(
+        daily_healthcheck,
+        "analyze_trade_log",
+        lambda today: {
+            "starts": 0,
+            "done": 0,
+            "order_failures": 0,
+            "order_fills": 0,
+            "errors": 0,
+            "stale_signal_errors": [],
+            "latest_line": "",
+        },
+    )
+    monkeypatch.setattr(
+        daily_healthcheck,
+        "analyze_daily_logs",
+        lambda today: {
+            "timeouts": 1,
+            "inference_failures": 0,
+            "retry_activity": 1,
+            "latest_daily_line": "",
+            "latest_retry_line": "",
+        },
+    )
+    monkeypatch.setattr(daily_healthcheck, "process_running", lambda patterns: False)
+
+    snapshot = daily_healthcheck.build_snapshot(
+        "nightly",
+        now=datetime(2026, 4, 11, 11, 0, 0),
+        target_a_share_date="2026-04-10",
+    )
+
+    assert snapshot["overall_status"] == "error"
+    assert any("below nightly target" in issue for issue in snapshot["issues"])
+    assert snapshot["target_a_share_date"] == "2026-04-10"
+
+
 def test_maybe_send_alert_deduplicates(monkeypatch, tmp_path):
     monkeypatch.setattr(daily_healthcheck, "HEALTH_DIR", tmp_path)
     sent_subjects: list[str] = []

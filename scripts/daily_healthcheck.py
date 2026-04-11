@@ -125,7 +125,11 @@ def analyze_daily_logs(today: str) -> dict[str, Any]:
     }
 
 
-def build_snapshot(phase: str, now: datetime | None = None) -> dict[str, Any]:
+def build_snapshot(
+    phase: str,
+    now: datetime | None = None,
+    target_a_share_date: str = "",
+) -> dict[str, Any]:
     now = now or datetime.now()
     today = now.strftime("%Y-%m-%d")
 
@@ -152,6 +156,26 @@ def build_snapshot(phase: str, now: datetime | None = None) -> dict[str, Any]:
         overall = _bump_level(overall, "error")
         issues.append(f"Signal stale: signal={signal_date or 'N/A'} latest_a_share={local_latest}")
 
+    if target_a_share_date:
+        if not local_completed or local_completed < target_a_share_date:
+            overall = _bump_level(overall, "error")
+            issues.append(
+                "Local completed snapshot below nightly target: "
+                f"local_completed={local_completed or 'N/A'} target={target_a_share_date}"
+            )
+        if not local_latest or local_latest < target_a_share_date:
+            overall = _bump_level(overall, "error")
+            issues.append(
+                "Local A-share snapshot below nightly target: "
+                f"latest_a_share={local_latest or 'N/A'} target={target_a_share_date}"
+            )
+        if not signal_date or signal_date < target_a_share_date:
+            overall = _bump_level(overall, "error")
+            issues.append(
+                "Signal output below nightly target: "
+                f"signal={signal_date or 'N/A'} target={target_a_share_date}"
+            )
+
     if nas_completed:
         if not local_completed or local_completed < nas_completed:
             level = "error" if phase in {"pretrade", "trade"} else "warn"
@@ -164,11 +188,23 @@ def build_snapshot(phase: str, now: datetime | None = None) -> dict[str, Any]:
         issues.append(f"Failed to query NAS completion metadata: {nas_error}")
 
     if phase == "nightly":
-        if local_latest and signal_date == local_latest:
+        target_satisfied = (
+            bool(target_a_share_date)
+            and bool(local_completed)
+            and bool(local_latest)
+            and bool(signal_date)
+            and local_completed >= target_a_share_date
+            and local_latest >= target_a_share_date
+            and signal_date >= target_a_share_date
+        )
+        if target_satisfied or (not target_a_share_date and local_latest and signal_date == local_latest):
             pass
         elif processes["nightly_running"] or processes["retry_watcher_running"]:
             overall = _bump_level(overall, "warn")
-            issues.append("Nightly pipeline still running or waiting on retry watcher")
+            issues.append(
+                "Nightly pipeline still running or waiting on retry watcher"
+                + (f" (target={target_a_share_date})" if target_a_share_date else "")
+            )
         elif nightly_logs["timeouts"] or nightly_logs["inference_failures"]:
             overall = _bump_level(overall, "error")
             issues.append(
@@ -200,6 +236,7 @@ def build_snapshot(phase: str, now: datetime | None = None) -> dict[str, Any]:
         "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
         "date": today,
         "phase": phase,
+        "target_a_share_date": target_a_share_date,
         "overall_status": overall,
         "issues": issues,
         "local": {
@@ -292,12 +329,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="QuantPilot daily health snapshot")
     parser.add_argument("--phase", default="manual", choices=["manual", "nightly", "pretrade", "trade"])
     parser.add_argument("--alert-on", default="error", choices=["ok", "warn", "error"])
+    parser.add_argument("--target-a-share-date", default="")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    snapshot = build_snapshot(args.phase)
+    snapshot = build_snapshot(args.phase, target_a_share_date=args.target_a_share_date)
     output_path = write_snapshot(snapshot)
     alerted = maybe_send_alert(snapshot, args.alert_on)
     print(

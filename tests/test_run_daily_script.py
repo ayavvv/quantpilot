@@ -38,6 +38,7 @@ def test_run_daily_runs_healthcheck_on_failures_and_completion():
     content = RUN_DAILY.read_text()
     assert 'run_healthcheck() {' in content
     assert 'run_healthcheck nightly error' in content
+    assert 'target_args+=(--target-a-share-date "$TARGET_A_SHARE_DATE")' in content
     assert '"$PYTHON_BIN" -m scripts.daily_healthcheck' in content
 
 
