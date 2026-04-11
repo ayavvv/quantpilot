@@ -42,6 +42,14 @@ def test_run_daily_runs_healthcheck_on_failures_and_completion():
     assert '"$PYTHON_BIN" -m scripts.daily_healthcheck' in content
 
 
+def test_run_daily_sets_signal_output_tag_from_target_date():
+    content = RUN_DAILY.read_text()
+    assert 'resolve_signal_output_tag() {' in content
+    assert 'SIGNAL_OUTPUT_TAG_VALUE="${SIGNAL_OUTPUT_TAG_OVERRIDE:-}"' in content
+    assert 'SIGNAL_OUTPUT_TAG_VALUE="$(resolve_signal_output_tag "${SYNC_TARGET_A_SHARE_DATE:-${TARGET_A_SHARE_DATE:-}}")"' in content
+    assert 'SIGNAL_OUTPUT_TAG="$SIGNAL_OUTPUT_TAG_VALUE"' in content
+
+
 def test_run_daily_when_ready_replays_target_date():
     content = RUN_DAILY_WHEN_READY.read_text()
     assert 'TARGET_A_SHARE_DATE_OVERRIDE="$TARGET_A_SHARE_DATE"' in content

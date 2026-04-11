@@ -57,6 +57,14 @@ run_healthcheck() {
         "${target_args[@]}" || true
 }
 
+resolve_signal_output_tag() {
+    local date_value="${1:-}"
+    if [ -z "$date_value" ]; then
+        return 0
+    fi
+    echo "${date_value//-/}"
+}
+
 spawn_ready_retry() {
     local target_date="$1"
     if [ "$AUTO_RETRY_ON_NAS_READY" != "true" ] || [ -z "$target_date" ]; then
@@ -145,9 +153,14 @@ fi
 log "Step 2: Running inference..."
 source .venv/bin/activate
 INFERENCE_RC=0
+SIGNAL_OUTPUT_TAG_VALUE="${SIGNAL_OUTPUT_TAG_OVERRIDE:-}"
+if [ -z "$SIGNAL_OUTPUT_TAG_VALUE" ]; then
+    SIGNAL_OUTPUT_TAG_VALUE="$(resolve_signal_output_tag "${SYNC_TARGET_A_SHARE_DATE:-${TARGET_A_SHARE_DATE:-}}")"
+fi
 if ! QLIB_DATA_DIR="$DATA_DIR/qlib_data" \
     MODEL_DIR="$DATA_DIR/models" \
     SIGNAL_DIR="$DATA_DIR/signals" \
+    SIGNAL_OUTPUT_TAG="$SIGNAL_OUTPUT_TAG_VALUE" \
     python -m inference.run_daily; then
     INFERENCE_RC=$?
 fi
