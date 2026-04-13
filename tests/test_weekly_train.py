@@ -83,3 +83,43 @@ def test_resolve_timeout_seconds_default_and_validation(monkeypatch):
     monkeypatch.delenv("WEEKLY_TRAIN_TIMEOUT_SECONDS", raising=False)
     monkeypatch.setenv("WEEKLY_TIMEOUT_SECONDS", "14400")
     assert weekly_train._resolve_timeout_seconds("WEEKLY_TRAIN_TIMEOUT_SECONDS") == 14400
+
+
+def test_weekly_run_backtest_uses_live_trade_params(tmp_path, monkeypatch):
+    calls = {}
+
+    class Result:
+        returncode = 0
+        stdout = "ann_return: 10.00%\nsharpe: 1.23\n"
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        calls["cmd"] = cmd
+        calls["kwargs"] = kwargs
+        return Result()
+
+    monkeypatch.setattr(weekly_train, "MODELS_DIR", tmp_path / "models")
+    monkeypatch.setattr(weekly_train, "OUTPUT_DIR", tmp_path / "output")
+    monkeypatch.setattr(weekly_train, "QLIB_DATA_DIR", tmp_path / "qlib")
+    monkeypatch.setattr(weekly_train, "STRATEGY_DIR", tmp_path / "repo")
+    monkeypatch.setattr(weekly_train.subprocess, "run", fake_run)
+    monkeypatch.setattr(weekly_train, "_resolve_timeout_seconds", lambda _: 123)
+
+    weekly_train.MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    (weekly_train.MODELS_DIR / "pred_sh.pkl").write_text("stub", encoding="utf-8")
+
+    weekly_train.run_backtest()
+
+    assert calls["cmd"] == [
+        weekly_train.sys.executable, "-m", "trainer.backtest.run",
+        "--pred", str(weekly_train.MODELS_DIR / "pred_sh.pkl"),
+        "--price-dir", str(weekly_train.QLIB_DATA_DIR),
+        "--top-n", "5",
+        "--hold-bonus", "0.05",
+        "--stop-loss-pct", "-0.08",
+        "--position-ratio", "0.95",
+        "--allowed-prefix", "SH.",
+        "--filter-limit-up",
+        "--slippage", "0.001",
+        "--output", str(weekly_train.OUTPUT_DIR),
+    ]

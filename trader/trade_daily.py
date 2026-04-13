@@ -519,7 +519,7 @@ def run_trade(
     query_codes = list(set(codes_ordered[:TOP_N * 3]) | current_codes)
     snapshots = get_market_snapshots(quote_ctx, query_codes)
 
-    filtered = []
+    eligible = []
     for code in codes_ordered:
         snapshot = snapshots.get(code)
         if not snapshot:
@@ -537,12 +537,10 @@ def run_trade(
                 log.warning(f"涨停过滤(买入日): {code} {chg_t1:.1f}%")
                 continue
 
-        filtered.append(code)
-        if len(filtered) >= TOP_N:
-            break
+        eligible.append(code)
 
-    target_set = set(filtered)
-    log.info(f"目标持仓 Top-{TOP_N}: {filtered}")
+    target_set = set(eligible[:TOP_N])
+    log.info(f"目标持仓 Top-{TOP_N}: {eligible[:TOP_N]}")
 
     if not target_set and current_codes and len(snapshots) < len(query_codes) * 0.5:
         log.warning(f"行情异常保护: 仅 {len(snapshots)}/{len(query_codes)} 行情成功，保持现有持仓不动")
@@ -633,7 +631,10 @@ def run_trade(
         log.warning(f"卖出失败但继续保守买入: {sorted(set(sell_failures))}")
 
     available_slots = max(TOP_N - len(current_codes), 0)
-    buys = [code for code in filtered if code not in current_codes][:available_slots]
+    buys = [
+        code for code in eligible
+        if code not in current_codes and code not in stop_loss_sells
+    ][:available_slots]
     if not buys:
         return
 

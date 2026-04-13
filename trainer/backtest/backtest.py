@@ -1,17 +1,12 @@
 """
 Backtest engine: daily Top-N equal-weight strategy based on pred.pkl.
 
-Trading logic (matching label Ref($close,-2)/Ref($close,-1)-1):
+Default rules are aligned with live trade:
   - Signal day t: model produces scores
-  - t+1 close: buy (entry)
-  - t+2 close: sell (exit)
-  - Position return = close(t+2)/close(t+1) - 1
-  - Continuous portfolio: daily rebalancing, fees only on turnover
-
-Hold inertia (hold_bonus):
-  - Existing positions get a score bonus during ranking
-  - New stocks must exceed held stock score + hold_bonus to replace
-  - Significantly reduces turnover and transaction cost drag
+  - Trade day t+1 close: rebalance using signal-day scores
+  - Next trade day t+2 close: mark daily holding return
+  - Universe defaults to SH. only (same as live signal extraction)
+  - Hold inertia, stop-loss and dual limit-up filter match live defaults
 """
 
 from __future__ import annotations
@@ -38,7 +33,7 @@ def _get_fee_rate(code: str, side: str) -> float:
 
 def _get_limit_up_pct(code: str) -> float:
     """A-share limit-up threshold: ChiNext/STAR 20%, main board 10%."""
-    if code.startswith("SH.300") or code.startswith("SH.688"):
+    if code.startswith("SZ.300") or code.startswith("SH.688"):
         return 19.5
     return 9.5
 
@@ -46,10 +41,12 @@ def _get_limit_up_pct(code: str) -> float:
 def run_backtest(
     pred: pd.Series,
     close_df: pd.DataFrame,
-    top_n: int = 20,
-    hold_bonus: float = 0.0,
+    top_n: int = 5,
+    hold_bonus: float = 0.05,
     change_df: pd.DataFrame | None = None,
-    filter_limit_up: bool = False,
+    filter_limit_up: bool = True,
+    stop_loss_pct: float = -0.08,
+    position_ratio: float = 0.95,
 ) -> pd.DataFrame:
     """
     Run backtest.
@@ -61,15 +58,20 @@ def run_backtest(
         hold_bonus: hold inertia bonus (held stocks score += hold_bonus)
         change_df: date x code change rate matrix (%), for limit-up filtering
         filter_limit_up: whether to filter limit-up stocks (A-shares)
+        stop_loss_pct: sell held names when mark-to-market PnL falls below threshold
+        position_ratio: invest this share of portfolio capital, keep the rest in cash
     """
     close_df = close_df.copy()
     close_df.index = pd.to_datetime(close_df.index)
+    if change_df is not None:
+        change_df = change_df.copy()
+        change_df.index = pd.to_datetime(change_df.index)
     price_dates = sorted(close_df.index)
     date_to_idx = {d: i for i, d in enumerate(price_dates)}
     signal_dates = sorted(pd.to_datetime(pred.index.get_level_values("datetime").unique()))
 
     records = []
-    prev_portfolio = set()
+    entry_prices: dict[str, float] = {}
 
     for t in signal_dates:
         if t not in date_to_idx:
@@ -85,17 +87,18 @@ def run_backtest(
         if isinstance(day_scores, pd.DataFrame):
             day_scores = day_scores.iloc[:, 0]
         day_scores = day_scores.dropna().copy()
+        current_portfolio = set(entry_prices.keys())
 
         # Hold inertia: held stocks get score bonus
-        if hold_bonus > 0 and prev_portfolio:
-            for code in prev_portfolio:
+        if hold_bonus > 0 and current_portfolio:
+            for code in current_portfolio:
                 if code in day_scores.index:
                     day_scores[code] += hold_bonus
 
         day_scores = day_scores.sort_values(ascending=False)
 
         # Filter: must have close prices on t+1 and t+2, no limit-up
-        candidates = []
+        eligible = []
         for code in day_scores.index:
             if code not in close_df.columns:
                 continue
@@ -105,41 +108,59 @@ def run_backtest(
                 continue
 
             # Limit-up filter: signal day t or buy day t+1 hit limit, skip
-            if filter_limit_up and change_df is not None and code.startswith("SH."):
+            if filter_limit_up and change_df is not None and code.startswith(("SH.", "SZ.")):
                 limit_pct = _get_limit_up_pct(code)
                 chg_t = change_df.at[t, code] if (t in change_df.index and code in change_df.columns) else np.nan
                 chg_t1 = change_df.at[t1, code] if (t1 in change_df.index and code in change_df.columns) else np.nan
                 if (pd.notna(chg_t) and chg_t >= limit_pct) or (pd.notna(chg_t1) and chg_t1 >= limit_pct):
                     continue
 
-            candidates.append(code)
-            if len(candidates) >= top_n:
-                break
+            eligible.append(code)
 
-        new_portfolio = set(candidates)
-        n = len(new_portfolio)
+        target_set = set(eligible[:top_n])
+        stop_loss_sells = set()
+        for code in current_portfolio:
+            entry_price = entry_prices.get(code)
+            if entry_price is None or entry_price <= 0 or code not in close_df.columns:
+                continue
+            current_price = close_df.at[t1, code] if t1 in close_df.index else np.nan
+            if pd.isna(current_price) or current_price <= 0:
+                continue
+            pl_ratio = current_price / entry_price - 1
+            if pl_ratio <= stop_loss_pct:
+                stop_loss_sells.add(code)
+                target_set.discard(code)
+
+        sells = (current_portfolio - target_set) | stop_loss_sells
+        holds = current_portfolio - sells
+        available_slots = max(top_n - len(holds), 0)
+        buys = [
+            code for code in eligible
+            if code not in holds and code not in stop_loss_sells
+        ][:available_slots]
+        new_portfolio = holds | set(buys)
+        ordered_positions = [code for code in eligible if code in new_portfolio]
+        n = len(ordered_positions)
         if n == 0:
+            entry_prices = {}
             continue
 
         # Position returns: equal weight
         returns = []
-        for code in candidates:
+        for code in ordered_positions:
             c1 = close_df.at[t1, code]
             c2 = close_df.at[t2, code]
             returns.append(c2 / c1 - 1)
-        gross_return = np.mean(returns)
+        gross_return = position_ratio * np.mean(returns)
 
         # Turnover and fees
-        sells = prev_portfolio - new_portfolio
-        buys = new_portfolio - prev_portfolio
-        holds = prev_portfolio & new_portfolio
         turnover = (len(sells) + len(buys)) / (2 * max(top_n, 1))
 
         fee_cost = 0.0
         for code in sells:
-            fee_cost += (1.0 / max(len(prev_portfolio), 1)) * _get_fee_rate(code, "sell")
+            fee_cost += (position_ratio / max(len(current_portfolio), 1)) * _get_fee_rate(code, "sell")
         for code in buys:
-            fee_cost += (1.0 / n) * _get_fee_rate(code, "buy")
+            fee_cost += (position_ratio / n) * _get_fee_rate(code, "buy")
 
         net_return = gross_return - fee_cost
 
@@ -155,10 +176,17 @@ def run_backtest(
             "n_buys": len(buys),
             "n_sells": len(sells),
             "n_holds": len(holds),
-            "positions": ",".join(sorted(candidates)),
+            "n_stop_loss_sells": len(stop_loss_sells),
+            "positions": ",".join(ordered_positions),
         })
 
-        prev_portfolio = new_portfolio
+        next_entry_prices = {}
+        for code in ordered_positions:
+            if code in holds and code in entry_prices:
+                next_entry_prices[code] = entry_prices[code]
+            else:
+                next_entry_prices[code] = float(close_df.at[t1, code])
+        entry_prices = next_entry_prices
 
     df = pd.DataFrame(records)
     if not df.empty:

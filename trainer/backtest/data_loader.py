@@ -5,22 +5,27 @@ from pathlib import Path
 
 import pandas as pd
 
-from .config import NON_TRADEABLE_PREFIXES
+from .config import NON_TRADEABLE_PREFIXES, TRADEABLE_PREFIXES
 
 
-def load_predictions(pred_path: Path) -> pd.Series:
-    """Load pred.pkl, filter out non-tradeable codes (MACRO, etc.)."""
+def load_predictions(
+    pred_path: Path,
+    allowed_prefixes: tuple[str, ...] = TRADEABLE_PREFIXES,
+) -> pd.Series:
+    """Load pred.pkl and keep only backtest-tradeable instruments."""
     with open(pred_path, "rb") as f:
         pred = pickle.load(f)
     if isinstance(pred, pd.DataFrame):
         pred = pred.iloc[:, 0]
 
-    # Filter non-tradeable codes
     instruments = pred.index.get_level_values("instrument")
     mask = ~instruments.str.startswith(NON_TRADEABLE_PREFIXES)
+    if allowed_prefixes:
+        mask &= instruments.str.startswith(allowed_prefixes)
     pred = pred[mask]
     print(f"Loaded predictions: {len(pred.index.get_level_values('datetime').unique())} days, "
-          f"{len(pred.index.get_level_values('instrument').unique())} instruments")
+          f"{len(pred.index.get_level_values('instrument').unique())} instruments"
+          f" | prefixes={allowed_prefixes or 'ALL'}")
     return pred
 
 
