@@ -151,6 +151,23 @@ def _pred_infer_date(pred: pd.Series | pd.DataFrame, fallback_date: str) -> str:
     return fallback_date
 
 
+def _resolve_live_infer_date(pred: pd.Series | pd.DataFrame, expected_date: str) -> str:
+    """Use the requested inference date as the live signal date.
+
+    Some qlib/model combinations can emit a prediction index that trails the
+    requested latest A-share date by one bar. For daily production inference we
+    explicitly score the latest available date, so the output signal should stay
+    aligned to that requested trading date.
+    """
+    pred_date = _pred_infer_date(pred, expected_date)
+    if pred_date != expected_date:
+        print(
+            f"[WARN] 模型输出日期 {pred_date} 与目标推理日期 {expected_date} 不一致，"
+            f"按目标日期 {expected_date} 输出信号"
+        )
+    return expected_date
+
+
 # ── A 股配置 ──────────────────────────────────────────
 
 A_CONFIG_PATH = _this_dir() / "config_a.yaml"
@@ -574,7 +591,7 @@ class StrategyEngine:
                     df.attrs["infer_date"] = last_date
                     return df
 
-                infer_date = _pred_infer_date(pred, last_date)
+                infer_date = _resolve_live_infer_date(pred, last_date)
                 if hasattr(pred, "index") and isinstance(pred.index, pd.MultiIndex):
                     level_instrument = "instrument" if "instrument" in pred.index.names else pred.index.names[1]
                     codes = pred.index.get_level_values(level_instrument).astype(str).tolist()
@@ -632,7 +649,7 @@ class StrategyEngine:
             df.attrs["infer_date"] = last_date
             return df
 
-        infer_date = _pred_infer_date(pred, last_date)
+        infer_date = _resolve_live_infer_date(pred, last_date)
 
         if hasattr(pred, "index") and isinstance(pred.index, pd.MultiIndex):
             level_instrument = "instrument" if "instrument" in pred.index.names else pred.index.names[1]

@@ -15,6 +15,15 @@ class DummyModel:
         return pd.Series([0.42], index=idx)
 
 
+class LaggedDummyModel:
+    def predict(self, dataset, segment="infer"):
+        idx = pd.MultiIndex.from_arrays(
+            [[pd.Timestamp("2026-04-07")], ["SH.600000"]],
+            names=["datetime", "instrument"],
+        )
+        return pd.Series([0.42], index=idx)
+
+
 class DummyDataset:
     def prepare(self, *args, **kwargs):
         return pd.DataFrame({"feature": [1.0]})
@@ -245,3 +254,56 @@ def test_predict_next_day_fallback_keeps_a_share_instruments_only(tmp_path, monk
     assert handler_kwargs["instruments"] == ["SH.600000", "SZ.000001"]
     assert result.attrs["infer_date"] == "2026-04-08"
     assert result["code"].tolist() == ["SH.600000"]
+
+
+def test_predict_next_day_forces_live_infer_date_to_requested_last_date(tmp_path, monkeypatch):
+    qlib_dir = tmp_path / "qlib"
+    inst_dir = qlib_dir / "instruments"
+    inst_dir.mkdir(parents=True)
+    (inst_dir / "all.txt").write_text("SH.600000\t2006-01-03\t2026-04-08\n", encoding="utf-8")
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    with open(models_dir / "lightgbm_sh_latest.pkl", "wb") as f:
+        pickle.dump(LaggedDummyModel(), f)
+
+    monkeypatch.setattr(engine.qlib, "init", lambda **kwargs: None)
+    monkeypatch.setattr(
+        engine,
+        "_load_config",
+        lambda path=None: {
+            "task": {
+                "dataset": {
+                    "class": "DatasetH",
+                    "kwargs": {
+                        "handler": {
+                            "class": "Alpha158Fund",
+                            "module_path": "strategy.alpha_hk",
+                            "kwargs": {},
+                        },
+                        "segments": {},
+                    },
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        engine.D,
+        "calendar",
+        lambda start_time, end_time, freq="day": pd.DatetimeIndex(["2026-04-08"]),
+        raising=False,
+    )
+
+    def fake_features(instruments, fields, start_time, end_time):
+        idx = pd.MultiIndex.from_arrays(
+            [[pd.Timestamp("2026-04-08")], ["SH.600000"]],
+            names=["datetime", "instrument"],
+        )
+        return pd.DataFrame([[1.0] * len(fields)], index=idx, columns=fields)
+
+    monkeypatch.setattr(engine.D, "features", fake_features, raising=False)
+
+    strategy_engine = engine.StrategyEngine(provider_uri=qlib_dir, models_dir=models_dir)
+    result = strategy_engine._predict_next_day_impl(hk_mode=False)
+
+    assert result.attrs["infer_date"] == "2026-04-08"
