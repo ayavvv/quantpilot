@@ -14,6 +14,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
+# Load reporter mail config first, then let root .env override it.
+if [ -f "$PROJECT_DIR/reporter/.env" ]; then
+    set -a
+    source "$PROJECT_DIR/reporter/.env"
+    set +a
+fi
+
 # Load .env if exists
 if [ -f "$PROJECT_DIR/.env" ]; then
     set -a
@@ -49,6 +56,9 @@ log "  SMTP_USER: $( [ -n "${SMTP_USER:-}" ] && printf set || printf missing )"
 log "  SMTP_PASSWORD: $( [ -n "${SMTP_PASSWORD:-}" ] && printf set || printf missing )"
 log "  EMAIL_TO: $( [ -n "${EMAIL_TO:-}" ] && printf set || printf missing )"
 log "  REPORT_TO: $( [ -n "${REPORT_TO:-}" ] && printf set || printf missing )"
+log "  WEEKLY_TRAIN_TIMEOUT_SECONDS: ${WEEKLY_TRAIN_TIMEOUT_SECONDS:-43200}"
+log "  WEEKLY_BACKTEST_TIMEOUT_SECONDS: ${WEEKLY_BACKTEST_TIMEOUT_SECONDS:-43200}"
+log "  WEEKLY_SIGNAL_PROMOTION_TIMEOUT_SECONDS: ${WEEKLY_SIGNAL_PROMOTION_TIMEOUT_SECONDS:-43200}"
 
 source .venv/bin/activate
 

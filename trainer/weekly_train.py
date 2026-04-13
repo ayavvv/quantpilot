@@ -44,7 +44,7 @@ NAS_HOST = os.environ.get("NAS_HOST", "")
 NAS_USER = os.environ.get("NAS_USER", "")
 NAS_QLIB_PATH = os.environ.get("NAS_QLIB_PATH", "/qlib_data")
 
-STRATEGY_DIR = Path(os.environ.get("STRATEGY_DIR", "/app"))
+STRATEGY_DIR = Path(os.environ.get("STRATEGY_DIR", str(Path(__file__).resolve().parents[1])))
 QLIB_DATA_DIR = Path(os.environ.get("QLIB_DATA_DIR", "/qlib_data"))
 MODELS_DIR = Path(os.environ.get("MODELS_DIR", "/data/models"))
 OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", "/data/output"))
@@ -60,6 +60,7 @@ EMAIL_FROM = os.environ.get("EMAIL_FROM", "")
 EMAIL_TO = os.environ.get("EMAIL_TO", "")
 REPORT_FROM = os.environ.get("REPORT_FROM", "")
 REPORT_TO = os.environ.get("REPORT_TO", "")
+DEFAULT_WEEKLY_TIMEOUT_SECONDS = 12 * 60 * 60
 
 logging.basicConfig(
     level=logging.INFO,
@@ -70,13 +71,34 @@ log = logging.getLogger("weekly_train")
 
 
 def resolve_email_config() -> dict[str, str]:
-    report_from = EMAIL_FROM or REPORT_FROM or SMTP_USER
-    report_to = EMAIL_TO or REPORT_TO
+    fallback = _load_env_file(STRATEGY_DIR / "reporter" / ".env")
+
+    smtp_host = os.environ.get("SMTP_HOST") or fallback.get("SMTP_HOST") or SMTP_HOST
+    smtp_port = os.environ.get("SMTP_PORT") or fallback.get("SMTP_PORT") or str(SMTP_PORT)
+    smtp_user = os.environ.get("SMTP_USER") or fallback.get("SMTP_USER") or SMTP_USER
+    smtp_password = os.environ.get("SMTP_PASSWORD") or fallback.get("SMTP_PASSWORD") or SMTP_PASSWORD
+    report_from = (
+        os.environ.get("EMAIL_FROM")
+        or os.environ.get("REPORT_FROM")
+        or fallback.get("EMAIL_FROM")
+        or fallback.get("REPORT_FROM")
+        or EMAIL_FROM
+        or REPORT_FROM
+        or smtp_user
+    )
+    report_to = (
+        os.environ.get("EMAIL_TO")
+        or os.environ.get("REPORT_TO")
+        or fallback.get("EMAIL_TO")
+        or fallback.get("REPORT_TO")
+        or EMAIL_TO
+        or REPORT_TO
+    )
     return {
-        "smtp_host": SMTP_HOST,
-        "smtp_port": str(SMTP_PORT),
-        "smtp_user": SMTP_USER,
-        "smtp_password": SMTP_PASSWORD,
+        "smtp_host": smtp_host,
+        "smtp_port": str(smtp_port),
+        "smtp_user": smtp_user,
+        "smtp_password": smtp_password,
         "report_from": report_from,
         "report_to": report_to,
     }
@@ -109,6 +131,38 @@ def save_report_locally(filename: str, body_text: str):
     report_path.write_text(body_text, encoding="utf-8")
     log.info(f"  Report saved locally: {report_path}")
     return report_path
+
+
+def _load_env_file(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+
+    values: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip("'").strip('"')
+    return values
+
+
+def _resolve_timeout_seconds(name: str, default: int = DEFAULT_WEEKLY_TIMEOUT_SECONDS) -> int:
+    raw_value = os.environ.get(name) or os.environ.get("WEEKLY_TIMEOUT_SECONDS")
+    if not raw_value:
+        return default
+
+    try:
+        timeout_seconds = int(raw_value)
+    except ValueError:
+        log.warning(f"  Invalid {name}={raw_value!r}, fallback to {default}s")
+        return default
+
+    if timeout_seconds <= 0:
+        log.warning(f"  Non-positive {name}={raw_value!r}, fallback to {default}s")
+        return default
+
+    return timeout_seconds
 
 
 # --- Step 1: Check/Sync Qlib data ---
@@ -182,13 +236,16 @@ def train_model():
     if not main_py.exists():
         raise RuntimeError(f"Training entry point not found: {main_py}")
 
+    timeout_seconds = _resolve_timeout_seconds("WEEKLY_TRAIN_TIMEOUT_SECONDS")
+    log.info(f"  Train timeout: {timeout_seconds}s")
+
     result = subprocess.run(
         [sys.executable, str(main_py), "train", "--market", "sh"],
         cwd=str(STRATEGY_DIR),
         env=env,
         capture_output=True,
         text=True,
-        timeout=1800,
+        timeout=timeout_seconds,
     )
     if result.returncode != 0:
         log.error(f"Training stdout:\n{result.stdout[-2000:]}")
@@ -249,6 +306,9 @@ def run_backtest():
     env = os.environ.copy()
     env["QLIB_DATA_DIR"] = str(QLIB_DATA_DIR)
 
+    timeout_seconds = _resolve_timeout_seconds("WEEKLY_BACKTEST_TIMEOUT_SECONDS")
+    log.info(f"  Backtest timeout: {timeout_seconds}s")
+
     result = subprocess.run(
         [
             sys.executable, "-m", "trainer.backtest.run",
@@ -262,7 +322,7 @@ def run_backtest():
         env=env,
         capture_output=True,
         text=True,
-        timeout=600,
+        timeout=timeout_seconds,
     )
     if result.returncode != 0:
         log.error(f"Backtest stdout:\n{result.stdout[-2000:]}")
@@ -329,13 +389,16 @@ def promote_trade_signal():
     env["SIGNAL_DIR"] = str(SIGNAL_DIR)
     env["PROMOTE_LATEST"] = "true"
 
+    timeout_seconds = _resolve_timeout_seconds("WEEKLY_SIGNAL_PROMOTION_TIMEOUT_SECONDS")
+    log.info(f"  Signal promotion timeout: {timeout_seconds}s")
+
     result = subprocess.run(
         [sys.executable, "-m", "inference.run_daily"],
         cwd=str(STRATEGY_DIR),
         env=env,
         capture_output=True,
         text=True,
-        timeout=1800,
+        timeout=timeout_seconds,
     )
     if result.returncode != 0:
         log.error(f"Signal promotion stdout:\n{result.stdout[-2000:]}")
