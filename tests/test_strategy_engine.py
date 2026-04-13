@@ -307,3 +307,67 @@ def test_predict_next_day_forces_live_infer_date_to_requested_last_date(tmp_path
     result = strategy_engine._predict_next_day_impl(hk_mode=False)
 
     assert result.attrs["infer_date"] == "2026-04-08"
+
+
+def test_predict_next_day_uses_latest_a_share_end_as_calendar_end(tmp_path, monkeypatch):
+    qlib_dir = tmp_path / "qlib"
+    inst_dir = qlib_dir / "instruments"
+    inst_dir.mkdir(parents=True)
+    (inst_dir / "all.txt").write_text(
+        "\n".join(
+            [
+                "US.SPY\t2006-01-03\t2026-04-12",
+                "SH.600000\t2006-01-03\t2026-04-13",
+            ]
+        ) + "\n",
+        encoding="utf-8",
+    )
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    with open(models_dir / "lightgbm_sh_latest.pkl", "wb") as f:
+        pickle.dump(DummyModel(), f)
+
+    monkeypatch.setattr(engine.qlib, "init", lambda **kwargs: None)
+    monkeypatch.setattr(
+        engine,
+        "_load_config",
+        lambda path=None: {
+            "task": {
+                "dataset": {
+                    "class": "DatasetH",
+                    "kwargs": {
+                        "handler": {
+                            "class": "Alpha158Fund",
+                            "kwargs": {},
+                        },
+                        "segments": {},
+                    },
+                }
+            }
+        },
+    )
+
+    captured = {}
+
+    def fake_calendar(start_time, end_time, freq="day"):
+        captured["end_time"] = end_time
+        return pd.DatetimeIndex(["2026-04-10", "2026-04-13"])
+
+    monkeypatch.setattr(engine.D, "calendar", fake_calendar, raising=False)
+    monkeypatch.setattr(
+        engine.D,
+        "features",
+        lambda instruments, fields, start_time, end_time: (_ for _ in ()).throw(
+            ValueError("force fallback")
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(engine, "_active_a_share_instruments", lambda provider_uri, last_date: ["SH.600000"])
+    monkeypatch.setattr(engine, "init_instance_by_config", lambda cfg: DummyDataset())
+
+    strategy_engine = engine.StrategyEngine(provider_uri=qlib_dir, models_dir=models_dir)
+    result = strategy_engine._predict_next_day_impl(hk_mode=False)
+
+    assert captured["end_time"] == "2026-04-13"
+    assert result.attrs["infer_date"] == "2026-04-13"

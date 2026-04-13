@@ -136,6 +136,24 @@ def _calendar_range(provider_uri: str, freq: str = "day") -> tuple[str, str]:
     return lines[0].strip(), lines[-1].strip()
 
 
+def _latest_a_share_instruments_end(provider_uri: str) -> str | None:
+    inst_path = Path(provider_uri).expanduser().resolve() / "instruments" / "all.txt"
+    if not inst_path.exists():
+        return None
+
+    latest = None
+    for line in inst_path.read_text().splitlines():
+        parts = line.strip().split("\t")
+        if len(parts) < 3:
+            continue
+        code, _, end_date = parts[:3]
+        if not code.startswith(("SH", "SZ")):
+            continue
+        if latest is None or end_date > latest:
+            latest = end_date
+    return latest
+
+
 def _pred_infer_date(pred: pd.Series | pd.DataFrame, fallback_date: str) -> str:
     """Extract the actual infer date from prediction index when available."""
     if hasattr(pred, "index") and isinstance(pred.index, pd.MultiIndex):
@@ -525,7 +543,8 @@ class StrategyEngine:
             raise ValueError("config 中缺少 task 段")
 
         from datetime import datetime, timedelta
-        end_time = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        latest_a_end = _latest_a_share_instruments_end(self.provider_uri) if not hk_mode else None
+        end_time = latest_a_end or (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         try:
             cal = D.calendar(start_time="2020-01-01", end_time=end_time, freq="day")
             if cal is None or (hasattr(cal, "__len__") and len(cal) == 0):
@@ -537,17 +556,10 @@ class StrategyEngine:
         # 防止日历被 US/MACRO 数据推进超过 A 股数据范围：
         # 取 A 股 instruments 的最大 end_time，限制 infer_date
         if not hk_mode:
-            inst_path = Path(self.provider_uri) / "instruments" / "all.txt"
-            if inst_path.exists():
-                max_a_end = None
-                for line in inst_path.read_text().splitlines():
-                    parts = line.strip().split("\t")
-                    if len(parts) >= 3 and (parts[0].startswith("SH") or parts[0].startswith("SZ")):
-                        if max_a_end is None or parts[2] > max_a_end:
-                            max_a_end = parts[2]
-                if max_a_end and max_a_end < last_date:
-                    print(f"[WARN] 日历最后一天 {last_date} 超过 A 股数据范围 {max_a_end}，回退到 {max_a_end}")
-                    last_date = max_a_end
+            max_a_end = latest_a_end
+            if max_a_end and max_a_end < last_date:
+                print(f"[WARN] 日历最后一天 {last_date} 超过 A 股数据范围 {max_a_end}，回退到 {max_a_end}")
+                last_date = max_a_end
 
         infer_start_date, infer_window_bars = _resolve_infer_window(cal, last_date)
         print(
