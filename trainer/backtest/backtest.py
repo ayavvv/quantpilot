@@ -62,9 +62,11 @@ def run_backtest(
         change_df: date x code change rate matrix (%), for limit-up filtering
         filter_limit_up: whether to filter limit-up stocks (A-shares)
     """
+    close_df = close_df.copy()
+    close_df.index = pd.to_datetime(close_df.index)
     price_dates = sorted(close_df.index)
     date_to_idx = {d: i for i, d in enumerate(price_dates)}
-    signal_dates = sorted(pred.index.get_level_values("datetime").unique())
+    signal_dates = sorted(pd.to_datetime(pred.index.get_level_values("datetime").unique()))
 
     records = []
     prev_portfolio = set()
