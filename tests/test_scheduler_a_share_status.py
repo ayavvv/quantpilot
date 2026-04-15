@@ -41,9 +41,10 @@ from collector.scheduler import DataCollectorScheduler
 
 
 class _FakeQlibWriter:
-    def __init__(self, loaded=None):
+    def __init__(self, loaded=None, instruments=None):
         self.loaded = loaded or {}
         self.saved = {}
+        self.instruments = instruments or {}
 
     def load_metadata(self, name):
         return self.loaded.get(name)
@@ -66,6 +67,27 @@ def test_latest_completed_a_share_date_reads_completion_metadata():
     )
 
     assert scheduler._latest_completed_a_share_date() == "2026-03-30"
+
+
+def test_latest_a_share_date_prefers_in_memory_writer_over_stale_disk(tmp_path, monkeypatch):
+    qlib_dir = tmp_path / "qlib_data"
+    inst_dir = qlib_dir / "instruments"
+    inst_dir.mkdir(parents=True)
+    (inst_dir / "all.txt").write_text(
+        "SH.600000\t2026-01-01\t2026-04-13\n"
+        "SZ.000001\t2026-01-01\t2026-04-13\n"
+    )
+
+    scheduler = DataCollectorScheduler()
+    scheduler.qlib_writer = _FakeQlibWriter(
+        instruments={
+            "SH.600000": ("2026-01-01", "2026-04-14"),
+            "SZ.000001": ("2026-01-01", "2026-04-13"),
+        }
+    )
+    monkeypatch.setenv("QLIB_DATA_DIR", str(qlib_dir))
+
+    assert scheduler._latest_a_share_date() == "2026-04-14"
 
 
 def test_mark_a_share_sync_completed_saves_completion_metadata():

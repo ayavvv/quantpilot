@@ -458,6 +458,20 @@ class DataCollectorScheduler:
 
     def _latest_a_share_date(self) -> str | None:
         """Read the latest A-share end date from Qlib instruments metadata."""
+        self._init_qlib_writer()
+        if self.qlib_writer is not None:
+            latest = None
+            for code, instrument_range in getattr(self.qlib_writer, "instruments", {}).items():
+                if not code.startswith(("SH.", "SZ.")):
+                    continue
+                if not instrument_range or len(instrument_range) < 2:
+                    continue
+                end_date = instrument_range[1]
+                if latest is None or end_date > latest:
+                    latest = end_date
+            if latest:
+                return latest
+
         qlib_dir_raw = os.environ.get("QLIB_DATA_DIR", "")
         if not qlib_dir_raw:
             return None
