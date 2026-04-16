@@ -42,6 +42,13 @@ def test_run_daily_runs_healthcheck_on_failures_and_completion():
     assert '"$PYTHON_BIN" -m scripts.daily_healthcheck' in content
 
 
+def test_run_daily_runs_reporter_natively_with_reporter_env():
+    content = RUN_DAILY.read_text()
+    assert 'REPORTER_ENV_FILE="$PROJECT_DIR/reporter/.env"' in content
+    assert '"$PYTHON_BIN" -m reporter.send_report' in content
+    assert 'TRADE_LOG="$PROJECT_DIR/logs/trade.log"' in content
+
+
 def test_run_daily_sets_signal_output_tag_from_target_date():
     content = RUN_DAILY.read_text()
     assert 'resolve_signal_output_tag() {' in content

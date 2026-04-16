@@ -170,13 +170,18 @@ if [ "$INFERENCE_RC" -ne 0 ]; then
 fi
 log "  Inference complete"
 
-# Step 3: Run reporter via Docker
+# Step 3: Run reporter natively so Mail.app fallback is available on macOS host
 log "Step 3: Running reporter..."
 log "  Working directory: $PROJECT_DIR"
-log "  Docker binary: $(command -v "$DOCKER" || true)"
 log "  Reporter env file: $PROJECT_DIR/reporter/.env"
 REPORTER_RC=0
-if ! $DOCKER compose -f "$PROJECT_DIR/docker-compose.mac.yml" run --rm reporter; then
+if ! REPORTER_ENV_FILE="$PROJECT_DIR/reporter/.env" \
+    REPORT_DIR="$DATA_DIR/reports" \
+    SIGNAL_DIR="$DATA_DIR/signals" \
+    QLIB_DATA_DIR="$DATA_DIR/qlib_data" \
+    TRADE_LOG="$PROJECT_DIR/logs/trade.log" \
+    PYTHONPATH="$PYTHONPATH" \
+    "$PYTHON_BIN" -m reporter.send_report; then
     REPORTER_RC=$?
 fi
 run_healthcheck nightly error

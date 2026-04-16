@@ -1,15 +1,20 @@
 """
 Daily quant report: data collection status + model signals + trade status.
-Sends via SMTP email or saves HTML locally.
+Sends via SMTP, falls back to local sendmail (then Mail.app on macOS), and always saves HTML locally.
 """
 
 import os
 import pickle
+import shutil
 import smtplib
 import ssl
+import subprocess
+import sys
 from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
 from pathlib import Path
 
 import pandas as pd
@@ -17,6 +22,7 @@ from jinja2 import Template
 
 SIGNAL_DIR = Path(os.environ.get("SIGNAL_DIR", "/data/signals"))
 REPORT_DIR = Path(os.environ.get("REPORT_DIR", "/data/reports"))
+REPORTER_ENV_PATH = Path(os.environ.get("REPORTER_ENV_FILE", Path(__file__).with_name(".env")))
 
 REPORT_TEMPLATE = """
 <html>
@@ -159,67 +165,254 @@ def check_signal_status():
     }
 
 
-def send_email(html_content, subject):
-    """Send email via SMTP."""
-    smtp_host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
-    smtp_port = int(os.environ.get("SMTP_PORT", "465"))
-    smtp_user = os.environ.get("SMTP_USER", "")
-    smtp_pass = os.environ.get("SMTP_PASSWORD", "")
-    report_to = os.environ.get("REPORT_TO", "")
-    report_from = os.environ.get("REPORT_FROM", smtp_user)
+def load_env_defaults():
+    """Load reporter .env defaults without overriding existing env vars."""
+    if not REPORTER_ENV_PATH.exists():
+        return
+    for raw_line in REPORTER_ENV_PATH.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key, value)
 
-    missing = [
+
+def save_report_locally(html_content: str) -> Path:
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    report_path = REPORT_DIR / f"report_{datetime.now().strftime('%Y%m%d')}.html"
+    report_path.write_text(html_content, encoding="utf-8")
+    print(f"Report saved: {report_path}")
+    return report_path
+
+
+def email_config():
+    load_env_defaults()
+    smtp_user = os.environ.get("SMTP_USER", "")
+    return {
+        "smtp_host": os.environ.get("SMTP_HOST", "smtp.gmail.com"),
+        "smtp_port": int(os.environ.get("SMTP_PORT", "465")),
+        "smtp_user": smtp_user,
+        "smtp_password": os.environ.get("SMTP_PASSWORD", ""),
+        "report_to": os.environ.get("REPORT_TO", ""),
+        "report_from": os.environ.get("REPORT_FROM", smtp_user),
+        "smtp_timeout": int(os.environ.get("SMTP_TIMEOUT_SECONDS", "10")),
+        "smtp_retries": int(os.environ.get("SMTP_RETRIES", "1")),
+        "sendmail_fallback": os.environ.get("SENDMAIL_FALLBACK", "true").lower() == "true",
+        "mail_app_fallback": os.environ.get("MAIL_APP_FALLBACK", "true").lower() == "true",
+    }
+
+
+def log_config_status(config):
+    print(
+        "SMTP config status: "
+        f"host={config['smtp_host']} port={config['smtp_port']} "
+        f"user={'set' if config['smtp_user'] else 'missing'} "
+        f"password={'set' if config['smtp_password'] else 'missing'} "
+        f"report_to={'set' if config['report_to'] else 'missing'} "
+        f"report_from={'set' if config['report_from'] else 'missing'} "
+        f"sendmail_fallback={'on' if config['sendmail_fallback'] else 'off'} "
+        f"mail_app_fallback={'on' if config['mail_app_fallback'] else 'off'}"
+    )
+    return [
         name
         for name, value in {
-            "SMTP_USER": smtp_user,
-            "SMTP_PASSWORD": smtp_pass,
-            "REPORT_TO": report_to,
+            "SMTP_USER": config["smtp_user"],
+            "SMTP_PASSWORD": config["smtp_password"],
+            "REPORT_TO": config["report_to"],
         }.items()
         if not value
     ]
-    print(
-        "SMTP config status: "
-        f"host={smtp_host} port={smtp_port} "
-        f"user={'set' if smtp_user else 'missing'} "
-        f"password={'set' if smtp_pass else 'missing'} "
-        f"report_to={'set' if report_to else 'missing'} "
-        f"report_from={'set' if report_from else 'missing'}"
-    )
 
-    if missing:
-        print(f"Email not configured, missing: {', '.join(missing)}. Saving report locally.")
-        report_path = REPORT_DIR / f"report_{datetime.now().strftime('%Y%m%d')}.html"
-        REPORT_DIR.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(html_content, encoding="utf-8")
-        print(f"Report saved: {report_path}")
-        return
 
+def build_message(html_content, subject, report_from, report_to):
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = report_from
     msg["To"] = report_to
     msg.attach(MIMEText(html_content, "html", "utf-8"))
+    return msg
 
+
+def send_via_smtp(config, msg):
     context = ssl.create_default_context()
+    attempts = max(1, config["smtp_retries"])
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            if config["smtp_port"] == 465:
+                with smtplib.SMTP_SSL(
+                    config["smtp_host"],
+                    config["smtp_port"],
+                    timeout=config["smtp_timeout"],
+                    context=context,
+                ) as server:
+                    server.login(config["smtp_user"], config["smtp_password"])
+                    server.send_message(msg)
+            else:
+                with smtplib.SMTP(
+                    config["smtp_host"],
+                    config["smtp_port"],
+                    timeout=config["smtp_timeout"],
+                ) as server:
+                    server.ehlo()
+                    server.starttls(context=context)
+                    server.ehlo()
+                    server.login(config["smtp_user"], config["smtp_password"])
+                    server.send_message(msg)
+            print(f"Email sent to {config['report_to']} via SMTP")
+            return True, ""
+        except Exception as exc:
+            last_error = exc
+            print(f"SMTP attempt {attempt}/{attempts} failed: {exc}")
+    return False, str(last_error) if last_error else "unknown SMTP error"
+
+
+def send_via_mail_app(subject, report_to, report_from, report_path):
+    if sys.platform != "darwin":
+        return False, "Mail.app fallback only available on macOS"
+    if not report_to:
+        return False, "REPORT_TO missing"
+
+    apple_script = r'''
+on run argv
+    set subjectLine to item 1 of argv
+    set recipientAddress to item 2 of argv
+    set preferredSender to item 3 of argv
+    set reportPath to POSIX file (item 4 of argv)
+    set plainBody to item 5 of argv
+
+    tell application "Mail"
+        set accountList to every account
+        if (count of accountList) is 0 then error "No Mail accounts configured"
+
+        set selectedAccount to item 1 of accountList
+        if preferredSender is not "" then
+            repeat with acct in accountList
+                try
+                    if preferredSender is in (email addresses of acct) then
+                        set selectedAccount to acct
+                        exit repeat
+                    end if
+                end try
+            end repeat
+        end if
+
+        set outgoingMessage to make new outgoing message with properties {subject:subjectLine, content:plainBody & return & return, visible:false}
+        tell outgoingMessage
+            make new to recipient at end of to recipients with properties {address:recipientAddress}
+            try
+                set account to selectedAccount
+            end try
+            make new attachment with properties {file name:reportPath} at after the last paragraph
+            send
+        end tell
+    end tell
+end run
+'''
+    fallback_body = (
+        "QuantPilot daily report attached.\n\n"
+        "SMTP delivery failed on this host, so this message was sent via Mail.app fallback."
+    )
     try:
-        if smtp_port == 465:
-            with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context) as server:
-                server.login(smtp_user, smtp_pass)
-                server.sendmail(report_from, [report_to], msg.as_string())
-        else:
-            with smtplib.SMTP(smtp_host, smtp_port) as server:
-                server.ehlo()
-                server.starttls(context=context)
-                server.ehlo()
-                server.login(smtp_user, smtp_pass)
-                server.sendmail(report_from, [report_to], msg.as_string())
-        print(f"Email sent to {report_to}")
-    except Exception as e:
-        print(f"Email failed: {e}")
-        report_path = REPORT_DIR / f"report_{datetime.now().strftime('%Y%m%d')}.html"
-        REPORT_DIR.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(html_content, encoding="utf-8")
-        print(f"Report saved: {report_path}")
+        subprocess.run(
+            [
+                "osascript",
+                "-e",
+                apple_script,
+                subject,
+                report_to,
+                report_from,
+                str(report_path),
+                fallback_body,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        print(f"Email sent to {report_to} via Mail.app fallback")
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
+
+
+def build_sendmail_message(subject, report_to, report_from, report_path):
+    msg = MIMEMultipart()
+    msg["Subject"] = subject
+    msg["From"] = report_from
+    msg["To"] = report_to
+    body = (
+        "QuantPilot daily report attached.\n\n"
+        "SMTP delivery failed on this host, so this message was relayed via local sendmail."
+    )
+    msg.attach(MIMEText(body, "plain", "utf-8"))
+    with open(report_path, "rb") as f:
+        attachment = MIMEBase("text", "html")
+        attachment.set_payload(f.read())
+    encoders.encode_base64(attachment)
+    attachment.add_header("Content-Disposition", f"attachment; filename={report_path.name}")
+    msg.attach(attachment)
+    return msg
+
+
+def send_via_sendmail(subject, report_to, report_from, report_path):
+    sendmail_bin = shutil.which("sendmail")
+    if not sendmail_bin:
+        return False, "sendmail not found"
+    msg = build_sendmail_message(subject, report_to, report_from, report_path)
+    try:
+        subprocess.run(
+            [sendmail_bin, "-t", "-oi"],
+            input=msg.as_bytes(),
+            check=True,
+            capture_output=True,
+        )
+        print(f"Email queued to {report_to} via sendmail")
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
+
+
+def send_email(html_content, subject):
+    """Send email via SMTP, then local sendmail, then Mail.app on macOS."""
+    config = email_config()
+    missing = log_config_status(config)
+    report_path = save_report_locally(html_content)
+    if missing and not config["sendmail_fallback"] and not config["mail_app_fallback"]:
+        print(f"Email not configured, missing: {', '.join(missing)}.")
+        return False
+
+    if not missing:
+        msg = build_message(html_content, subject, config["report_from"], config["report_to"])
+        sent, error = send_via_smtp(config, msg)
+        if sent:
+            return True
+        print(f"Email failed: {error}")
+    else:
+        print(f"SMTP not fully configured, missing: {', '.join(missing)}")
+
+    if config["sendmail_fallback"]:
+        sent, error = send_via_sendmail(
+            subject,
+            config["report_to"],
+            config["report_from"],
+            report_path,
+        )
+        if sent:
+            return True
+        print(f"sendmail fallback failed: {error}")
+
+    if config["mail_app_fallback"]:
+        sent, error = send_via_mail_app(
+            subject,
+            config["report_to"],
+            config["report_from"],
+            report_path,
+        )
+        if sent:
+            return True
+        print(f"Mail.app fallback failed: {error}")
+
+    return False
 
 
 def main():
@@ -262,7 +455,8 @@ def main():
     )
 
     subject = f"QuantPilot Daily Report - {today}"
-    send_email(html, subject)
+    if not send_email(html, subject):
+        raise SystemExit(1)
     print("Report generation complete")
 
 
