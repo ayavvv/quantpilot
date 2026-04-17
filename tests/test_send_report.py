@@ -31,6 +31,8 @@ def test_load_env_defaults_uses_reporter_env_without_overriding(monkeypatch, tmp
     assert config["smtp_password"] == "fallback-secret"
     assert config["report_to"] == "owner@example.com"
     assert config["report_from"] == "sender@example.com"
+    assert config["mail_app_from"] == "sender@example.com"
+    assert config["report_delivery_method"] == "auto"
 
 
 def test_send_email_falls_back_to_mail_app(monkeypatch, tmp_path):
@@ -45,6 +47,8 @@ def test_send_email_falls_back_to_mail_app(monkeypatch, tmp_path):
             "smtp_password": "secret",
             "report_to": "owner@example.com",
             "report_from": "sender@example.com",
+            "mail_app_from": "icloud@example.com",
+            "report_delivery_method": "auto",
             "smtp_timeout": 5,
             "smtp_retries": 1,
             "sendmail_fallback": True,
@@ -65,6 +69,7 @@ def test_send_email_falls_back_to_mail_app(monkeypatch, tmp_path):
 
     assert send_report.send_email("<html>hi</html>", "subject") is True
     assert len(fallback_calls) == 1
+    assert fallback_calls[0][2] == "icloud@example.com"
     assert fallback_calls[0][3] == tmp_path / f"report_{send_report.datetime.now().strftime('%Y%m%d')}.html"
 
 
@@ -80,6 +85,8 @@ def test_send_email_returns_false_when_all_delivery_paths_fail(monkeypatch, tmp_
             "smtp_password": "secret",
             "report_to": "owner@example.com",
             "report_from": "sender@example.com",
+            "mail_app_from": "icloud@example.com",
+            "report_delivery_method": "auto",
             "smtp_timeout": 5,
             "smtp_retries": 1,
             "sendmail_fallback": True,
@@ -106,6 +113,8 @@ def test_send_email_returns_true_when_sendmail_fallback_succeeds(monkeypatch, tm
             "smtp_password": "secret",
             "report_to": "owner@example.com",
             "report_from": "sender@example.com",
+            "mail_app_from": "icloud@example.com",
+            "report_delivery_method": "auto",
             "smtp_timeout": 5,
             "smtp_retries": 1,
             "sendmail_fallback": True,
@@ -116,3 +125,36 @@ def test_send_email_returns_true_when_sendmail_fallback_succeeds(monkeypatch, tm
     monkeypatch.setattr(send_report, "send_via_sendmail", lambda *args: (True, ""))
 
     assert send_report.send_email("<html>hi</html>", "subject") is True
+
+
+def test_send_email_prefers_mailapp_when_configured(monkeypatch, tmp_path):
+    monkeypatch.setattr(send_report, "REPORT_DIR", tmp_path)
+    monkeypatch.setattr(
+        send_report,
+        "email_config",
+        lambda: {
+            "smtp_host": "smtp.gmail.com",
+            "smtp_port": 587,
+            "smtp_user": "user@example.com",
+            "smtp_password": "secret",
+            "report_to": "owner@example.com",
+            "report_from": "sender@example.com",
+            "mail_app_from": "icloud@example.com",
+            "report_delivery_method": "mailapp",
+            "smtp_timeout": 5,
+            "smtp_retries": 1,
+            "sendmail_fallback": True,
+            "mail_app_fallback": True,
+        },
+    )
+    called = {"smtp": 0, "sendmail": 0, "mailapp": 0}
+    monkeypatch.setattr(send_report, "send_via_smtp", lambda *args: (called.__setitem__("smtp", called["smtp"] + 1) or False, "smtp down"))
+    monkeypatch.setattr(send_report, "send_via_sendmail", lambda *args: (called.__setitem__("sendmail", called["sendmail"] + 1) or False, "sendmail down"))
+    monkeypatch.setattr(
+        send_report,
+        "send_via_mail_app",
+        lambda *args: (called.__setitem__("mailapp", called["mailapp"] + 1) or True, ""),
+    )
+
+    assert send_report.send_email("<html>hi</html>", "subject") is True
+    assert called == {"smtp": 0, "sendmail": 0, "mailapp": 1}

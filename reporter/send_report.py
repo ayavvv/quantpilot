@@ -1,6 +1,6 @@
 """
 Daily quant report: data collection status + model signals + trade status.
-Sends via SMTP, falls back to local sendmail (then Mail.app on macOS), and always saves HTML locally.
+Supports SMTP, local sendmail, and Mail.app delivery, and always saves HTML locally.
 """
 
 import os
@@ -189,12 +189,14 @@ def email_config():
     load_env_defaults()
     smtp_user = os.environ.get("SMTP_USER", "")
     return {
+        "report_delivery_method": os.environ.get("REPORT_DELIVERY_METHOD", "auto").lower(),
         "smtp_host": os.environ.get("SMTP_HOST", "smtp.gmail.com"),
         "smtp_port": int(os.environ.get("SMTP_PORT", "465")),
         "smtp_user": smtp_user,
         "smtp_password": os.environ.get("SMTP_PASSWORD", ""),
         "report_to": os.environ.get("REPORT_TO", ""),
         "report_from": os.environ.get("REPORT_FROM", smtp_user),
+        "mail_app_from": os.environ.get("MAIL_APP_FROM", os.environ.get("REPORT_FROM", smtp_user)),
         "smtp_timeout": int(os.environ.get("SMTP_TIMEOUT_SECONDS", "10")),
         "smtp_retries": int(os.environ.get("SMTP_RETRIES", "1")),
         "sendmail_fallback": os.environ.get("SENDMAIL_FALLBACK", "true").lower() == "true",
@@ -205,11 +207,13 @@ def email_config():
 def log_config_status(config):
     print(
         "SMTP config status: "
+        f"method={config['report_delivery_method']} "
         f"host={config['smtp_host']} port={config['smtp_port']} "
         f"user={'set' if config['smtp_user'] else 'missing'} "
         f"password={'set' if config['smtp_password'] else 'missing'} "
         f"report_to={'set' if config['report_to'] else 'missing'} "
         f"report_from={'set' if config['report_from'] else 'missing'} "
+        f"mail_app_from={'set' if config['mail_app_from'] else 'missing'} "
         f"sendmail_fallback={'on' if config['sendmail_fallback'] else 'off'} "
         f"mail_app_fallback={'on' if config['mail_app_fallback'] else 'off'}"
     )
@@ -301,20 +305,22 @@ on run argv
         tell outgoingMessage
             make new to recipient at end of to recipients with properties {address:recipientAddress}
             try
-                set account to selectedAccount
+                set sender to item 1 of (email addresses of selectedAccount)
             end try
             make new attachment with properties {file name:reportPath} at after the last paragraph
-            send
         end tell
+        ignoring application responses
+            send outgoingMessage
+        end ignoring
     end tell
 end run
 '''
     fallback_body = (
         "QuantPilot daily report attached.\n\n"
-        "SMTP delivery failed on this host, so this message was sent via Mail.app fallback."
+        "Queued via Mail.app on this Mac."
     )
     try:
-        subprocess.run(
+        proc = subprocess.Popen(
             [
                 "osascript",
                 "-e",
@@ -325,11 +331,11 @@ end run
                 str(report_path),
                 fallback_body,
             ],
-            check=True,
-            capture_output=True,
-            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
         )
-        print(f"Email sent to {report_to} via Mail.app fallback")
+        print(f"Email queued to {report_to} via Mail.app (pid={proc.pid})")
         return True, ""
     except Exception as exc:
         return False, str(exc)
@@ -372,8 +378,19 @@ def send_via_sendmail(subject, report_to, report_from, report_path):
         return False, str(exc)
 
 
+def build_delivery_plan(config):
+    method = config["report_delivery_method"]
+    if method == "mailapp":
+        return ["mailapp", "smtp", "sendmail"]
+    if method == "sendmail":
+        return ["sendmail", "mailapp"]
+    if method == "smtp":
+        return ["smtp", "sendmail", "mailapp"]
+    return ["smtp", "sendmail", "mailapp"]
+
+
 def send_email(html_content, subject):
-    """Send email via SMTP, then local sendmail, then Mail.app on macOS."""
+    """Send email using configured delivery method(s)."""
     config = email_config()
     missing = log_config_status(config)
     report_path = save_report_locally(html_content)
@@ -381,36 +398,40 @@ def send_email(html_content, subject):
         print(f"Email not configured, missing: {', '.join(missing)}.")
         return False
 
-    if not missing:
-        msg = build_message(html_content, subject, config["report_from"], config["report_to"])
-        sent, error = send_via_smtp(config, msg)
-        if sent:
-            return True
-        print(f"Email failed: {error}")
-    else:
-        print(f"SMTP not fully configured, missing: {', '.join(missing)}")
-
-    if config["sendmail_fallback"]:
-        sent, error = send_via_sendmail(
-            subject,
-            config["report_to"],
-            config["report_from"],
-            report_path,
-        )
-        if sent:
-            return True
-        print(f"sendmail fallback failed: {error}")
-
-    if config["mail_app_fallback"]:
-        sent, error = send_via_mail_app(
-            subject,
-            config["report_to"],
-            config["report_from"],
-            report_path,
-        )
-        if sent:
-            return True
-        print(f"Mail.app fallback failed: {error}")
+    for channel in build_delivery_plan(config):
+        if channel == "smtp":
+            if missing:
+                print(f"SMTP not fully configured, missing: {', '.join(missing)}")
+                continue
+            msg = build_message(html_content, subject, config["report_from"], config["report_to"])
+            sent, error = send_via_smtp(config, msg)
+            if sent:
+                return True
+            print(f"Email failed via SMTP: {error}")
+        elif channel == "sendmail":
+            if not config["sendmail_fallback"]:
+                continue
+            sent, error = send_via_sendmail(
+                subject,
+                config["report_to"],
+                config["report_from"],
+                report_path,
+            )
+            if sent:
+                return True
+            print(f"sendmail fallback failed: {error}")
+        elif channel == "mailapp":
+            if not config["mail_app_fallback"] and config["report_delivery_method"] != "mailapp":
+                continue
+            sent, error = send_via_mail_app(
+                subject,
+                config["report_to"],
+                config["mail_app_from"],
+                report_path,
+            )
+            if sent:
+                return True
+            print(f"Mail.app fallback failed: {error}")
 
     return False
 
