@@ -70,16 +70,55 @@ docker compose --profile collector up -d
 # NAS_USER=your_user
 # SSH_KEY=~/.ssh/id_ed25519
 
-# 交易入口（宿主机 venv；若 OpenD 判断沪深休市会自动切到预演）
+# A 股交易入口（宿主机 venv；若 OpenD 判断沪深休市会自动切到预演）
 ./scripts/run_trade.sh
 
-# 每日流水线：等待 NAS + 同步 + 推理 + 日报
+# A 股每日流水线：等待 NAS + 同步 + 推理 + 日报
 ./scripts/run_daily.sh
+
+# 美股 deep-analysis 流水线（与 A 股主链隔离）
+./scripts/run_us_daily.sh
+
+# 美股模拟执行（消费 us_trade_plan_latest.json）
+DRY_RUN=true ./scripts/run_us_trade.sh
 
 # 或配置 cron：
 # 50 14 * * 1-5 /path/to/quantpilot/scripts/run_trade.sh
 # 0 19 * * 1-5 /path/to/quantpilot/scripts/run_daily.sh
 # 0 10 * * 6   /path/to/quantpilot/scripts/run_weekly_train.sh
+```
+
+### 4. 美股 deep-analysis 流水线
+
+美股链路刻意与现有 A 股生产链路隔离：
+- 不读取也不覆盖 `pred_sh_latest.pkl`
+- 不改动 `scripts/run_trade.sh`
+- 输出写到 `signals/us/` 下的独立文件
+
+流程：
+
+```text
+S&P 500 成分股（或 US_TARGET_CODES 覆盖）
+  -> 价格 / 流动性过滤
+  -> 对候选股逐个跑 deep-analysis
+  -> 产出 us_trade_plan_latest.json
+  -> trader.trade_us_daily 执行
+```
+
+常用联调命令：
+
+```bash
+# 先用少量 ticker 验证整条链路
+US_TARGET_CODES=US.AAPL,US.MSFT US_ANALYSIS_TOP_K=2 ./scripts/run_us_daily.sh
+
+# 生产默认：每天 Top 20 分析、并发 10、单票 1 小时、最终 Top 5 模拟持仓
+./scripts/run_us_daily.sh
+
+# 如果当前机器不是通过 futu-opend:11111 暴露 OpenD，显式覆盖地址和 RSA key
+FUTU_HOST=192.168.100.248 FUTU_PORT=11111 FUTU_RSA_KEY=/path/to/futu_rsa_1024.pem US_TARGET_CODES=US.AAPL,US.MSFT US_ANALYSIS_TOP_K=2 ./scripts/run_us_daily.sh
+
+# 只做执行预演
+DRY_RUN=true ./scripts/run_us_trade.sh
 ```
 
 ## 配置说明

@@ -1,0 +1,57 @@
+#!/bin/bash
+# QuantPilot US trader — consume US trade plan and execute in simulation account
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_DIR"
+
+EXTERNAL_DATA_DIR="${DATA_DIR-}"
+EXTERNAL_FUTU_HOST="${FUTU_HOST-}"
+EXTERNAL_FUTU_PORT="${FUTU_PORT-}"
+EXTERNAL_FUTU_SIM_ACC_ID="${FUTU_SIM_ACC_ID-}"
+EXTERNAL_FUTU_RSA_KEY="${FUTU_RSA_KEY-}"
+EXTERNAL_DRY_RUN="${DRY_RUN-}"
+EXTERNAL_US_SIGNAL_DIR="${US_SIGNAL_DIR-}"
+EXTERNAL_US_TRADE_PLAN_PATH="${US_TRADE_PLAN_PATH-}"
+
+if [ -f "$PROJECT_DIR/.env" ]; then
+    set -a
+    source "$PROJECT_DIR/.env"
+    set +a
+fi
+
+[ -n "$EXTERNAL_DATA_DIR" ] && DATA_DIR="$EXTERNAL_DATA_DIR"
+[ -n "$EXTERNAL_FUTU_HOST" ] && FUTU_HOST="$EXTERNAL_FUTU_HOST"
+[ -n "$EXTERNAL_FUTU_PORT" ] && FUTU_PORT="$EXTERNAL_FUTU_PORT"
+[ -n "$EXTERNAL_FUTU_SIM_ACC_ID" ] && FUTU_SIM_ACC_ID="$EXTERNAL_FUTU_SIM_ACC_ID"
+[ -n "$EXTERNAL_FUTU_RSA_KEY" ] && FUTU_RSA_KEY="$EXTERNAL_FUTU_RSA_KEY"
+[ -n "$EXTERNAL_DRY_RUN" ] && DRY_RUN="$EXTERNAL_DRY_RUN"
+[ -n "$EXTERNAL_US_SIGNAL_DIR" ] && US_SIGNAL_DIR="$EXTERNAL_US_SIGNAL_DIR"
+[ -n "$EXTERNAL_US_TRADE_PLAN_PATH" ] && US_TRADE_PLAN_PATH="$EXTERNAL_US_TRADE_PLAN_PATH"
+
+DATA_DIR="${DATA_DIR:-$HOME/quantpilot_data}"
+PYTHON_BIN="${PYTHON_BIN:-$PROJECT_DIR/.venv/bin/python}"
+PYTHONPATH="${PROJECT_DIR}${PYTHONPATH:+:$PYTHONPATH}"
+US_SIGNAL_DIR="${US_SIGNAL_DIR:-$DATA_DIR/signals/us}"
+US_TRADE_PLAN_PATH="${US_TRADE_PLAN_PATH:-$US_SIGNAL_DIR/us_trade_plan_latest.json}"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
+
+log "run_us_trade: start"
+source .venv/bin/activate
+
+PYTHONPATH="$PYTHONPATH" \
+FUTU_HOST="${FUTU_HOST:-localhost}" \
+FUTU_PORT="${FUTU_PORT:-11111}" \
+FUTU_SIM_ACC_ID="${FUTU_SIM_ACC_ID:-0}" \
+FUTU_RSA_KEY="${FUTU_RSA_KEY:-}" \
+DRY_RUN="${DRY_RUN:-true}" \
+US_SIGNAL_DIR="$US_SIGNAL_DIR" \
+US_TRADE_PLAN_PATH="$US_TRADE_PLAN_PATH" \
+"$PYTHON_BIN" -m trader.trade_us_daily
+
+log "run_us_trade: done"

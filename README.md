@@ -75,10 +75,46 @@ docker compose --profile collector up -d
 # Daily pipeline (wait NAS + sync + inference + report)
 ./scripts/run_daily.sh
 
+# US deep-analysis pipeline (isolated from A-share flow)
+./scripts/run_us_daily.sh
+
+# US simulated execution (consumes us_trade_plan_latest.json)
+DRY_RUN=true ./scripts/run_us_trade.sh
+
 # Or via cron:
 # 50 14 * * 1-5 /path/to/quantpilot/scripts/run_trade.sh
 # 0 19 * * 1-5 /path/to/quantpilot/scripts/run_daily.sh
 # 0 10 * * 6   /path/to/quantpilot/scripts/run_weekly_train.sh
+```
+
+### 4. US deep-analysis pipeline
+
+The US pipeline is intentionally isolated from the A-share production path. It does not read or overwrite `pred_sh_latest.pkl`, and it does not change `scripts/run_trade.sh`.
+
+Flow:
+
+```text
+S&P 500 universe (or US_TARGET_CODES override)
+  -> liquidity / price filter
+  -> deep-analysis per ticker
+  -> us_trade_plan_latest.json
+  -> trader.trade_us_daily
+```
+
+Useful commands:
+
+```bash
+# Small-scope validation before using the full S&P 500 universe
+US_TARGET_CODES=US.AAPL,US.MSFT US_ANALYSIS_TOP_K=2 ./scripts/run_us_daily.sh
+
+# Production defaults: Top 20 analyses/day, concurrency 10, 1h per ticker, Top 5 simulated holdings
+./scripts/run_us_daily.sh
+
+# If OpenD is not exposed as futu-opend:11111 on this host, override it explicitly
+FUTU_HOST=192.168.100.248 FUTU_PORT=11111 FUTU_RSA_KEY=/path/to/futu_rsa_1024.pem US_TARGET_CODES=US.AAPL,US.MSFT US_ANALYSIS_TOP_K=2 ./scripts/run_us_daily.sh
+
+# Preview execution only
+DRY_RUN=true ./scripts/run_us_trade.sh
 ```
 
 ## Configuration
