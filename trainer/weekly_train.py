@@ -133,6 +133,24 @@ def save_report_locally(filename: str, body_text: str):
     return report_path
 
 
+def _safe_send_email(
+    html_content: str,
+    subject: str,
+    *,
+    report_filename: str,
+    error_prefix: str,
+) -> bool:
+    try:
+        return send_email(
+            html_content,
+            subject,
+            report_filename=report_filename,
+        )
+    except Exception as exc:
+        log.error(f"  {error_prefix}: {exc}")
+        return False
+
+
 def _load_env_file(path: Path) -> dict[str, str]:
     if not path.exists():
         return {}
@@ -599,10 +617,11 @@ def send_report_email(train_info: dict, metrics: dict, report_path: Path, metric
             ),
         ],
     )
-    sent = send_email(
+    sent = _safe_send_email(
         html_content,
         subject,
         report_filename=f"weekly_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
+        error_prefix="Weekly report email sending failed",
     )
     if not sent:
         save_report_locally(f"weekly_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt", body_text)
@@ -624,10 +643,11 @@ def send_failure_email(error: Exception):
 
     subject = f"[FAILED] Quant Weekly Report {today}"
     html_content = _render_report_html(subject, [("Failure", [body_text])])
-    if not send_email(
+    if not _safe_send_email(
         html_content,
         subject,
         report_filename=f"weekly_report_failed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
+        error_prefix="Failure email sending failed",
     ):
         save_report_locally(f"weekly_report_failed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt", body_text)
 

@@ -180,3 +180,107 @@ def test_send_report_email_uses_shared_reporter_delivery(tmp_path, monkeypatch):
     assert sent
     assert sent[0][1].startswith("weekly_report_")
     assert saved == []
+
+
+def test_send_report_email_saves_local_copy_when_shared_delivery_raises(tmp_path, monkeypatch):
+    saved = []
+    monkeypatch.setattr(weekly_train, "save_report_locally", lambda filename, body: saved.append((filename, body)))
+    monkeypatch.setattr(weekly_train, "resolve_email_config", lambda: {
+        "smtp_host": "smtp.mail.me.com",
+        "smtp_port": "465",
+        "smtp_user": "bot@example.com",
+        "smtp_password": "secret",
+        "report_to": "owner@example.com",
+        "report_from": "bot@example.com",
+    })
+    monkeypatch.setattr(weekly_train, "log_email_config_status", lambda config: [])
+    monkeypatch.setattr(weekly_train, "send_email", lambda *args, **kwargs: (_ for _ in ()).throw(NameError("MIMEMultipart")))
+
+    report_path = tmp_path / "backtest_report.png"
+    metrics_path = tmp_path / "metrics.txt"
+    report_path.write_text("png", encoding="utf-8")
+    metrics_path.write_text("metrics", encoding="utf-8")
+
+    result = weekly_train.send_report_email(
+        {"ic": "0.1", "icir": "0.2", "pred_start": "2026-01-01", "pred_end": "2026-04-01", "n_days": 50, "n_stocks": 100},
+        {"ann_return": "10.00%", "sharpe": "1.23", "max_drawdown": "5.00%"},
+        report_path,
+        metrics_path,
+    )
+
+    assert result is False
+    assert saved
+    assert saved[0][0].startswith("weekly_report_")
+
+
+def test_send_failure_email_saves_local_copy_when_shared_delivery_raises(monkeypatch):
+    saved = []
+    monkeypatch.setattr(weekly_train, "save_report_locally", lambda filename, body: saved.append((filename, body)))
+    monkeypatch.setattr(weekly_train, "resolve_email_config", lambda: {
+        "smtp_host": "smtp.mail.me.com",
+        "smtp_port": "465",
+        "smtp_user": "bot@example.com",
+        "smtp_password": "secret",
+        "report_to": "owner@example.com",
+        "report_from": "bot@example.com",
+    })
+    monkeypatch.setattr(weekly_train, "log_email_config_status", lambda config: [])
+    monkeypatch.setattr(weekly_train, "send_email", lambda *args, **kwargs: (_ for _ in ()).throw(NameError("MIMEMultipart")))
+
+    weekly_train.send_failure_email(RuntimeError("boom"))
+
+    assert saved
+    assert saved[0][0].startswith("weekly_report_failed_")
+    assert "boom" in saved[0][1]
+
+
+def test_main_passes_stage_models_dir_to_train_model(tmp_path, monkeypatch):
+    stage_models_dir = tmp_path / "models" / "weekly_runs" / "20260418_100000"
+    stage_output_dir = tmp_path / "output" / "weekly_runs" / "20260418_100000"
+    candidate_output_dir = stage_output_dir / "candidate"
+    captured = {}
+
+    monkeypatch.setattr(weekly_train, "_stage_models_dir", lambda: stage_models_dir)
+    monkeypatch.setattr(weekly_train, "_stage_output_dir", lambda: stage_output_dir)
+    monkeypatch.setattr(weekly_train, "sync_qlib_data", lambda: captured.setdefault("synced", True))
+
+    def fake_train_model(models_dir):
+        captured["models_dir"] = models_dir
+        return {
+            "ic": "0.1",
+            "icir": "0.2",
+            "pred_start": "2026-01-01",
+            "pred_end": "2026-04-17",
+            "n_days": 50,
+            "n_stocks": 100,
+        }
+
+    monkeypatch.setattr(weekly_train, "train_model", fake_train_model)
+    monkeypatch.setattr(
+        weekly_train,
+        "run_backtest",
+        lambda pred_path, output_dir: (
+            {"ann_return": "10.00%", "sharpe": "1.23", "max_drawdown": "5.00%"},
+            output_dir / "backtest_report.png",
+            output_dir / "metrics.txt",
+        ),
+    )
+    monkeypatch.setattr(weekly_train, "TRADE_PRED_PATH", tmp_path / "missing_pred.pkl")
+    monkeypatch.setattr(weekly_train, "deploy_pred", lambda models_dir: captured.setdefault("deployed", models_dir))
+    monkeypatch.setattr(weekly_train, "promote_trade_signal", lambda models_dir: captured.setdefault("promoted", models_dir))
+    monkeypatch.setattr(
+        weekly_train,
+        "send_report_email",
+        lambda train_info, metrics, report_path, metrics_path: captured.setdefault(
+            "reported",
+            (train_info, metrics, report_path, metrics_path),
+        ),
+    )
+
+    weekly_train.main()
+
+    assert captured["synced"] is True
+    assert captured["models_dir"] == stage_models_dir
+    assert captured["deployed"] == stage_models_dir
+    assert captured["promoted"] == stage_models_dir
+    assert captured["reported"][2] == candidate_output_dir / "backtest_report.png"
