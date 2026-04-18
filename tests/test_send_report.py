@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from reporter import send_report
+from datetime import datetime
 
 
 def test_load_env_defaults_uses_reporter_env_without_overriding(monkeypatch, tmp_path):
@@ -158,3 +159,72 @@ def test_send_email_prefers_mailapp_when_configured(monkeypatch, tmp_path):
 
     assert send_report.send_email("<html>hi</html>", "subject") is True
     assert called == {"smtp": 0, "sendmail": 0, "mailapp": 1}
+
+
+def test_check_trade_status_before_trade_window_reports_not_started(tmp_path):
+    trade_log = tmp_path / "trade.log"
+    trade_log.write_text("", encoding="utf-8")
+
+    status = send_report.check_trade_status(
+        now=datetime(2026, 4, 17, 10, 47, 28),
+        trade_log=trade_log,
+    )
+
+    assert status == "Today's 14:50 automatic trade has not started yet."
+
+
+def test_check_trade_status_non_trading_day_reports_no_schedule(tmp_path):
+    trade_log = tmp_path / "trade.log"
+    trade_log.write_text("", encoding="utf-8")
+
+    status = send_report.check_trade_status(
+        now=datetime(2026, 4, 18, 10, 47, 28),
+        trade_log=trade_log,
+    )
+
+    assert status == "No automatic trade scheduled today."
+
+
+def test_check_trade_status_after_trade_window_without_runs_warns(tmp_path):
+    trade_log = tmp_path / "trade.log"
+    trade_log.write_text("", encoding="utf-8")
+
+    status = send_report.check_trade_status(
+        now=datetime(2026, 4, 17, 15, 1, 0),
+        trade_log=trade_log,
+    )
+
+    assert status == "WARNING: No trading execution found today."
+
+
+def test_check_trade_status_completed_without_fills_reports_completed(tmp_path):
+    trade_log = tmp_path / "trade.log"
+    trade_log.write_text(
+        "[2026-04-18 14:50:00] run_trade: start\n"
+        "[2026-04-18 14:50:12] run_trade: done\n",
+        encoding="utf-8",
+    )
+
+    status = send_report.check_trade_status(
+        now=datetime(2026, 4, 18, 15, 1, 0),
+        trade_log=trade_log,
+    )
+
+    assert status == "Today: automatic trade run completed with no orders filled."
+
+
+def test_check_trade_status_prefers_fill_summary(tmp_path):
+    trade_log = tmp_path / "trade.log"
+    trade_log.write_text(
+        "[2026-04-18 14:50:00] run_trade: start\n"
+        "2026-04-18 14:50:03 [INFO]   OK         code SH.600000\n"
+        "[2026-04-18 14:50:12] run_trade: done\n",
+        encoding="utf-8",
+    )
+
+    status = send_report.check_trade_status(
+        now=datetime(2026, 4, 18, 15, 1, 0),
+        trade_log=trade_log,
+    )
+
+    assert status == "Today: 1 order(s) filled (simulation)."

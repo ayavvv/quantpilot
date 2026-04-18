@@ -10,7 +10,7 @@ import smtplib
 import ssl
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, time
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
@@ -23,6 +23,7 @@ from jinja2 import Template
 SIGNAL_DIR = Path(os.environ.get("SIGNAL_DIR", "/data/signals"))
 REPORT_DIR = Path(os.environ.get("REPORT_DIR", "/data/reports"))
 REPORTER_ENV_PATH = Path(os.environ.get("REPORTER_ENV_FILE", Path(__file__).with_name(".env")))
+TRADE_START_TIME = time(14, 50)
 
 REPORT_TEMPLATE = """
 <html>
@@ -163,6 +164,49 @@ def check_signal_status():
         "signal_date": signal_date,
         "top10": top10,
     }
+
+
+def check_trade_status(now: datetime | None = None, trade_log: Path | None = None) -> str:
+    """Summarise today's automatic trade status from trade.log."""
+    current = now or datetime.now()
+    today = current.strftime("%Y-%m-%d")
+    log_path = trade_log or Path.home() / "quantpilot/logs/trade.log"
+    default_status = "Trading module active (simulation mode)."
+    trade_day = current.weekday() < 5
+
+    if not log_path.exists():
+        if not trade_day:
+            return "No automatic trade scheduled today."
+        if current.time() < TRADE_START_TIME:
+            return "Today's 14:50 automatic trade has not started yet."
+        return default_status
+
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception:
+        return default_status
+
+    filled = [line for line in lines if today in line and "  OK " in line]
+    failed = [line for line in lines if today in line and "  FAIL " in line]
+    today_errors = [line for line in lines if today in line and ("行情失败" in line or "ERROR" in line)]
+    run_starts = [line for line in lines if today in line and "run_trade: start" in line]
+    run_done = [line for line in lines if today in line and "run_trade: done" in line]
+
+    if failed:
+        return f"WARNING: Today filled {len(filled)} order(s), failed {len(failed)} order(s)."
+    if filled:
+        return f"Today: {len(filled)} order(s) filled (simulation)."
+    if today_errors:
+        return f"WARNING: Trading ran but had {len(today_errors)} error(s). Check trade.log."
+    if run_done:
+        return "Today: automatic trade run completed with no orders filled."
+    if run_starts:
+        return "WARNING: Automatic trade started but no completion record was found."
+    if not trade_day:
+        return "No automatic trade scheduled today."
+    if current.time() < TRADE_START_TIME:
+        return "Today's 14:50 automatic trade has not started yet."
+    return "WARNING: No trading execution found today."
 
 
 def load_env_defaults():
@@ -444,28 +488,9 @@ def main():
     data_info = check_data_status()
     signal_info = check_signal_status()
 
-    # 检查今天交易是否实际执行
     trade_log_env = os.environ.get("TRADE_LOG", "").strip()
     trade_log = Path(trade_log_env) if trade_log_env else Path.home() / "quantpilot/logs/trade.log"
-    trade_status = "Trading module active (simulation mode)."
-    if trade_log.exists():
-        try:
-            lines = trade_log.read_text(encoding="utf-8", errors="replace").splitlines()
-            filled = [l for l in lines if today in l and "  OK " in l]
-            failed = [l for l in lines if today in l and "  FAIL " in l]
-            today_errors = [l for l in lines if today in l and ("行情失败" in l or "ERROR" in l)]
-            if failed:
-                trade_status = f"WARNING: Today filled {len(filled)} order(s), failed {len(failed)} order(s)."
-            elif filled:
-                trade_status = f"Today: {len(filled)} order(s) filled (simulation)."
-            elif today_errors:
-                trade_status = f"WARNING: Trading ran but had {len(today_errors)} error(s). Check trade.log."
-            else:
-                today_runs = [l for l in lines if today in l and "run_trade: done" in l]
-                if not today_runs:
-                    trade_status = "WARNING: No trading execution found today."
-        except Exception:
-            pass
+    trade_status = check_trade_status(trade_log=trade_log)
 
     template = Template(REPORT_TEMPLATE)
     html = template.render(
