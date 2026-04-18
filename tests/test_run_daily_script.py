@@ -17,7 +17,9 @@ def test_run_daily_passes_target_date_to_sync_script():
 
 def test_run_daily_stale_sync_uses_nas_last_when_available():
     content = RUN_DAILY.read_text()
-    assert 'SYNC_TARGET_A_SHARE_DATE="$NAS_LAST"' in content
+    assert 'EFFECTIVE_NAS_DATE="$NAS_LAST"' in content
+    assert 'EFFECTIVE_NAS_DATE="$NAS_LATEST"' in content
+    assert 'SYNC_TARGET_A_SHARE_DATE="$EFFECTIVE_NAS_DATE"' in content
     assert 'SYNC_TARGET_A_SHARE_DATE=""' in content
 
 
@@ -32,6 +34,7 @@ def test_run_daily_schedules_ready_retry_on_timeout():
     assert 'AUTO_RETRY_ON_NAS_READY="${AUTO_RETRY_ON_NAS_READY:-true}"' in content
     assert 'spawn_ready_retry "$TARGET_A_SHARE_DATE"' in content
     assert 'nohup "$SCRIPT_DIR/run_daily_when_ready.sh" "$target_date"' in content
+    assert 'scripts.a_share_readiness nas-latest-date' in content
 
 
 def test_run_daily_runs_healthcheck_on_failures_and_completion():
@@ -98,3 +101,4 @@ def test_sync_data_validates_staged_snapshot_against_expected_target():
     assert 'validate_staged_snapshot()' in content
     assert 'validate_staged_qlib_snapshot' in content
     assert 'EXPECTED_TARGET_A_SHARE_DATE' in content
+    assert 'allow_metadata_lag=True' in content

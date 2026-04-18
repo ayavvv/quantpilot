@@ -30,7 +30,10 @@ HOLD_BONUS = float(os.environ.get("HOLD_BONUS", "0.05"))
 STOP_LOSS_PCT = float(os.environ.get("STOP_LOSS_PCT", "-0.08"))
 POSITION_RATIO = float(os.environ.get("POSITION_RATIO", "0.95"))
 FILTER_LIMIT_UP = _env_flag("FILTER_LIMIT_UP", True)
-TRADEABLE_PREFIXES = _env_prefixes("BACKTEST_TRADEABLE_PREFIXES", "SH.")
+TRADEABLE_PREFIXES = _env_prefixes(
+    "BACKTEST_TRADEABLE_PREFIXES",
+    os.environ.get("A_SHARE_TRADEABLE_PREFIXES", "SH."),
+)
 SLIPPAGE = float(os.environ.get("SLIPPAGE", "0.001"))  # 0.1% per side
 
 # --- Fee rates (per side) ---

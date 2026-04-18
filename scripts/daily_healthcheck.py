@@ -72,6 +72,21 @@ def latest_nas_completed_date() -> tuple[str, str]:
         return "", str(exc)
 
 
+def latest_nas_a_share_date() -> tuple[str, str]:
+    if not (NAS_HOST and NAS_USER):
+        return "", ""
+    try:
+        value = a_share_readiness.latest_nas_a_share_date(
+            nas_host=NAS_HOST,
+            nas_user=NAS_USER,
+            ssh_key=SSH_KEY,
+            nas_qlib_path=NAS_QLIB_PATH,
+        )
+        return value, ""
+    except Exception as exc:
+        return "", str(exc)
+
+
 def expected_pretrade_signal_date(now: datetime | None = None) -> tuple[str, str]:
     if not (NAS_HOST and NAS_USER):
         return "", ""
@@ -176,6 +191,7 @@ def build_snapshot(
     local_latest = latest_local_a_share_date()
     signal_date = latest_signal_date()
     nas_completed, nas_error = latest_nas_completed_date()
+    nas_latest, nas_latest_error = latest_nas_a_share_date()
     disk = local_disk_status()
     expected_signal_date = ""
     expected_signal_error = ""
@@ -246,11 +262,12 @@ def build_snapshot(
                 "Signal output below expected pre-trade target: "
                 f"signal={signal_date or 'N/A'} expected={expected_signal_date}"
             )
-        if nas_completed and nas_completed < expected_signal_date:
+        effective_nas_date = max(nas_completed or "", nas_latest or "")
+        if effective_nas_date and effective_nas_date < expected_signal_date:
             overall = _bump_level(overall, "warn")
             issues.append(
-                "NAS completion metadata below expected pre-trade target: "
-                f"nas_completed={nas_completed} expected={expected_signal_date}"
+                "NAS snapshot below expected pre-trade target: "
+                f"nas_completed={nas_completed or 'N/A'} nas_latest={nas_latest or 'N/A'} expected={expected_signal_date}"
             )
     elif expected_signal_error:
         overall = _bump_level(overall, "warn")
@@ -266,6 +283,9 @@ def build_snapshot(
     elif nas_error:
         overall = _bump_level(overall, "warn")
         issues.append(f"Failed to query NAS completion metadata: {nas_error}")
+    elif nas_latest_error:
+        overall = _bump_level(overall, "warn")
+        issues.append(f"Failed to query NAS latest A-share snapshot: {nas_latest_error}")
 
     if phase == "nightly":
         target_satisfied = (
@@ -329,7 +349,9 @@ def build_snapshot(
         },
         "nas": {
             "completed_a_share_date": nas_completed,
+            "latest_a_share_date": nas_latest,
             "query_error": nas_error,
+            "latest_query_error": nas_latest_error,
         },
         "processes": processes,
         "nightly": nightly_logs,
@@ -378,7 +400,9 @@ def render_snapshot_html(snapshot: dict[str, Any]) -> str:
       disk_used={disk['used_ratio']:.1%}</p>
       <h2>NAS State</h2>
       <p>completed_a_share={nas['completed_a_share_date'] or 'N/A'}<br>
-      query_error={nas['query_error'] or 'N/A'}</p>
+      latest_a_share={nas.get('latest_a_share_date') or 'N/A'}<br>
+      query_error={nas['query_error'] or 'N/A'}<br>
+      latest_query_error={nas.get('latest_query_error') or 'N/A'}</p>
       <h2>Trade Log</h2>
       <p>starts={trade['starts']} done={trade['done']} fills={trade['order_fills']} failures={trade['order_failures']} errors={trade['errors']}</p>
     </body>

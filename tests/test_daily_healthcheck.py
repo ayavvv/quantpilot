@@ -13,6 +13,7 @@ def test_build_snapshot_pretrade_flags_stale_signal_and_nas_lag(monkeypatch):
     monkeypatch.setattr(daily_healthcheck, "latest_local_a_share_date", lambda: "2026-04-09")
     monkeypatch.setattr(daily_healthcheck, "latest_signal_date", lambda: "2026-04-08")
     monkeypatch.setattr(daily_healthcheck, "latest_nas_completed_date", lambda: ("2026-04-09", ""))
+    monkeypatch.setattr(daily_healthcheck, "latest_nas_a_share_date", lambda: ("2026-04-09", ""))
     monkeypatch.setattr(daily_healthcheck, "expected_pretrade_signal_date", lambda now=None: ("2026-04-09", ""))
     monkeypatch.setattr(
         daily_healthcheck,
@@ -57,6 +58,7 @@ def test_build_snapshot_trade_warns_on_failed_orders(monkeypatch):
     monkeypatch.setattr(daily_healthcheck, "latest_local_a_share_date", lambda: "2026-04-09")
     monkeypatch.setattr(daily_healthcheck, "latest_signal_date", lambda: "2026-04-09")
     monkeypatch.setattr(daily_healthcheck, "latest_nas_completed_date", lambda: ("2026-04-09", ""))
+    monkeypatch.setattr(daily_healthcheck, "latest_nas_a_share_date", lambda: ("2026-04-09", ""))
     monkeypatch.setattr(daily_healthcheck, "expected_pretrade_signal_date", lambda now=None: ("2026-04-09", ""))
     monkeypatch.setattr(
         daily_healthcheck,
@@ -100,6 +102,7 @@ def test_build_snapshot_nightly_flags_target_date_not_reached(monkeypatch):
     monkeypatch.setattr(daily_healthcheck, "latest_local_a_share_date", lambda: "2026-04-09")
     monkeypatch.setattr(daily_healthcheck, "latest_signal_date", lambda: "2026-04-09")
     monkeypatch.setattr(daily_healthcheck, "latest_nas_completed_date", lambda: ("2026-04-09", ""))
+    monkeypatch.setattr(daily_healthcheck, "latest_nas_a_share_date", lambda: ("2026-04-09", ""))
     monkeypatch.setattr(
         daily_healthcheck,
         "analyze_trade_log",
@@ -159,7 +162,9 @@ def test_maybe_send_alert_deduplicates(monkeypatch, tmp_path):
         },
         "nas": {
             "completed_a_share_date": "2026-04-09",
+            "latest_a_share_date": "2026-04-09",
             "query_error": "",
+            "latest_query_error": "",
         },
         "trade": {
             "starts": 0,
@@ -185,6 +190,7 @@ def test_build_snapshot_pretrade_errors_when_expected_target_not_reached(monkeyp
     monkeypatch.setattr(daily_healthcheck, "latest_local_a_share_date", lambda: "2026-04-15")
     monkeypatch.setattr(daily_healthcheck, "latest_signal_date", lambda: "2026-04-15")
     monkeypatch.setattr(daily_healthcheck, "latest_nas_completed_date", lambda: ("2026-04-15", ""))
+    monkeypatch.setattr(daily_healthcheck, "latest_nas_a_share_date", lambda: ("2026-04-15", ""))
     monkeypatch.setattr(daily_healthcheck, "expected_pretrade_signal_date", lambda now=None: ("2026-04-16", ""))
     monkeypatch.setattr(
         daily_healthcheck,
@@ -229,6 +235,7 @@ def test_build_snapshot_warns_when_disk_usage_high(monkeypatch):
     monkeypatch.setattr(daily_healthcheck, "latest_local_a_share_date", lambda: "2026-04-16")
     monkeypatch.setattr(daily_healthcheck, "latest_signal_date", lambda: "2026-04-16")
     monkeypatch.setattr(daily_healthcheck, "latest_nas_completed_date", lambda: ("2026-04-16", ""))
+    monkeypatch.setattr(daily_healthcheck, "latest_nas_a_share_date", lambda: ("2026-04-16", ""))
     monkeypatch.setattr(daily_healthcheck, "expected_pretrade_signal_date", lambda now=None: ("2026-04-16", ""))
     monkeypatch.setattr(
         daily_healthcheck,

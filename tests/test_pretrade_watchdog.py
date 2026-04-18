@@ -13,6 +13,7 @@ def test_ensure_signal_ready_syncs_before_inference(monkeypatch):
                 local_latest="2026-04-08",
                 signal_date="2026-04-08",
                 nas_completed="2026-04-09",
+                nas_latest="2026-04-09",
                 expected_signal_date="2026-04-09",
             ),
             pretrade_watchdog.WatchdogState(
@@ -20,6 +21,7 @@ def test_ensure_signal_ready_syncs_before_inference(monkeypatch):
                 local_latest="2026-04-09",
                 signal_date="2026-04-08",
                 nas_completed="2026-04-09",
+                nas_latest="2026-04-09",
                 expected_signal_date="2026-04-09",
             ),
         ]
@@ -47,6 +49,7 @@ def test_ensure_signal_ready_noops_when_aligned(monkeypatch):
             local_latest="2026-04-09",
             signal_date="2026-04-09",
             nas_completed="2026-04-09",
+            nas_latest="2026-04-09",
             expected_signal_date="2026-04-09",
         ),
     )
@@ -66,8 +69,40 @@ def test_ensure_signal_ready_errors_when_local_snapshot_below_expected_target(mo
             local_latest="2026-04-15",
             signal_date="2026-04-15",
             nas_completed="2026-04-15",
+            nas_latest="2026-04-15",
             expected_signal_date="2026-04-16",
         ),
     )
 
     assert pretrade_watchdog.ensure_signal_ready() == 1
+
+
+def test_ensure_signal_ready_uses_nas_latest_when_completion_metadata_lags(monkeypatch):
+    states = iter(
+        [
+            pretrade_watchdog.WatchdogState(
+                local_completed="2026-04-15",
+                local_latest="2026-04-15",
+                signal_date="2026-04-15",
+                nas_completed="2026-04-14",
+                nas_latest="2026-04-16",
+                expected_signal_date="2026-04-16",
+            ),
+            pretrade_watchdog.WatchdogState(
+                local_completed="2026-04-16",
+                local_latest="2026-04-16",
+                signal_date="2026-04-16",
+                nas_completed="2026-04-16",
+                nas_latest="2026-04-16",
+                expected_signal_date="2026-04-16",
+            ),
+        ]
+    )
+    sync_targets: list[str] = []
+
+    monkeypatch.setattr(pretrade_watchdog, "collect_state", lambda: next(states))
+    monkeypatch.setattr(pretrade_watchdog, "sync_if_needed", lambda target: sync_targets.append(target))
+    monkeypatch.setattr(pretrade_watchdog, "process_running", lambda patterns: False)
+
+    assert pretrade_watchdog.ensure_signal_ready() == 0
+    assert sync_targets == ["2026-04-16"]

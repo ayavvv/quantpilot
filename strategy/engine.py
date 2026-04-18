@@ -16,6 +16,8 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from market_scope import a_share_tradeable_prefixes, code_matches_prefixes
+
 try:
     import qlib
     from qlib.constant import REG_CN
@@ -141,13 +143,14 @@ def _latest_a_share_instruments_end(provider_uri: str) -> str | None:
     if not inst_path.exists():
         return None
 
+    prefixes = a_share_tradeable_prefixes()
     latest = None
     for line in inst_path.read_text().splitlines():
         parts = line.strip().split("\t")
         if len(parts) < 3:
             continue
         code, _, end_date = parts[:3]
-        if not code.startswith(("SH", "SZ")):
+        if not code_matches_prefixes(code, prefixes):
             continue
         if latest is None or end_date > latest:
             latest = end_date
@@ -276,18 +279,36 @@ def _resolve_handler_feature_config(handler_cfg: dict[str, Any]) -> tuple[list[s
     return handler.get_feature_config()
 
 
+def _all_a_share_instruments(provider_uri: str) -> list[str]:
+    inst_path = Path(provider_uri) / "instruments" / "all.txt"
+    if not inst_path.exists():
+        return []
+
+    prefixes = a_share_tradeable_prefixes()
+    codes: list[str] = []
+    for line in inst_path.read_text().splitlines():
+        parts = line.strip().split("\t")
+        if len(parts) < 3:
+            continue
+        code, _, _ = parts[:3]
+        if code_matches_prefixes(code, prefixes):
+            codes.append(code)
+    return codes
+
+
 def _active_a_share_instruments(provider_uri: str, last_date: str) -> list[str]:
     inst_path = Path(provider_uri) / "instruments" / "all.txt"
     if not inst_path.exists():
         return []
 
+    prefixes = a_share_tradeable_prefixes()
     codes: list[str] = []
     for line in inst_path.read_text().splitlines():
         parts = line.strip().split("\t")
         if len(parts) < 3:
             continue
         code, _, end_date = parts[:3]
-        if code.startswith(("SH.", "SZ.")) and end_date >= last_date:
+        if code_matches_prefixes(code, prefixes) and end_date >= last_date:
             codes.append(code)
     return codes
 
@@ -413,6 +434,8 @@ class StrategyEngine:
             h_kwargs["fit_start_time"] = _warmup
             # fit_end_time 用 valid 段结束日期，避免特征归一化看到测试集数据
             h_kwargs["fit_end_time"] = segments["valid"][1]
+            if not hk_mode:
+                h_kwargs["instruments"] = _all_a_share_instruments(self.provider_uri)
             handler_cfg["kwargs"] = h_kwargs
             dataset_cfg["kwargs"]["handler"] = handler_cfg
 

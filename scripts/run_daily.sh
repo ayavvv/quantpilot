@@ -106,6 +106,7 @@ if [ -n "$NAS_HOST" ] && [ -n "$NAS_USER" ]; then
     log "  Target A-share trading date: $TARGET_A_SHARE_DATE"
     WAITED=0
     NAS_LAST=""
+    NAS_LATEST=""
     SYNC_TARGET_A_SHARE_DATE="$TARGET_A_SHARE_DATE"
     while [ $WAITED -lt $MAX_WAIT_SECONDS ]; do
         NAS_LAST=$(
@@ -115,26 +116,41 @@ if [ -n "$NAS_HOST" ] && [ -n "$NAS_USER" ]; then
                 --ssh-key "$SSH_KEY" \
                 --nas-qlib-path "$NAS_QLIB_PATH"
         )
+        NAS_LATEST=$(
+            PYTHONPATH="$PYTHONPATH" "$PYTHON_BIN" -m scripts.a_share_readiness nas-latest-date \
+                --nas-host "$NAS_HOST" \
+                --nas-user "$NAS_USER" \
+                --ssh-key "$SSH_KEY" \
+                --nas-qlib-path "$NAS_QLIB_PATH"
+        )
         if [ -n "$NAS_LAST" ] && [ "$NAS_LAST" \> "$TARGET_A_SHARE_DATE" -o "$NAS_LAST" = "$TARGET_A_SHARE_DATE" ]; then
-            log "  NAS A-share data ready (completed_a_share=$NAS_LAST)"
+            log "  NAS A-share data ready via completion metadata (completed_a_share=$NAS_LAST)"
             break
         fi
-        log "  NAS completed_a_share=$NAS_LAST, waiting for $TARGET_A_SHARE_DATE... (${WAITED}s/${MAX_WAIT_SECONDS}s)"
+        if [ -n "$NAS_LATEST" ] && [ "$NAS_LATEST" \> "$TARGET_A_SHARE_DATE" -o "$NAS_LATEST" = "$TARGET_A_SHARE_DATE" ]; then
+            log "  NAS A-share data ready via instruments snapshot (latest_a_share=$NAS_LATEST, completed_a_share=${NAS_LAST:-N/A})"
+            break
+        fi
+        log "  NAS completed_a_share=${NAS_LAST:-N/A}, latest_a_share=${NAS_LATEST:-N/A}, waiting for $TARGET_A_SHARE_DATE... (${WAITED}s/${MAX_WAIT_SECONDS}s)"
         sleep $WAIT_INTERVAL_SECONDS
         WAITED=$((WAITED + WAIT_INTERVAL_SECONDS))
     done
-    if [ -z "$NAS_LAST" ] || [ "$NAS_LAST" \< "$TARGET_A_SHARE_DATE" ]; then
+    EFFECTIVE_NAS_DATE="$NAS_LAST"
+    if [ -z "$EFFECTIVE_NAS_DATE" ] || { [ -n "$NAS_LATEST" ] && [ "$NAS_LATEST" \> "$EFFECTIVE_NAS_DATE" ]; }; then
+        EFFECTIVE_NAS_DATE="$NAS_LATEST"
+    fi
+    if [ -z "$EFFECTIVE_NAS_DATE" ] || [ "$EFFECTIVE_NAS_DATE" \< "$TARGET_A_SHARE_DATE" ]; then
         if [ "$ALLOW_STALE_SYNC" = "true" ]; then
-            log "  WARNING: NAS A-share data not ready after ${MAX_WAIT_SECONDS}s, proceeding with available data ($NAS_LAST)"
-            if [ -n "$NAS_LAST" ]; then
-                SYNC_TARGET_A_SHARE_DATE="$NAS_LAST"
+            log "  WARNING: NAS A-share data not ready after ${MAX_WAIT_SECONDS}s, proceeding with available data (${EFFECTIVE_NAS_DATE:-N/A})"
+            if [ -n "$EFFECTIVE_NAS_DATE" ]; then
+                SYNC_TARGET_A_SHARE_DATE="$EFFECTIVE_NAS_DATE"
             else
                 SYNC_TARGET_A_SHARE_DATE=""
             fi
         else
             spawn_ready_retry "$TARGET_A_SHARE_DATE"
             run_healthcheck nightly error
-            log "  ERROR: NAS A-share data not ready after ${MAX_WAIT_SECONDS}s, aborting to avoid stale/inconsistent sync ($NAS_LAST)"
+            log "  ERROR: NAS A-share data not ready after ${MAX_WAIT_SECONDS}s, aborting to avoid stale/inconsistent sync (completed=${NAS_LAST:-N/A}, latest=${NAS_LATEST:-N/A})"
             exit 1
         fi
     fi

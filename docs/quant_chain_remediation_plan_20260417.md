@@ -1,7 +1,7 @@
 # QuantPilot 链路整改计划
 
 日期：2026-04-17  
-状态：执行中
+状态：Phase 2 执行中（Phase 1 已完成，Phase 3 已完成首轮清理）
 范围：`collector -> nightly -> retry -> pretrade -> trade -> weekly_train -> report`
 
 ## 1. 目标
@@ -338,3 +338,9 @@
 
 当前建议：  
 今天自动交易完成后，先执行 `Phase 1`，不要直接进入大规模重构或删库式清理。
+
+## 10. 执行进展
+
+- `Phase 1` 已完成：shell 返回码、目标交易日感知健康检查、weekly promotion gate、统一邮件发送链路已落地。
+- `Phase 2` 执行中：正在统一 `train / inference / backtest / live trade` 的交易 universe，并降低 nightly 对 `completed_a_share` 的单点依赖。
+- `Phase 3` 已完成首轮：历史 `scheduler/`、`dashboard/`、`strategy_cli.py` 已删除，文档与运行时调度已对齐。

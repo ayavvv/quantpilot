@@ -21,6 +21,9 @@ from typing import Any
 
 import pandas as pd
 
+from market_scope import a_share_tradeable_prefixes
+from scripts.a_share_readiness import latest_a_share_date_from_instruments
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -66,18 +69,10 @@ def latest_a_share_date() -> str | None:
     inst_path = QLIB_DATA_DIR / "instruments" / "all.txt"
     if not inst_path.exists():
         return None
-
-    latest = None
-    for line in inst_path.read_text().splitlines():
-        parts = line.strip().split("\t")
-        if len(parts) < 3:
-            continue
-        code, _, end_date = parts[:3]
-        if not code.startswith(("SH.", "SZ.")):
-            continue
-        if latest is None or end_date > latest:
-            latest = end_date
-    return latest
+    return latest_a_share_date_from_instruments(
+        inst_path,
+        prefixes=a_share_tradeable_prefixes(),
+    )
 
 
 def step2_predict(last_date: str):

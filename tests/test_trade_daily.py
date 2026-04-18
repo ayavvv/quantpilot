@@ -1,3 +1,4 @@
+import pickle
 import pandas as pd
 from zoneinfo import ZoneInfo
 
@@ -160,6 +161,25 @@ def test_build_order_price_derives_limits_from_prev_close_when_snapshot_omits_th
     )
 
     assert price == 2.74
+
+
+def test_extract_signals_respects_tradeable_prefixes(tmp_path, monkeypatch):
+    pred_path = tmp_path / "pred.pkl"
+    index = pd.MultiIndex.from_tuples(
+        [
+            (pd.Timestamp("2026-04-08"), "SH.600000"),
+            (pd.Timestamp("2026-04-08"), "SZ.000001"),
+        ],
+        names=["datetime", "instrument"],
+    )
+    series = pd.Series([0.8, 0.9], index=index)
+    pred_path.write_bytes(pickle.dumps(series))
+    monkeypatch.setattr(trade_daily, "A_SHARE_TRADEABLE_PREFIXES", ("SH.",))
+
+    df, signal_date = trade_daily.extract_signals(pred_path)
+
+    assert signal_date == "2026-04-08"
+    assert df["code"].tolist() == ["SH.600000"]
 
 
 def test_run_trade_continues_buy_after_sell_failure(monkeypatch):

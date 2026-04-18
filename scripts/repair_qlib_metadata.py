@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import numpy as np
@@ -109,6 +110,24 @@ def rebuild_instruments(qlib_dir: Path) -> tuple[int, str | None]:
     return len(instruments), latest_a_share
 
 
+def repair_a_share_completion_status(qlib_dir: Path, latest_a_share: str | None) -> None:
+    if not latest_a_share:
+        return
+
+    metadata_dir = qlib_dir / "metadata"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    status_path = metadata_dir / "a_share_sync_status.json"
+    payload = {}
+    if status_path.exists():
+        try:
+            payload = json.loads(status_path.read_text())
+        except json.JSONDecodeError:
+            payload = {}
+
+    payload["last_completed_trade_date"] = latest_a_share
+    status_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Repair Qlib instruments metadata from feature bins")
     parser.add_argument("--qlib-dir", required=True, help="Qlib data directory")
@@ -116,6 +135,7 @@ def main() -> None:
 
     qlib_dir = Path(args.qlib_dir).expanduser().resolve()
     count, latest_a_share = rebuild_instruments(qlib_dir)
+    repair_a_share_completion_status(qlib_dir, latest_a_share)
     suffix = f", latest A-share={latest_a_share}" if latest_a_share else ""
     print(f"Rebuilt instruments metadata: {count} codes{suffix}")
 

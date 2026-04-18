@@ -83,6 +83,14 @@ nas_completed_date() {
         --nas-qlib-path "$NAS_QLIB_PATH"
 }
 
+nas_latest_date() {
+    PYTHONPATH="$PYTHONPATH" "$PYTHON_BIN" -m scripts.a_share_readiness nas-latest-date \
+        --nas-host "$NAS_HOST" \
+        --nas-user "$NAS_USER" \
+        --ssh-key "$SSH_KEY" \
+        --nas-qlib-path "$NAS_QLIB_PATH"
+}
+
 nightly_running() {
     pgrep -f "$SCRIPT_DIR/run_daily.sh|python -m inference.run_daily" >/dev/null 2>&1
 }
@@ -114,8 +122,13 @@ while [ "$(date +%s)" -lt "$deadline_epoch" ]; do
     fi
 
     nas_last="$(nas_completed_date)"
-    if [ -n "$nas_last" ] && [ "$nas_last" \> "$TARGET_A_SHARE_DATE" -o "$nas_last" = "$TARGET_A_SHARE_DATE" ]; then
-        log "NAS ready (completed_a_share=$nas_last), triggering retry run_daily.sh"
+    nas_latest="$(nas_latest_date)"
+    effective_nas_date="$nas_last"
+    if [ -z "$effective_nas_date" ] || { [ -n "$nas_latest" ] && [ "$nas_latest" \> "$effective_nas_date" ]; }; then
+        effective_nas_date="$nas_latest"
+    fi
+    if [ -n "$effective_nas_date" ] && [ "$effective_nas_date" \> "$TARGET_A_SHARE_DATE" -o "$effective_nas_date" = "$TARGET_A_SHARE_DATE" ]; then
+        log "NAS ready (completed_a_share=${nas_last:-N/A}, latest_a_share=${nas_latest:-N/A}), triggering retry run_daily.sh"
         TARGET_A_SHARE_DATE_OVERRIDE="$TARGET_A_SHARE_DATE" \
         AUTO_RETRY_ON_NAS_READY="false" \
         MAX_WAIT_SECONDS="$AUTO_RETRY_TRIGGER_MAX_WAIT_SECONDS" \
@@ -126,7 +139,7 @@ while [ "$(date +%s)" -lt "$deadline_epoch" ]; do
         exit "$rc"
     fi
 
-    log "NAS not ready yet (completed_a_share=${nas_last:-N/A}), sleeping ${AUTO_RETRY_POLL_INTERVAL_SECONDS}s"
+    log "NAS not ready yet (completed_a_share=${nas_last:-N/A}, latest_a_share=${nas_latest:-N/A}), sleeping ${AUTO_RETRY_POLL_INTERVAL_SECONDS}s"
     sleep "$AUTO_RETRY_POLL_INTERVAL_SECONDS"
 done
 

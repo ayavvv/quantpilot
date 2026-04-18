@@ -12,6 +12,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from market_scope import a_share_tradeable_prefixes, code_matches_prefixes
+
 
 def _run_ssh_command(
     *,
@@ -54,24 +56,29 @@ def latest_nas_a_share_date(
     nas_user: str,
     ssh_key: str,
     nas_qlib_path: str,
+    prefixes: tuple[str, ...] | None = None,
 ) -> str:
+    prefixes = prefixes or a_share_tradeable_prefixes()
+    prefix_arg = ",".join(prefixes)
     script = """
 from pathlib import Path
 import sys
 
 latest = ""
+prefixes = tuple(part for part in sys.argv[2].split(",") if part)
 for line in Path(sys.argv[1]).read_text().splitlines():
     parts = line.strip().split("\\t")
     if len(parts) < 3:
         continue
     code, _, end_date = parts[:3]
-    if code.startswith(("SH.", "SZ.")) and end_date > latest:
+    if code.startswith(prefixes) and end_date > latest:
         latest = end_date
 print(latest)
 """.strip()
     remote_command = (
         f"python3 -c {shlex.quote(script)} "
-        f"{shlex.quote(f'{nas_qlib_path}/instruments/all.txt')}"
+        f"{shlex.quote(f'{nas_qlib_path}/instruments/all.txt')} "
+        f"{shlex.quote(prefix_arg)}"
     )
     return _last_date_line(
         _run_ssh_command(
@@ -223,14 +230,18 @@ def is_a_share_ready(latest_date: str, target_date: str) -> bool:
     return bool(latest_date) and latest_date >= target_date
 
 
-def latest_a_share_date_from_instruments(instruments_path: str | Path) -> str:
+def latest_a_share_date_from_instruments(
+    instruments_path: str | Path,
+    prefixes: tuple[str, ...] | None = None,
+) -> str:
+    prefixes = prefixes or a_share_tradeable_prefixes()
     latest = ""
     for line in Path(instruments_path).read_text().splitlines():
         parts = line.strip().split("\t")
         if len(parts) < 3:
             continue
         code, _, end_date = parts[:3]
-        if code.startswith(("SH.", "SZ.")) and end_date > latest:
+        if code_matches_prefixes(code, prefixes) and end_date > latest:
             latest = end_date
     return latest
 
@@ -273,25 +284,32 @@ def validate_staged_qlib_snapshot(
     *,
     qlib_dir: str | Path,
     expected_target_date: str,
+    prefixes: tuple[str, ...] | None = None,
+    allow_metadata_lag: bool = False,
 ) -> tuple[str, str]:
     qlib_path = Path(qlib_dir)
+    prefixes = prefixes or a_share_tradeable_prefixes()
     completed_date = latest_completed_a_share_date_from_status(
         qlib_path / "metadata" / "a_share_sync_status.json"
     )
-    if completed_date != expected_target_date:
+    if not allow_metadata_lag and completed_date != expected_target_date:
         raise RuntimeError(
             "Staged NAS completion metadata mismatch: "
             f"completed_a_share={completed_date or 'N/A'}, expected={expected_target_date}"
         )
 
     latest_instruments_date = latest_a_share_date_from_instruments(
-        qlib_path / "instruments" / "all.txt"
+        qlib_path / "instruments" / "all.txt",
+        prefixes=prefixes,
     )
     if latest_instruments_date != expected_target_date:
         raise RuntimeError(
             "Staged NAS instruments mismatch: "
             f"latest_a_share={latest_instruments_date or 'N/A'}, expected={expected_target_date}"
         )
+
+    if allow_metadata_lag and (not completed_date or completed_date < expected_target_date):
+        completed_date = latest_instruments_date
 
     return completed_date, latest_instruments_date
 

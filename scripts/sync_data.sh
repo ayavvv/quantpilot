@@ -52,6 +52,7 @@ from scripts.a_share_readiness import validate_staged_qlib_snapshot
 completed, latest = validate_staged_qlib_snapshot(
     qlib_dir=qlib_dir,
     expected_target_date=expected,
+    allow_metadata_lag=True,
 )
 print(f"validated staged snapshot: completed_a_share={completed}, latest_a_share={latest}")
 PY

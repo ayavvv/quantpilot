@@ -64,6 +64,17 @@ def latest_nas_completed_date() -> str:
     )
 
 
+def latest_nas_a_share_date() -> str:
+    if not (NAS_HOST and NAS_USER):
+        return ""
+    return a_share_readiness.latest_nas_a_share_date(
+        nas_host=NAS_HOST,
+        nas_user=NAS_USER,
+        ssh_key=SSH_KEY,
+        nas_qlib_path=NAS_QLIB_PATH,
+    )
+
+
 def expected_signal_date(now: datetime | None = None) -> str:
     if not (NAS_HOST and NAS_USER):
         return ""
@@ -158,16 +169,22 @@ class WatchdogState:
     local_latest: str
     signal_date: str
     nas_completed: str
+    nas_latest: str
     expected_signal_date: str
 
 
 def collect_state() -> WatchdogState:
     nas_completed = ""
+    nas_latest = ""
     expected = ""
     try:
         nas_completed = latest_nas_completed_date()
     except Exception as exc:
         log(f"WARNING: failed to query NAS completion metadata: {exc}")
+    try:
+        nas_latest = latest_nas_a_share_date()
+    except Exception as exc:
+        log(f"WARNING: failed to query NAS latest A-share snapshot: {exc}")
     try:
         expected = expected_signal_date()
     except Exception as exc:
@@ -178,6 +195,7 @@ def collect_state() -> WatchdogState:
         local_latest=latest_local_a_share_date(),
         signal_date=latest_signal_date(),
         nas_completed=nas_completed,
+        nas_latest=nas_latest,
         expected_signal_date=expected,
     )
 
@@ -190,11 +208,12 @@ def ensure_signal_ready() -> int:
         f"local_latest={state.local_latest or 'N/A'} "
         f"signal={state.signal_date or 'N/A'} "
         f"nas_completed={state.nas_completed or 'N/A'} "
+        f"nas_latest={state.nas_latest or 'N/A'} "
         f"expected_signal={state.expected_signal_date or 'N/A'}"
     )
 
-    target_sync_date = state.nas_completed or state.local_completed
-    if state.expected_signal_date and state.nas_completed and state.nas_completed >= state.expected_signal_date:
+    target_sync_date = max(state.nas_completed or "", state.nas_latest or "", state.local_completed or "")
+    if state.expected_signal_date and max(state.nas_completed or "", state.nas_latest or "") >= state.expected_signal_date:
         target_sync_date = state.expected_signal_date
 
     if target_sync_date and (

@@ -155,6 +155,27 @@ def test_validate_staged_qlib_snapshot_rejects_mismatched_metadata(tmp_path):
         raise AssertionError("expected RuntimeError")
 
 
+def test_validate_staged_qlib_snapshot_accepts_metadata_lag_when_allowed(tmp_path):
+    qlib_dir = tmp_path / "qlib"
+    (qlib_dir / "metadata").mkdir(parents=True)
+    (qlib_dir / "instruments").mkdir(parents=True)
+    (qlib_dir / "metadata" / "a_share_sync_status.json").write_text(
+        '{"last_completed_trade_date": "2026-03-29"}'
+    )
+    (qlib_dir / "instruments" / "all.txt").write_text(
+        "SH.600000\t2006-01-03\t2026-03-30\nSZ.000001\t2011-03-18\t2026-03-29\n"
+    )
+
+    completed, latest = a_share_readiness.validate_staged_qlib_snapshot(
+        qlib_dir=qlib_dir,
+        expected_target_date="2026-03-30",
+        allow_metadata_lag=True,
+    )
+
+    assert completed == "2026-03-30"
+    assert latest == "2026-03-30"
+
+
 def test_validate_staged_qlib_snapshot_rejects_mismatched_instruments(tmp_path):
     qlib_dir = tmp_path / "qlib"
     (qlib_dir / "metadata").mkdir(parents=True)

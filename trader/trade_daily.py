@@ -35,6 +35,8 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
+from market_scope import a_share_tradeable_prefixes, code_matches_prefixes
+
 from futu import (
     OpenSecTradeContext,
     OpenQuoteContext,
@@ -88,6 +90,7 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger("trader")
+A_SHARE_TRADEABLE_PREFIXES = a_share_tradeable_prefixes()
 
 
 # ─── 工具函数 ───────────────────────────────────────────
@@ -236,7 +239,7 @@ def _order_adjust_limit(side: TrdSide) -> float:
 
 
 def _is_limit_up(code: str, change_rate: float) -> bool:
-    if not code.startswith("SH."):
+    if not code_matches_prefixes(code, A_SHARE_TRADEABLE_PREFIXES):
         return False
     return change_rate >= _get_limit_up_pct(code)
 
@@ -322,8 +325,7 @@ def extract_signals(pred_path: Path, signal_date: str | None = None) -> tuple[pd
         "code": day_pred.index.astype(str),
         "score": day_pred.values,
     })
-    # 只取 A 股
-    df = df[df["code"].str.startswith("SH.")].copy()
+    df = df[df["code"].map(lambda code: code_matches_prefixes(code, A_SHARE_TRADEABLE_PREFIXES))].copy()
     df = df.sort_values("score", ascending=False).reset_index(drop=True)
 
     date_str = target.strftime("%Y-%m-%d")
@@ -360,7 +362,7 @@ def _latest_a_share_date() -> str | None:
         if len(parts) < 3:
             continue
         code, _, end_date = parts[:3]
-        if not code.startswith(("SH.", "SZ.")):
+        if not code_matches_prefixes(code, A_SHARE_TRADEABLE_PREFIXES):
             continue
         if latest is None or end_date > latest:
             latest = end_date
@@ -525,7 +527,7 @@ def run_trade(
         if not snapshot:
             continue
 
-        if code.startswith("SH."):
+        if code_matches_prefixes(code, A_SHARE_TRADEABLE_PREFIXES):
             limit_pct = _get_limit_up_pct(code, snapshot=snapshot)
             chg_t = signal_day_changes.get(code, float("nan"))
             if pd.notna(chg_t) and chg_t >= limit_pct:
