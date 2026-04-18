@@ -2,7 +2,6 @@
 #
 # Usage:
 #   docker compose -f docker-compose.mac.yml run --rm trader
-#   docker compose -f docker-compose.mac.yml run --rm reporter
 #
 # 推理已迁移到宿主机 venv (避免 Rosetta x86 OOM)
 # 调度已迁移到宿主机 crontab

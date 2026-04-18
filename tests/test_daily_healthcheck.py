@@ -4,6 +4,11 @@ from scripts import daily_healthcheck
 
 
 def test_build_snapshot_pretrade_flags_stale_signal_and_nas_lag(monkeypatch):
+    monkeypatch.setattr(
+        daily_healthcheck,
+        "local_disk_status",
+        lambda: {"path": "/tmp/quantpilot_data", "total_bytes": 100, "used_bytes": 50, "free_bytes": 50, "used_ratio": 0.5},
+    )
     monkeypatch.setattr(daily_healthcheck, "latest_local_completed_date", lambda: "2026-04-08")
     monkeypatch.setattr(daily_healthcheck, "latest_local_a_share_date", lambda: "2026-04-09")
     monkeypatch.setattr(daily_healthcheck, "latest_signal_date", lambda: "2026-04-08")
@@ -43,6 +48,11 @@ def test_build_snapshot_pretrade_flags_stale_signal_and_nas_lag(monkeypatch):
 
 
 def test_build_snapshot_trade_warns_on_failed_orders(monkeypatch):
+    monkeypatch.setattr(
+        daily_healthcheck,
+        "local_disk_status",
+        lambda: {"path": "/tmp/quantpilot_data", "total_bytes": 100, "used_bytes": 50, "free_bytes": 50, "used_ratio": 0.5},
+    )
     monkeypatch.setattr(daily_healthcheck, "latest_local_completed_date", lambda: "2026-04-09")
     monkeypatch.setattr(daily_healthcheck, "latest_local_a_share_date", lambda: "2026-04-09")
     monkeypatch.setattr(daily_healthcheck, "latest_signal_date", lambda: "2026-04-09")
@@ -81,6 +91,11 @@ def test_build_snapshot_trade_warns_on_failed_orders(monkeypatch):
 
 
 def test_build_snapshot_nightly_flags_target_date_not_reached(monkeypatch):
+    monkeypatch.setattr(
+        daily_healthcheck,
+        "local_disk_status",
+        lambda: {"path": "/tmp/quantpilot_data", "total_bytes": 100, "used_bytes": 50, "free_bytes": 50, "used_ratio": 0.5},
+    )
     monkeypatch.setattr(daily_healthcheck, "latest_local_completed_date", lambda: "2026-04-09")
     monkeypatch.setattr(daily_healthcheck, "latest_local_a_share_date", lambda: "2026-04-09")
     monkeypatch.setattr(daily_healthcheck, "latest_signal_date", lambda: "2026-04-09")
@@ -161,6 +176,11 @@ def test_maybe_send_alert_deduplicates(monkeypatch, tmp_path):
 
 
 def test_build_snapshot_pretrade_errors_when_expected_target_not_reached(monkeypatch):
+    monkeypatch.setattr(
+        daily_healthcheck,
+        "local_disk_status",
+        lambda: {"path": "/tmp/quantpilot_data", "total_bytes": 100, "used_bytes": 50, "free_bytes": 50, "used_ratio": 0.5},
+    )
     monkeypatch.setattr(daily_healthcheck, "latest_local_completed_date", lambda: "2026-04-15")
     monkeypatch.setattr(daily_healthcheck, "latest_local_a_share_date", lambda: "2026-04-15")
     monkeypatch.setattr(daily_healthcheck, "latest_signal_date", lambda: "2026-04-15")
@@ -197,3 +217,46 @@ def test_build_snapshot_pretrade_errors_when_expected_target_not_reached(monkeyp
     assert snapshot["overall_status"] == "error"
     assert snapshot["expected_signal_date"] == "2026-04-16"
     assert any("expected pre-trade target" in issue for issue in snapshot["issues"])
+
+
+def test_build_snapshot_warns_when_disk_usage_high(monkeypatch):
+    monkeypatch.setattr(
+        daily_healthcheck,
+        "local_disk_status",
+        lambda: {"path": "/tmp/quantpilot_data", "total_bytes": 100, "used_bytes": 85, "free_bytes": 15, "used_ratio": 0.85},
+    )
+    monkeypatch.setattr(daily_healthcheck, "latest_local_completed_date", lambda: "2026-04-16")
+    monkeypatch.setattr(daily_healthcheck, "latest_local_a_share_date", lambda: "2026-04-16")
+    monkeypatch.setattr(daily_healthcheck, "latest_signal_date", lambda: "2026-04-16")
+    monkeypatch.setattr(daily_healthcheck, "latest_nas_completed_date", lambda: ("2026-04-16", ""))
+    monkeypatch.setattr(daily_healthcheck, "expected_pretrade_signal_date", lambda now=None: ("2026-04-16", ""))
+    monkeypatch.setattr(
+        daily_healthcheck,
+        "analyze_trade_log",
+        lambda today: {
+            "starts": 0,
+            "done": 0,
+            "order_failures": 0,
+            "order_fills": 0,
+            "errors": 0,
+            "stale_signal_errors": [],
+            "latest_line": "",
+        },
+    )
+    monkeypatch.setattr(
+        daily_healthcheck,
+        "analyze_daily_logs",
+        lambda today: {
+            "timeouts": 0,
+            "inference_failures": 0,
+            "retry_activity": 0,
+            "latest_daily_line": "",
+            "latest_retry_line": "",
+        },
+    )
+    monkeypatch.setattr(daily_healthcheck, "process_running", lambda patterns: False)
+
+    snapshot = daily_healthcheck.build_snapshot("pretrade", now=datetime(2026, 4, 17, 10, 0, 0))
+
+    assert snapshot["overall_status"] == "warn"
+    assert any("disk usage above warning threshold" in issue for issue in snapshot["issues"])

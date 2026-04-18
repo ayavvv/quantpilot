@@ -1,42 +1,20 @@
 # QuantPilot Docker Compose
 #
 # Profiles:
-#   - collector:  Data collection (baostock A-shares)
-#   - inference:  Daily model prediction (Qlib + LightGBM)
-#   - trader:     Auto trading via Futu OpenD
-#   - trainer:    Weekly model retraining
-#   - reporter:   Daily email report
+#   - collector:  NAS data collection daemon
+#   - inference:  One-shot daily model prediction
+#   - trader:     Manual Docker trader for debugging only
+#   - trainer:    Manual weekly model retraining
+#   - reporter:   Manual report generation
 #   - observer:   System monitoring dashboard
 #
 # Usage:
-#   docker compose --profile inference --profile reporter up    # Daily pipeline
-#   docker compose --profile collector up -d                    # Data collection daemon
+#   docker compose --profile collector up -d                    # NAS collector daemon
 #   docker compose --profile observer up -d                     # Monitoring dashboard
-#   docker compose run --rm inference                           # One-shot inference
-#
-# Single-machine:
-#   docker compose --profile all up -d                          # Everything
+#   docker compose run --rm trainer                             # Manual weekly training
+#   docker compose run --rm trader                              # Manual isolated trader run
 
 services:
-  # --- Scheduler (cron) ---
-  scheduler:
-    build:
-      context: .
-      dockerfile: scheduler/Dockerfile
-    container_name: quantpilot-scheduler
-    restart: unless-stopped
-    profiles: ["scheduler", "all"]
-    network_mode: host
-    environment:
-      - TZ=Asia/Shanghai
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ${DATA_DIR:-./data}:/data
-      - ${QLIB_DATA_DIR:-./qlib_data}:/qlib_data
-      - ~/.ssh/nas_key:/ssh/nas_key:ro
-      - .:/compose:ro
-      - ./logs:/logs
-
   # --- Data Collection ---
   collector:
     build:
@@ -47,7 +25,6 @@ services:
     profiles: ["collector", "all"]
     environment:
       - TZ=Asia/Shanghai
-      - CRON_TIME=${CRON_TIME:-16:30}
       - QLIB_DATA_DIR=/qlib_data
       - FUTU_HOST=${FUTU_HOST:-localhost}
       - FUTU_PORT=${FUTU_PORT:-11111}

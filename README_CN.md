@@ -29,13 +29,13 @@ A 股量化交易系统 —— 自动化数据采集、模型训练、每日推�
 
 | 模块 | 功能 | 定时 |
 |------|------|------|
-| **collector** | baostock A 股日 K 线采集 (5000+ 股票) | 每日 16:30 |
+| **collector** | NAS 上的 A 股 + 港股日度主采集 | 工作日 18:00 |
 | **converter** | Qlib 二进制直写 + parquet 迁移工具 | 采集时直写 |
 | **strategy** | Qlib + LightGBM + Alpha158Fund 特征 (~170 个) | - |
 | **inference** | 每日股票打分预测（宿主机 venv 流水线） | 每日 19:00 |
 | **trader** | 富途 OpenD API 自动交易（绑定模拟账户，休市自动预演） | 每日 14:50 |
 | **trainer** | 每周模型重训练 + 回测 | 每周六 10:00 |
-| **reporter** | HTML 日报邮件 (SMTP) | 每日 19:00 |
+| **reporter** | 宿主机原生日报邮件 (SMTP) | 每日 19:00 |
 | **observer** | Streamlit 系统监控仪表板 | 常驻 |
 
 ## 快速开始
@@ -49,17 +49,11 @@ cp .env.example .env
 # 编辑 .env 填入你的配置
 ```
 
-### 2. 单机部署
+### 2. NAS 服务
 
 ```bash
-# 启动所有服务
-docker compose --profile all up -d
-
-# 或按需启动
 docker compose --profile collector up -d      # 数据采集（后台常驻）
 docker compose --profile observer up -d       # 监控仪表板 :8501
-docker compose run --rm inference             # 单次推理
-docker compose run --rm reporter              # 生成日报
 ```
 
 ### 3. 分布式部署（NAS + 计算节点）
@@ -104,7 +98,6 @@ docker compose --profile collector up -d
 | `FUTU_SIM_ACC_ID` | `0` | 绑定指定模拟账户；`0` 表示取第一个模拟账户 |
 | `DRY_RUN` | `true` | 配置模板默认空跑；生产 `.env` 可改成 `false` |
 | `ALLOW_OFF_HOURS_TRADING` | `false` | 是否允许在沪深休市时继续提交订单 |
-| `CRON_TIME` | `16:30` | 采集定时 |
 | `QLIB_DATA_DIR` | `/qlib_data` | Qlib 二进制数据目录（collector 直写） |
 
 `run_trade.sh` 会先保留外部传入的环境变量，再加载 `.env` 默认值，所以 `DRY_RUN=true ./scripts/run_trade.sh` 不会再被 `.env` 里的配置覆盖。
@@ -190,7 +183,8 @@ quantpilot/
 ├── observer/           # Streamlit 监控仪表板
 ├── scripts/            # Shell 编排脚本
 ├── docs/               # 文档
-├── docker-compose.yml  # Docker 多服务配置
+├── docker-compose.yml  # NAS Docker 服务（collector / observer / 手动任务）
+├── docker-compose.mac.yml  # Mac mini 手动 Docker 任务（调试用）
 ├── .env.example        # 配置模板
 └── README.md
 ```
@@ -200,7 +194,7 @@ quantpilot/
 - Docker & Docker Compose
 - Python 3.10+（pyqlib 兼容性）
 - 富途 OpenD（交易用；交易器会读取沪深市场状态决定是否自动预演）
-- Mac mini 生产路径为宿主机 `crontab` + `.venv`；Docker trader 仅保留作手动运行
+- Mac mini 生产路径为宿主机 `crontab` + `.venv`；`docker-compose.mac.yml` 仅保留作手动隔离调试
 - Apple Silicon 注意: inference/trainer 容器使用 `platform: linux/amd64`（Rosetta 模拟），因为 pyqlib 没有 arm64 wheels
 
 ## 许可证

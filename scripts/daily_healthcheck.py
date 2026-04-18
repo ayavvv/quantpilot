@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +34,8 @@ NAS_QLIB_PATH = os.environ.get("NAS_QLIB_PATH", "/volume1/docker/quantpilot/qlib
 SSH_KEY = os.environ.get("SSH_KEY", str(Path.home() / ".ssh" / "id_ed25519"))
 NAS_COLLECTOR_CONTAINER = os.environ.get("NAS_COLLECTOR_CONTAINER", "quantpilot-collector")
 TARGET_DATE_LOOKBACK_DAYS = int(os.environ.get("TARGET_DATE_LOOKBACK_DAYS", "31"))
+DISK_WARN_THRESHOLD = float(os.environ.get("DISK_USAGE_WARN_THRESHOLD", "0.80"))
+DISK_ERROR_THRESHOLD = float(os.environ.get("DISK_USAGE_ERROR_THRESHOLD", "0.90"))
 
 LEVEL_ORDER = {"ok": 0, "warn": 1, "error": 2}
 
@@ -85,6 +88,22 @@ def expected_pretrade_signal_date(now: datetime | None = None) -> tuple[str, str
         return value, ""
     except Exception as exc:
         return "", str(exc)
+
+
+def local_disk_status() -> dict[str, Any]:
+    try:
+        usage = shutil.disk_usage(DATA_DIR)
+    except FileNotFoundError:
+        usage = shutil.disk_usage(DATA_DIR.parent)
+
+    used_ratio = usage.used / usage.total if usage.total else 0.0
+    return {
+        "path": str(DATA_DIR),
+        "total_bytes": usage.total,
+        "used_bytes": usage.used,
+        "free_bytes": usage.free,
+        "used_ratio": used_ratio,
+    }
 
 
 def _bump_level(current: str, new_level: str) -> str:
@@ -157,6 +176,7 @@ def build_snapshot(
     local_latest = latest_local_a_share_date()
     signal_date = latest_signal_date()
     nas_completed, nas_error = latest_nas_completed_date()
+    disk = local_disk_status()
     expected_signal_date = ""
     expected_signal_error = ""
     if phase in {"pretrade", "trade"}:
@@ -175,6 +195,19 @@ def build_snapshot(
     if not local_latest:
         overall = _bump_level(overall, "error")
         issues.append("Local A-share snapshot missing latest instruments date")
+
+    if disk["used_ratio"] >= DISK_ERROR_THRESHOLD:
+        overall = _bump_level(overall, "error")
+        issues.append(
+            "Local data disk usage above error threshold: "
+            f"used_ratio={disk['used_ratio']:.1%} threshold={DISK_ERROR_THRESHOLD:.0%}"
+        )
+    elif disk["used_ratio"] >= DISK_WARN_THRESHOLD:
+        overall = _bump_level(overall, "warn")
+        issues.append(
+            "Local data disk usage above warning threshold: "
+            f"used_ratio={disk['used_ratio']:.1%} threshold={DISK_WARN_THRESHOLD:.0%}"
+        )
 
     if local_latest and signal_date != local_latest:
         overall = _bump_level(overall, "error")
@@ -292,6 +325,7 @@ def build_snapshot(
             "latest_a_share_date": local_latest,
             "latest_signal_date": signal_date,
             "signal_aligned": bool(local_latest) and signal_date == local_latest,
+            "disk": disk,
         },
         "nas": {
             "completed_a_share_date": nas_completed,
@@ -321,6 +355,10 @@ def render_snapshot_html(snapshot: dict[str, Any]) -> str:
     local = snapshot["local"]
     nas = snapshot["nas"]
     trade = snapshot["trade"]
+    disk = local.get(
+        "disk",
+        {"path": str(DATA_DIR), "used_ratio": 0.0},
+    )
     return f"""
     <html>
     <body style="font-family: -apple-system, sans-serif; max-width: 760px; margin: 0 auto; padding: 20px;">
@@ -335,7 +373,9 @@ def render_snapshot_html(snapshot: dict[str, Any]) -> str:
       latest_a_share={local['latest_a_share_date'] or 'N/A'}<br>
       latest_signal={local['latest_signal_date'] or 'N/A'}<br>
       expected_signal={snapshot.get('expected_signal_date') or 'N/A'}<br>
-      signal_aligned={local['signal_aligned']}</p>
+      signal_aligned={local['signal_aligned']}<br>
+      data_dir={disk['path']}<br>
+      disk_used={disk['used_ratio']:.1%}</p>
       <h2>NAS State</h2>
       <p>completed_a_share={nas['completed_a_share_date'] or 'N/A'}<br>
       query_error={nas['query_error'] or 'N/A'}</p>

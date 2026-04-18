@@ -43,9 +43,6 @@ class Settings(BaseSettings):
     # Data storage directory
     data_dir: str = Field(default="/data", env="DATA_DIR")
 
-    # Cron schedule time (optional)
-    cron_time: str = Field(default="16:30", env="CRON_TIME")
-
     class Config:
         env_file = ".env"
         case_sensitive = False

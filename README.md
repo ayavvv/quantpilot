@@ -28,13 +28,13 @@ A-share quantitative trading system with automated data collection, model traini
 
 | Module | Description | Schedule |
 |--------|-------------|----------|
-| **collector** | A-share daily K-line data collection via baostock | Daily 16:30 |
+| **collector** | A-share + HK daily collection on NAS collector daemon | Weekdays 18:00 |
 | **converter** | Qlib binary direct writer + parquet migration | Part of collector |
 | **strategy** | Qlib-based LightGBM model with Alpha158Fund features (~170) | - |
 | **inference** | Daily stock score prediction (host venv pipeline) | Daily 19:00 |
 | **trader** | Auto trading via Futu OpenD API (simulation account, auto preview when market is closed) | Daily 14:50 |
 | **trainer** | Weekly model retraining + backtest | Saturday 10:00 |
-| **reporter** | HTML daily report via SMTP email | Daily 19:00 |
+| **reporter** | Native host daily report via SMTP email | Daily 19:00 |
 | **observer** | Streamlit monitoring dashboard | Always-on |
 
 ## Quick Start
@@ -48,17 +48,11 @@ cp .env.example .env
 # Edit .env with your settings
 ```
 
-### 2. Single-machine deployment
+### 2. NAS services
 
 ```bash
-# Start all services
-docker compose --profile all up -d
-
-# Or start specific services
 docker compose --profile collector up -d      # Data collection daemon
 docker compose --profile observer up -d       # Monitoring at :8501
-docker compose run --rm inference             # One-shot inference
-docker compose run --rm reporter              # Generate report
 ```
 
 ### 3. Distributed deployment (NAS + compute node)
@@ -103,7 +97,6 @@ Key settings:
 | `FUTU_SIM_ACC_ID` | `0` | Bind trader to a specific simulation account; `0` = first SIM account |
 | `DRY_RUN` | `true` | Template default for preview mode; can be disabled in production `.env` |
 | `ALLOW_OFF_HOURS_TRADING` | `false` | Permit order submission when SH/SZ market is closed |
-| `CRON_TIME` | `16:30` | Collector schedule time |
 
 `run_trade.sh` preserves caller-provided overrides before sourcing `.env`, so commands such as `DRY_RUN=true ./scripts/run_trade.sh` stay in preview mode even if `.env` sets `DRY_RUN=false`.
 
@@ -155,7 +148,8 @@ quantpilot/
 ├── observer/           # Streamlit monitoring dashboard
 ├── scripts/            # Shell orchestration scripts
 ├── docs/               # Documentation
-├── docker-compose.yml  # Multi-service Docker config
+├── docker-compose.yml  # NAS Docker services (collector + observer + manual jobs)
+├── docker-compose.mac.yml  # Mac mini manual Docker jobs (debug only)
 ├── .env.example        # Configuration template
 └── README.md
 ```
@@ -165,7 +159,7 @@ quantpilot/
 - Docker & Docker Compose
 - Python 3.10+ (for pyqlib compatibility)
 - Futu OpenD (for trading; trader also reads SH/SZ market state to decide whether to auto-preview)
-- Mac mini production path uses host `crontab` + `.venv`; the Docker trader service is kept for manual runs
+- Mac mini production path uses host `crontab` + `.venv`; `docker-compose.mac.yml` is only for manual isolated runs
 - Apple Silicon note: inference/trainer containers use `platform: linux/amd64` (Rosetta) because pyqlib lacks arm64 wheels
 
 ## License

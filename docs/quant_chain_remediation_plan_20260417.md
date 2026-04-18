@@ -1,7 +1,7 @@
 # QuantPilot 链路整改计划
 
 日期：2026-04-17  
-状态：计划中，等待今日 `14:50` 自动交易完成后执行  
+状态：执行中
 范围：`collector -> nightly -> retry -> pretrade -> trade -> weekly_train -> report`
 
 ## 1. 目标

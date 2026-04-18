@@ -4,7 +4,7 @@
 
 ## 系统概览
 
-全 A 股量化选股 + 模拟盘自动交易系统。单一 Git 仓库，当前生产拓扑为 NAS Docker 数据节点 + Mac mini 宿主机 `crontab` / `.venv` 交易与推理，Reporter 保持 Docker 按需运行。
+全 A 股量化选股 + 模拟盘自动交易系统。单一 Git 仓库，当前生产拓扑为 NAS Docker 数据节点 + Mac mini 宿主机 `crontab` / `.venv` 交易、推理与报告。
 
 ```
 ┌─ Mac mini (计算节点) ─────────────────────────────────────────────┐
@@ -20,12 +20,12 @@
 │   │ 19:00 run_daily.sh      周六 10:00 run_weekly_train.sh       │  │
 │   └───────────────┬──────────────────────────────┬───────────────┘  │
 │                   │                              │                  │
-│                   ▼                              ▼                  │
-│   ~/quantpilot_data/                       docker compose          │
-│   ├── qlib_data/     (Qlib bin, 从 NAS 同步)  reporter (按需)      │
-│   ├── signals/       (pred_sh_latest.pkl, signal_*.csv)            │
-│   ├── models/        (lightgbm_sh_latest.pkl)                      │
-│   └── reports/       (HTML 日报)                                   │
+│                   ▼                                                 │
+│   ~/quantpilot_data/                                                │
+│   ├── qlib_data/     (Qlib bin, 从 NAS 同步)                       │
+│   ├── signals/       (pred_sh_latest.pkl, signal_*.csv)             │
+│   ├── models/        (lightgbm_sh_latest.pkl)                       │
+│   └── reports/       (HTML 日报)                                    │
 │                                                                    │
 └────────────────────────┬───────────────────────────────────────────┘
                          │ SSH + tar (14:40 自动同步)
@@ -121,7 +121,7 @@ docker compose --profile collector --profile observer up -d
 | run_trade.sh | 宿主机 + `.venv` | 14:50 工作日 | 富途模拟盘交易，绑定 `FUTU_SIM_ACC_ID`，默认在休市时自动预演 |
 | run_daily.sh | 宿主机 + `.venv` | 19:00 工作日 | 等待 NAS 数据、同步、推理；若 NAS 晚到则自动补跑一次 |
 | run_weekly_train.sh | 宿主机 + `.venv` | 周六 10:00 | 周训练 + 回测 |
-| reporter | Docker `run --rm` | 按需 | `run_daily.sh` 第 3 步调用 |
+| reporter | 宿主机 + `.venv` | 19:00 工作日 | `run_daily.sh` 第 3 步调用，同一链路负责 SMTP 发送 |
 | trader | Docker `run --rm` | 手动 | 调试或隔离执行，非生产主路径；继承 `.env` 中的 OpenD / RSA / 模拟账户配置 |
 
 ```bash
@@ -131,8 +131,7 @@ crontab -l
 ./scripts/run_trade.sh
 # 手动触发日报流水线
 ./scripts/run_daily.sh
-# 手动运行 Docker Reporter / Trader
-docker compose -f docker-compose.mac.yml run --rm reporter
+# 手动运行 Docker Trader
 docker compose -f docker-compose.mac.yml run --rm trader
 ```
 
@@ -219,14 +218,6 @@ quantpilot/                          # 单一 Git monorepo
 │   ├── Dockerfile
 │   └── app.py                       # Streamlit dashboard
 │
-├── scheduler/                       # Mac mini Docker 调度器（历史方案，当前生产改用宿主机 crontab）
-│   ├── Dockerfile
-│   ├── crontab                      # 定时任务配置
-│   └── scripts/                     # sync / trade / daily 脚本
-│
-├── dashboard/                       # Streamlit 策略看板
-│   └── app.py
-│
 ├── scripts/                         # 宿主机运维脚本
 │   ├── sync_data.sh                 # NAS → 本地 Qlib 数据同步
 │   ├── run_trade.sh                 # 宿主机交易入口（支持保留外部 env 覆盖）
@@ -235,8 +226,7 @@ quantpilot/                          # 单一 Git monorepo
 │   └── migrate_parquet_to_qlib.py   # 一次性迁移工具
 │
 ├── docker-compose.yml               # NAS 全服务 (profile-based)
-├── docker-compose.mac.yml           # Mac mini 服务
-├── strategy_cli.py                  # CLI: train / backtest / dryrun
+├── docker-compose.mac.yml           # Mac mini 手动 Docker 调试任务
 ├── requirements.txt                 # Python 基础依赖
 └── requirements-qlib.txt            # Qlib 专用依赖
 ```
