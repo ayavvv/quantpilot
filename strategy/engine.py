@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from market_scope import a_share_tradeable_prefixes, code_matches_prefixes
+from market_scope import a_share_model_prefixes, code_matches_prefixes
 
 try:
     import qlib
@@ -143,7 +143,7 @@ def _latest_a_share_instruments_end(provider_uri: str) -> str | None:
     if not inst_path.exists():
         return None
 
-    prefixes = a_share_tradeable_prefixes()
+    prefixes = a_share_model_prefixes()
     latest = None
     for line in inst_path.read_text().splitlines():
         parts = line.strip().split("\t")
@@ -284,7 +284,7 @@ def _all_a_share_instruments(provider_uri: str) -> list[str]:
     if not inst_path.exists():
         return []
 
-    prefixes = a_share_tradeable_prefixes()
+    prefixes = a_share_model_prefixes()
     codes: list[str] = []
     for line in inst_path.read_text().splitlines():
         parts = line.strip().split("\t")
@@ -301,7 +301,7 @@ def _active_a_share_instruments(provider_uri: str, last_date: str) -> list[str]:
     if not inst_path.exists():
         return []
 
-    prefixes = a_share_tradeable_prefixes()
+    prefixes = a_share_model_prefixes()
     codes: list[str] = []
     for line in inst_path.read_text().splitlines():
         parts = line.strip().split("\t")

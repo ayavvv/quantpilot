@@ -21,7 +21,7 @@ from typing import Any
 
 import pandas as pd
 
-from market_scope import a_share_tradeable_prefixes
+from market_scope import a_share_model_prefixes
 from scripts.a_share_readiness import latest_a_share_date_from_instruments
 
 logging.basicConfig(
@@ -71,7 +71,7 @@ def latest_a_share_date() -> str | None:
         return None
     return latest_a_share_date_from_instruments(
         inst_path,
-        prefixes=a_share_tradeable_prefixes(),
+        prefixes=a_share_model_prefixes(),
     )
 
 

@@ -251,12 +251,12 @@ def test_predict_next_day_fallback_keeps_a_share_instruments_only(tmp_path, monk
     result = strategy_engine._predict_next_day_impl(hk_mode=False)
 
     handler_kwargs = captured["dataset_cfg"]["kwargs"]["handler"]["kwargs"]
-    assert handler_kwargs["instruments"] == ["SH.600000"]
+    assert handler_kwargs["instruments"] == ["SH.600000", "SZ.000001"]
     assert result.attrs["infer_date"] == "2026-04-08"
     assert result["code"].tolist() == ["SH.600000"]
 
 
-def test_predict_next_day_respects_tradeable_prefix_override(tmp_path, monkeypatch):
+def test_predict_next_day_respects_model_prefix_override(tmp_path, monkeypatch):
     qlib_dir = tmp_path / "qlib"
     inst_dir = qlib_dir / "instruments"
     inst_dir.mkdir(parents=True)
@@ -271,7 +271,7 @@ def test_predict_next_day_respects_tradeable_prefix_override(tmp_path, monkeypat
         pickle.dump(DummyModel(), f)
 
     monkeypatch.setattr(engine.qlib, "init", lambda **kwargs: None)
-    monkeypatch.setattr(engine, "a_share_tradeable_prefixes", lambda: ("SH.", "SZ."))
+    monkeypatch.setattr(engine, "a_share_model_prefixes", lambda: ("SH.",))
     monkeypatch.setattr(
         engine,
         "_load_config",
@@ -318,7 +318,7 @@ def test_predict_next_day_respects_tradeable_prefix_override(tmp_path, monkeypat
     strategy_engine._predict_next_day_impl(hk_mode=False)
 
     handler_kwargs = captured["dataset_cfg"]["kwargs"]["handler"]["kwargs"]
-    assert handler_kwargs["instruments"] == ["SH.600000", "SZ.000001"]
+    assert handler_kwargs["instruments"] == ["SH.600000"]
 
 
 def test_predict_next_day_forces_live_infer_date_to_requested_last_date(tmp_path, monkeypatch):

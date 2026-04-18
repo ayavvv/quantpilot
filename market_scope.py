@@ -10,6 +10,10 @@ def env_prefixes(name: str, default: str) -> tuple[str, ...]:
     return tuple(part.strip() for part in raw.split(",") if part.strip())
 
 
+def a_share_model_prefixes() -> tuple[str, ...]:
+    return env_prefixes("A_SHARE_MODEL_PREFIXES", "SH.,SZ.")
+
+
 def a_share_tradeable_prefixes() -> tuple[str, ...]:
     return env_prefixes("A_SHARE_TRADEABLE_PREFIXES", "SH.")
 

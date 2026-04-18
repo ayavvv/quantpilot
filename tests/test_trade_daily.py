@@ -182,6 +182,23 @@ def test_extract_signals_respects_tradeable_prefixes(tmp_path, monkeypatch):
     assert df["code"].tolist() == ["SH.600000"]
 
 
+def test_latest_a_share_date_uses_model_prefixes_for_freshness(tmp_path, monkeypatch):
+    qlib_dir = tmp_path / "qlib"
+    inst_dir = qlib_dir / "instruments"
+    inst_dir.mkdir(parents=True)
+    (inst_dir / "all.txt").write_text(
+        "SH.600000\t2006-01-03\t2026-04-10\n"
+        "SZ.000001\t2006-01-03\t2026-04-11\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(trade_daily, "QLIB_DATA_DIR", qlib_dir)
+    monkeypatch.setattr(trade_daily, "A_SHARE_TRADEABLE_PREFIXES", ("SH.",))
+    monkeypatch.setattr(trade_daily, "A_SHARE_MODEL_PREFIXES", ("SH.", "SZ."))
+
+    assert trade_daily._latest_a_share_date() == "2026-04-11"
+
+
 def test_run_trade_continues_buy_after_sell_failure(monkeypatch):
     class FakeTradeContext:
         def __init__(self):

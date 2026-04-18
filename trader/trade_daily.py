@@ -35,7 +35,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
-from market_scope import a_share_tradeable_prefixes, code_matches_prefixes
+from market_scope import a_share_model_prefixes, a_share_tradeable_prefixes, code_matches_prefixes
 
 from futu import (
     OpenSecTradeContext,
@@ -91,6 +91,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("trader")
 A_SHARE_TRADEABLE_PREFIXES = a_share_tradeable_prefixes()
+A_SHARE_MODEL_PREFIXES = a_share_model_prefixes()
 
 
 # ─── 工具函数 ───────────────────────────────────────────
@@ -362,7 +363,7 @@ def _latest_a_share_date() -> str | None:
         if len(parts) < 3:
             continue
         code, _, end_date = parts[:3]
-        if not code_matches_prefixes(code, A_SHARE_TRADEABLE_PREFIXES):
+        if not code_matches_prefixes(code, A_SHARE_MODEL_PREFIXES):
             continue
         if latest is None or end_date > latest:
             latest = end_date

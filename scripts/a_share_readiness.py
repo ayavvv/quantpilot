@@ -12,7 +12,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from market_scope import a_share_tradeable_prefixes, code_matches_prefixes
+from market_scope import a_share_model_prefixes, code_matches_prefixes
 
 
 def _run_ssh_command(
@@ -58,7 +58,7 @@ def latest_nas_a_share_date(
     nas_qlib_path: str,
     prefixes: tuple[str, ...] | None = None,
 ) -> str:
-    prefixes = prefixes or a_share_tradeable_prefixes()
+    prefixes = prefixes or a_share_model_prefixes()
     prefix_arg = ",".join(prefixes)
     script = """
 from pathlib import Path
@@ -234,7 +234,7 @@ def latest_a_share_date_from_instruments(
     instruments_path: str | Path,
     prefixes: tuple[str, ...] | None = None,
 ) -> str:
-    prefixes = prefixes or a_share_tradeable_prefixes()
+    prefixes = prefixes or a_share_model_prefixes()
     latest = ""
     for line in Path(instruments_path).read_text().splitlines():
         parts = line.strip().split("\t")
@@ -288,7 +288,7 @@ def validate_staged_qlib_snapshot(
     allow_metadata_lag: bool = False,
 ) -> tuple[str, str]:
     qlib_path = Path(qlib_dir)
-    prefixes = prefixes or a_share_tradeable_prefixes()
+    prefixes = prefixes or a_share_model_prefixes()
     completed_date = latest_completed_a_share_date_from_status(
         qlib_path / "metadata" / "a_share_sync_status.json"
     )
