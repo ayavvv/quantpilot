@@ -49,6 +49,14 @@ def test_run_daily_runs_reporter_natively_with_reporter_env():
     assert 'TRADE_LOG="$PROJECT_DIR/logs/trade.log"' in content
 
 
+def test_run_daily_preserves_actual_exit_codes():
+    content = RUN_DAILY.read_text()
+    assert 'if QLIB_DATA_DIR="$DATA_DIR/qlib_data" \\' in content
+    assert 'if REPORTER_ENV_FILE="$PROJECT_DIR/reporter/.env" \\' in content
+    assert 'if ! QLIB_DATA_DIR="$DATA_DIR/qlib_data" \\' not in content
+    assert 'if ! REPORTER_ENV_FILE="$PROJECT_DIR/reporter/.env" \\' not in content
+
+
 def test_run_daily_sets_signal_output_tag_from_target_date():
     content = RUN_DAILY.read_text()
     assert 'resolve_signal_output_tag() {' in content
@@ -69,12 +77,14 @@ def test_run_pretrade_watchdog_calls_python_watchdog_and_healthcheck():
     assert '"$PYTHON_BIN" -m scripts.pretrade_watchdog' in content
     assert '--phase pretrade' in content
     assert '--alert-on error' in content
+    assert 'if PYTHONPATH="$PYTHONPATH" "$PYTHON_BIN" -m scripts.pretrade_watchdog; then' in content
 
 
 def test_run_trade_runs_healthcheck_after_trade():
     content = RUN_TRADE.read_text()
     assert '--phase trade' in content
     assert '"$PYTHON_BIN" -m scripts.daily_healthcheck' in content
+    assert 'if FUTU_HOST="${FUTU_HOST:-192.168.100.248}" \\' in content
 
 
 def test_sync_data_syncs_and_promotes_metadata():

@@ -60,7 +60,7 @@ cd "$PROJECT_DIR"
 source .venv/bin/activate
 
 TRADE_RC=0
-if ! FUTU_HOST="${FUTU_HOST:-192.168.100.248}" \
+if FUTU_HOST="${FUTU_HOST:-192.168.100.248}" \
 FUTU_PORT="${FUTU_PORT:-11111}" \
 FUTU_SIM_ACC_ID="${FUTU_SIM_ACC_ID:-0}" \
 FUTU_RSA_KEY="${FUTU_RSA_KEY:-}" \
@@ -72,6 +72,8 @@ HOLD_BONUS="${HOLD_BONUS:-0.05}" \
 STOP_LOSS_PCT="${STOP_LOSS_PCT:--0.08}" \
 DRY_RUN="${DRY_RUN:-false}" \
     python -m trader.trade_daily; then
+    TRADE_RC=0
+else
     TRADE_RC=$?
 fi
 

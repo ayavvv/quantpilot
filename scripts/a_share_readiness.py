@@ -167,6 +167,58 @@ finally:
     )
 
 
+def previous_trade_date_via_collector(
+    *,
+    nas_host: str,
+    nas_user: str,
+    ssh_key: str,
+    today: str,
+    collector_container: str = "quantpilot-collector",
+    lookback_days: int = 31,
+) -> str:
+    script = """
+import sys
+from datetime import datetime, timedelta
+
+import baostock as bs
+
+today = datetime.strptime(sys.argv[1], "%Y-%m-%d")
+lookback_days = int(sys.argv[2])
+end_date = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+start_date = (today - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+lg = bs.login()
+if lg.error_code != "0":
+    raise SystemExit(f"baostock login failed: {lg.error_msg}")
+try:
+    rs = bs.query_trade_dates(start_date=start_date, end_date=end_date)
+    if rs.error_code != "0":
+        raise SystemExit(f"query_trade_dates error: {rs.error_msg}")
+    field_map = {name: idx for idx, name in enumerate(rs.fields)}
+    cal_idx = field_map["calendar_date"]
+    trade_idx = field_map["is_trading_day"]
+    dates = []
+    while rs.next():
+        row = rs.get_row_data()
+        if row[trade_idx] == "1":
+            dates.append(row[cal_idx])
+    print(dates[-1] if dates else "")
+finally:
+    bs.logout()
+""".strip()
+    remote_command = (
+        f"sudo /usr/local/bin/docker exec {shlex.quote(collector_container)} "
+        f"python -c {shlex.quote(script)} {shlex.quote(today)} {lookback_days}"
+    )
+    return _last_date_line(
+        _run_ssh_command(
+            nas_host=nas_host,
+            nas_user=nas_user,
+            ssh_key=ssh_key,
+            remote_command=remote_command,
+        )
+    )
+
+
 def is_a_share_ready(latest_date: str, target_date: str) -> bool:
     return bool(latest_date) and latest_date >= target_date
 

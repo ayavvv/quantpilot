@@ -6,7 +6,7 @@
 # 0. Wait for NAS collector to finish today's data
 # 1. Sync Qlib bin data from NAS (or skip if single-machine)
 # 2. Run inference natively in venv (validate data -> LightGBM predict)
-# 3. Run reporter via Docker (generate + send daily report)
+# 3. Run reporter natively (generate + send daily report)
 
 set -euo pipefail
 
@@ -157,11 +157,13 @@ SIGNAL_OUTPUT_TAG_VALUE="${SIGNAL_OUTPUT_TAG_OVERRIDE:-}"
 if [ -z "$SIGNAL_OUTPUT_TAG_VALUE" ]; then
     SIGNAL_OUTPUT_TAG_VALUE="$(resolve_signal_output_tag "${SYNC_TARGET_A_SHARE_DATE:-${TARGET_A_SHARE_DATE:-}}")"
 fi
-if ! QLIB_DATA_DIR="$DATA_DIR/qlib_data" \
+if QLIB_DATA_DIR="$DATA_DIR/qlib_data" \
     MODEL_DIR="$DATA_DIR/models" \
     SIGNAL_DIR="$DATA_DIR/signals" \
     SIGNAL_OUTPUT_TAG="$SIGNAL_OUTPUT_TAG_VALUE" \
     python -m inference.run_daily; then
+    INFERENCE_RC=0
+else
     INFERENCE_RC=$?
 fi
 if [ "$INFERENCE_RC" -ne 0 ]; then
@@ -175,13 +177,15 @@ log "Step 3: Running reporter..."
 log "  Working directory: $PROJECT_DIR"
 log "  Reporter env file: $PROJECT_DIR/reporter/.env"
 REPORTER_RC=0
-if ! REPORTER_ENV_FILE="$PROJECT_DIR/reporter/.env" \
+if REPORTER_ENV_FILE="$PROJECT_DIR/reporter/.env" \
     REPORT_DIR="$DATA_DIR/reports" \
     SIGNAL_DIR="$DATA_DIR/signals" \
     QLIB_DATA_DIR="$DATA_DIR/qlib_data" \
     TRADE_LOG="$PROJECT_DIR/logs/trade.log" \
     PYTHONPATH="$PYTHONPATH" \
     "$PYTHON_BIN" -m reporter.send_report; then
+    REPORTER_RC=0
+else
     REPORTER_RC=$?
 fi
 run_healthcheck nightly error

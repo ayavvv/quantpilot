@@ -13,12 +13,14 @@ def test_ensure_signal_ready_syncs_before_inference(monkeypatch):
                 local_latest="2026-04-08",
                 signal_date="2026-04-08",
                 nas_completed="2026-04-09",
+                expected_signal_date="2026-04-09",
             ),
             pretrade_watchdog.WatchdogState(
                 local_completed="2026-04-09",
                 local_latest="2026-04-09",
                 signal_date="2026-04-08",
                 nas_completed="2026-04-09",
+                expected_signal_date="2026-04-09",
             ),
         ]
     )
@@ -45,6 +47,7 @@ def test_ensure_signal_ready_noops_when_aligned(monkeypatch):
             local_latest="2026-04-09",
             signal_date="2026-04-09",
             nas_completed="2026-04-09",
+            expected_signal_date="2026-04-09",
         ),
     )
     called = {"inference": False}
@@ -52,3 +55,19 @@ def test_ensure_signal_ready_noops_when_aligned(monkeypatch):
 
     assert pretrade_watchdog.ensure_signal_ready() == 0
     assert called["inference"] is False
+
+
+def test_ensure_signal_ready_errors_when_local_snapshot_below_expected_target(monkeypatch):
+    monkeypatch.setattr(
+        pretrade_watchdog,
+        "collect_state",
+        lambda: pretrade_watchdog.WatchdogState(
+            local_completed="2026-04-15",
+            local_latest="2026-04-15",
+            signal_date="2026-04-15",
+            nas_completed="2026-04-15",
+            expected_signal_date="2026-04-16",
+        ),
+    )
+
+    assert pretrade_watchdog.ensure_signal_ready() == 1

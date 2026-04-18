@@ -23,7 +23,9 @@ run_healthcheck() {
 }
 
 WATCHDOG_RC=0
-if ! PYTHONPATH="$PYTHONPATH" "$PYTHON_BIN" -m scripts.pretrade_watchdog; then
+if PYTHONPATH="$PYTHONPATH" "$PYTHON_BIN" -m scripts.pretrade_watchdog; then
+    WATCHDOG_RC=0
+else
     WATCHDOG_RC=$?
 fi
 

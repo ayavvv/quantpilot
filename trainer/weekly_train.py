@@ -28,16 +28,14 @@ from __future__ import annotations
 import logging
 import os
 import pickle
-import smtplib
 import subprocess
 import sys
 import shutil
 from datetime import datetime
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
+from html import escape
 from pathlib import Path
+
+from reporter.send_report import send_email
 
 # --- Configuration (all via env vars, Docker-friendly defaults) ---
 NAS_HOST = os.environ.get("NAS_HOST", "")
@@ -61,6 +59,8 @@ EMAIL_TO = os.environ.get("EMAIL_TO", "")
 REPORT_FROM = os.environ.get("REPORT_FROM", "")
 REPORT_TO = os.environ.get("REPORT_TO", "")
 DEFAULT_WEEKLY_TIMEOUT_SECONDS = 12 * 60 * 60
+DEFAULT_WEEKLY_STAGE_ROOT_NAME = "weekly_runs"
+_WEEKLY_STAGE_TAG: str | None = None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -165,6 +165,127 @@ def _resolve_timeout_seconds(name: str, default: int = DEFAULT_WEEKLY_TIMEOUT_SE
     return timeout_seconds
 
 
+def _stage_timestamp() -> str:
+    global _WEEKLY_STAGE_TAG
+    if _WEEKLY_STAGE_TAG:
+        return _WEEKLY_STAGE_TAG
+    override = os.environ.get("WEEKLY_STAGE_TAG", "").strip()
+    if override:
+        _WEEKLY_STAGE_TAG = override
+        return _WEEKLY_STAGE_TAG
+    _WEEKLY_STAGE_TAG = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return _WEEKLY_STAGE_TAG
+
+
+def _stage_models_dir() -> Path:
+    root = Path(
+        os.environ.get(
+            "WEEKLY_STAGE_MODELS_ROOT",
+            str(MODELS_DIR / DEFAULT_WEEKLY_STAGE_ROOT_NAME),
+        )
+    )
+    return root / _stage_timestamp()
+
+
+def _stage_output_dir() -> Path:
+    root = Path(
+        os.environ.get(
+            "WEEKLY_STAGE_OUTPUT_ROOT",
+            str(OUTPUT_DIR / DEFAULT_WEEKLY_STAGE_ROOT_NAME),
+        )
+    )
+    return root / _stage_timestamp()
+
+
+def _parse_metric_value(raw: str, *, percent: bool) -> float:
+    value = raw.strip()
+    if not value:
+        raise ValueError("empty metric value")
+    if percent:
+        value = value.rstrip("%")
+        return float(value) / 100.0
+    return float(value)
+
+
+def _promotion_threshold(name: str, default: float) -> float:
+    raw_value = os.environ.get(name)
+    if not raw_value:
+        return default
+    try:
+        return float(raw_value)
+    except ValueError:
+        log.warning(f"  Invalid {name}={raw_value!r}, fallback to {default}")
+        return default
+
+
+def evaluate_promotion_gate(candidate_metrics: dict, baseline_metrics: dict | None) -> tuple[bool, list[str]]:
+    if not baseline_metrics:
+        return True, ["No baseline metrics available; allow first promotion"]
+
+    reasons: list[str] = []
+    min_ann_return_diff = _promotion_threshold("WEEKLY_PROMOTION_MIN_ANN_RETURN_DIFF", 0.0)
+    min_sharpe_diff = _promotion_threshold("WEEKLY_PROMOTION_MIN_SHARPE_DIFF", 0.0)
+    max_drawdown_delta = _promotion_threshold("WEEKLY_PROMOTION_MAX_DRAWDOWN_DELTA", 0.01)
+
+    try:
+        candidate_ann = _parse_metric_value(candidate_metrics["ann_return"], percent=True)
+        baseline_ann = _parse_metric_value(baseline_metrics["ann_return"], percent=True)
+        candidate_sharpe = _parse_metric_value(candidate_metrics["sharpe"], percent=False)
+        baseline_sharpe = _parse_metric_value(baseline_metrics["sharpe"], percent=False)
+        candidate_mdd = abs(_parse_metric_value(candidate_metrics["max_drawdown"], percent=True))
+        baseline_mdd = abs(_parse_metric_value(baseline_metrics["max_drawdown"], percent=True))
+    except KeyError as exc:
+        return False, [f"Missing promotion metric: {exc}"]
+    except ValueError as exc:
+        return False, [f"Invalid promotion metric: {exc}"]
+
+    ann_diff = candidate_ann - baseline_ann
+    sharpe_diff = candidate_sharpe - baseline_sharpe
+    mdd_delta = candidate_mdd - baseline_mdd
+
+    if ann_diff < min_ann_return_diff:
+        reasons.append(
+            "ann_return below gate: "
+            f"candidate={candidate_metrics['ann_return']} baseline={baseline_metrics['ann_return']} "
+            f"required_diff>={min_ann_return_diff:.4f}"
+        )
+    if sharpe_diff < min_sharpe_diff:
+        reasons.append(
+            "sharpe below gate: "
+            f"candidate={candidate_metrics['sharpe']} baseline={baseline_metrics['sharpe']} "
+            f"required_diff>={min_sharpe_diff:.4f}"
+        )
+    if mdd_delta > max_drawdown_delta:
+        reasons.append(
+            "max_drawdown above gate: "
+            f"candidate={candidate_metrics['max_drawdown']} baseline={baseline_metrics['max_drawdown']} "
+            f"allowed_delta<={max_drawdown_delta:.4f}"
+        )
+
+    if reasons:
+        return False, reasons
+    return True, [
+        "Promotion gate passed",
+        f"ann_return {candidate_metrics['ann_return']} vs {baseline_metrics['ann_return']}",
+        f"sharpe {candidate_metrics['sharpe']} vs {baseline_metrics['sharpe']}",
+        f"max_drawdown {candidate_metrics['max_drawdown']} vs {baseline_metrics['max_drawdown']}",
+    ]
+
+
+def _render_report_html(title: str, sections: list[tuple[str, list[str]]]) -> str:
+    parts = [
+        "<html><body style=\"font-family:-apple-system,sans-serif;max-width:760px;margin:0 auto;padding:20px;\">",
+        f"<h1>{escape(title)}</h1>",
+    ]
+    for section_title, lines in sections:
+        parts.append(f"<h2>{escape(section_title)}</h2><ul>")
+        for line in lines:
+            parts.append(f"<li>{escape(line)}</li>")
+        parts.append("</ul>")
+    parts.append("</body></html>")
+    return "".join(parts)
+
+
 # --- Step 1: Check/Sync Qlib data ---
 
 def sync_qlib_data():
@@ -218,18 +339,18 @@ def get_latest_date() -> str:
     return datetime.now().strftime("%Y-%m-%d")
 
 
-def train_model():
+def train_model(models_dir: Path):
     """Train SH market LightGBM model."""
     log.info("Step 2: Training model...")
     last_date = get_latest_date()
     log.info(f"  Test segment end date: {last_date}")
 
-    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    models_dir.mkdir(parents=True, exist_ok=True)
 
     # Pass TEST_END_DATE and MODELS_DIR via environment
     env = os.environ.copy()
     env["TEST_END_DATE"] = last_date
-    env["MODELS_DIR"] = str(MODELS_DIR)
+    env["MODELS_DIR"] = str(models_dir)
     env["QLIB_DATA_DIR"] = str(QLIB_DATA_DIR)
 
     main_py = STRATEGY_DIR / "main.py"
@@ -264,7 +385,7 @@ def train_model():
                 if p == "ICIR:":
                     icir_val = parts[i + 1] if i + 1 < len(parts) else "N/A"
 
-    pred_path = MODELS_DIR / "pred_sh.pkl"
+    pred_path = models_dir / "pred_sh.pkl"
     if not pred_path.exists():
         raise RuntimeError(f"Training did not produce pred_sh.pkl: {pred_path}")
 
@@ -277,7 +398,7 @@ def train_model():
              f"{len(dates)} days, {n_stocks} stocks")
 
     # Verify model file also exists
-    model_path = MODELS_DIR / "lightgbm_sh_latest.pkl"
+    model_path = models_dir / "lightgbm_sh_latest.pkl"
     if model_path.exists():
         log.info(f"  Model: {model_path} ({model_path.stat().st_size / 1024:.0f} KB)")
     else:
@@ -295,12 +416,10 @@ def train_model():
 
 # --- Step 3: Backtest ---
 
-def run_backtest():
-    """Run backtest with new pred_sh.pkl."""
+def run_backtest(pred_path: Path, output_dir: Path):
+    """Run backtest for a specific prediction file."""
     log.info("Step 3: Running backtest...")
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    pred_path = MODELS_DIR / "pred_sh.pkl"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     # Use -m to handle relative imports correctly
     env = os.environ.copy()
@@ -321,7 +440,7 @@ def run_backtest():
             "--allowed-prefix", "SH.",
             "--filter-limit-up",
             "--slippage", "0.001",
-            "--output", str(OUTPUT_DIR),
+            "--output", str(output_dir),
         ],
         cwd=str(STRATEGY_DIR),
         env=env,
@@ -345,8 +464,8 @@ def run_backtest():
                 if k and v and k not in ("Prediction file", "Price directory"):
                     metrics[k] = v
 
-    report_path = OUTPUT_DIR / "backtest_report.png"
-    metrics_path = OUTPUT_DIR / "metrics.txt"
+    report_path = output_dir / "backtest_report.png"
+    metrics_path = output_dir / "metrics.txt"
 
     log.info(f"  Report chart: {report_path}")
     log.info(f"  Metrics: {metrics_path}")
@@ -356,12 +475,12 @@ def run_backtest():
 
 # --- Step 4: Deploy model files ---
 
-def deploy_pred():
-    """Deploy model + pred files to shared volume (if not already there)."""
+def deploy_pred(models_dir: Path):
+    """Deploy staged model + pred files to shared production paths."""
     log.info("Step 4: Deploying model files...")
 
     # Deploy pred_sh.pkl
-    src_pred = MODELS_DIR / "pred_sh.pkl"
+    src_pred = models_dir / "pred_sh.pkl"
     dst_pred = TRADE_PRED_PATH
     if src_pred.resolve() != dst_pred.resolve():
         dst_pred.parent.mkdir(parents=True, exist_ok=True)
@@ -371,7 +490,7 @@ def deploy_pred():
         log.info(f"  pred: already at {dst_pred}")
 
     # Deploy lightgbm model (inference needs it)
-    src_model = MODELS_DIR / "lightgbm_sh_latest.pkl"
+    src_model = models_dir / "lightgbm_sh_latest.pkl"
     dst_model = dst_pred.parent / "lightgbm_sh_latest.pkl"
     if src_model.exists() and src_model.resolve() != dst_model.resolve():
         shutil.copy2(src_model, dst_model)
@@ -382,7 +501,7 @@ def deploy_pred():
 
 # --- Step 5: Promote latest trade signal ---
 
-def promote_trade_signal():
+def promote_trade_signal(models_dir: Path):
     """Run post-train inference and atomically promote fresh latest trade signals."""
     log.info("Step 5: Promoting latest trade signal...")
 
@@ -390,7 +509,7 @@ def promote_trade_signal():
 
     env = os.environ.copy()
     env["QLIB_DATA_DIR"] = str(QLIB_DATA_DIR)
-    env["MODEL_DIR"] = str(MODELS_DIR)
+    env["MODEL_DIR"] = str(models_dir)
     env["SIGNAL_DIR"] = str(SIGNAL_DIR)
     env["PROMOTE_LATEST"] = "true"
 
@@ -424,7 +543,7 @@ def promote_trade_signal():
 # --- Step 6: Send email report ---
 
 def send_report_email(train_info: dict, metrics: dict, report_path: Path, metrics_path: Path):
-    """Send backtest report via SMTP email."""
+    """Send weekly summary via the shared reporter delivery chain."""
     log.info("Step 6: Sending email report...")
 
     today = datetime.now().strftime("%Y-%m-%d")
@@ -459,37 +578,41 @@ def send_report_email(train_info: dict, metrics: dict, report_path: Path, metric
         save_report_locally(f"weekly_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt", body_text)
         return False
 
-    try:
-        msg = MIMEMultipart()
-        msg["From"] = config["report_from"]
-        msg["To"] = config["report_to"]
-        msg["Subject"] = subject
-        msg.attach(MIMEText(body_text, "plain", "utf-8"))
-
-        for filepath in attachment_paths:
-            with open(filepath, "rb") as f:
-                part = MIMEBase("application", "octet-stream")
-                part.set_payload(f.read())
-            encoders.encode_base64(part)
-            part.add_header("Content-Disposition", f"attachment; filename={filepath.name}")
-            msg.attach(part)
-
-        with smtplib.SMTP(config["smtp_host"], int(config["smtp_port"])) as server:
-            server.starttls()
-            server.login(config["smtp_user"], config["smtp_password"])
-            server.send_message(msg)
-
-        log.info(f"  Email sent to {config['report_to']}")
-        return True
-
-    except Exception as e:
-        log.error(f"  Email sending failed: {e}")
+    html_content = _render_report_html(
+        subject,
+        [
+            (
+                "Model Training",
+                [
+                    f"Prediction coverage: {train_info.get('pred_start', '?')} ~ {train_info.get('pred_end', '?')}",
+                    f"Trading days: {train_info.get('n_days', '?')} days, {train_info.get('n_stocks', '?')} stocks",
+                    f"IC: {train_info.get('ic', 'N/A')}  ICIR: {train_info.get('icir', 'N/A')}",
+                ],
+            ),
+            (
+                "Backtest Results",
+                [f"{k}: {v}" for k, v in metrics.items()],
+            ),
+            (
+                "Artifacts",
+                [str(filepath) for filepath in attachment_paths] or ["No local artifacts"],
+            ),
+        ],
+    )
+    sent = send_email(
+        html_content,
+        subject,
+        report_filename=f"weekly_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
+    )
+    if not sent:
         save_report_locally(f"weekly_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt", body_text)
         return False
+    log.info(f"  Email sent to {config['report_to']}")
+    return True
 
 
 def send_failure_email(error: Exception):
-    """Send failure notification via SMTP email."""
+    """Send failure notification via the shared reporter delivery chain."""
     today = datetime.now().strftime("%Y-%m-%d")
     body_text = f"Weekly training pipeline failed:\n\n{error}"
     config = resolve_email_config()
@@ -499,19 +622,13 @@ def send_failure_email(error: Exception):
         save_report_locally(f"weekly_report_failed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt", body_text)
         return
 
-    try:
-        msg = MIMEMultipart()
-        msg["From"] = config["report_from"]
-        msg["To"] = config["report_to"]
-        msg["Subject"] = f"[FAILED] Quant Weekly Report {today}"
-        msg.attach(MIMEText(body_text, "plain", "utf-8"))
-
-        with smtplib.SMTP(config["smtp_host"], int(config["smtp_port"])) as server:
-            server.starttls()
-            server.login(config["smtp_user"], config["smtp_password"])
-            server.send_message(msg)
-    except Exception as exc:
-        log.error(f"  Failure email sending failed: {exc}")
+    subject = f"[FAILED] Quant Weekly Report {today}"
+    html_content = _render_report_html(subject, [("Failure", [body_text])])
+    if not send_email(
+        html_content,
+        subject,
+        report_filename=f"weekly_report_failed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
+    ):
         save_report_locally(f"weekly_report_failed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt", body_text)
 
 
@@ -524,20 +641,43 @@ def main():
     start_time = datetime.now()
 
     try:
+        stage_models_dir = _stage_models_dir()
+        stage_output_dir = _stage_output_dir()
+        candidate_output_dir = stage_output_dir / "candidate"
+        baseline_output_dir = stage_output_dir / "baseline"
+        log.info(f"  Stage models dir: {stage_models_dir}")
+        log.info(f"  Stage output dir: {stage_output_dir}")
+
         # 1. Check/sync Qlib data
         sync_qlib_data()
 
         # 2. Train model
-        train_info = train_model()
+        train_info = train_model(stage_models_dir)
 
         # 3. Backtest
-        metrics, report_path, metrics_path = run_backtest()
+        metrics, report_path, metrics_path = run_backtest(
+            stage_models_dir / "pred_sh.pkl",
+            candidate_output_dir,
+        )
+
+        baseline_metrics = None
+        if TRADE_PRED_PATH.exists():
+            log.info("Step 3b: Running baseline backtest on current production signal...")
+            baseline_metrics, _, _ = run_backtest(TRADE_PRED_PATH, baseline_output_dir)
+        else:
+            log.info("Step 3b: Skipped baseline backtest (no current production pred_sh.pkl)")
+
+        gate_ok, gate_reasons = evaluate_promotion_gate(metrics, baseline_metrics)
+        for reason in gate_reasons:
+            log.info(f"  Promotion gate: {reason}")
+        if not gate_ok:
+            raise RuntimeError("Promotion gate rejected staged weekly model: " + "; ".join(gate_reasons))
 
         # 4. Deploy
-        deploy_pred()
+        deploy_pred(stage_models_dir)
 
         # 5. Promote latest trade signal
-        promote_trade_signal()
+        promote_trade_signal(stage_models_dir)
 
         # 6. Email
         send_report_email(train_info, metrics, report_path, metrics_path)

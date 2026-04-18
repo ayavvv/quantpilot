@@ -98,21 +98,21 @@ def test_weekly_run_backtest_uses_live_trade_params(tmp_path, monkeypatch):
         calls["kwargs"] = kwargs
         return Result()
 
-    monkeypatch.setattr(weekly_train, "MODELS_DIR", tmp_path / "models")
-    monkeypatch.setattr(weekly_train, "OUTPUT_DIR", tmp_path / "output")
     monkeypatch.setattr(weekly_train, "QLIB_DATA_DIR", tmp_path / "qlib")
     monkeypatch.setattr(weekly_train, "STRATEGY_DIR", tmp_path / "repo")
     monkeypatch.setattr(weekly_train.subprocess, "run", fake_run)
     monkeypatch.setattr(weekly_train, "_resolve_timeout_seconds", lambda _: 123)
 
-    weekly_train.MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    (weekly_train.MODELS_DIR / "pred_sh.pkl").write_text("stub", encoding="utf-8")
+    pred_path = tmp_path / "models" / "pred_sh.pkl"
+    output_dir = tmp_path / "output"
+    pred_path.parent.mkdir(parents=True, exist_ok=True)
+    pred_path.write_text("stub", encoding="utf-8")
 
-    weekly_train.run_backtest()
+    weekly_train.run_backtest(pred_path, output_dir)
 
     assert calls["cmd"] == [
         weekly_train.sys.executable, "-m", "trainer.backtest.run",
-        "--pred", str(weekly_train.MODELS_DIR / "pred_sh.pkl"),
+        "--pred", str(pred_path),
         "--price-dir", str(weekly_train.QLIB_DATA_DIR),
         "--top-n", "5",
         "--hold-bonus", "0.05",
@@ -121,5 +121,62 @@ def test_weekly_run_backtest_uses_live_trade_params(tmp_path, monkeypatch):
         "--allowed-prefix", "SH.",
         "--filter-limit-up",
         "--slippage", "0.001",
-        "--output", str(weekly_train.OUTPUT_DIR),
+        "--output", str(output_dir),
     ]
+
+
+def test_stage_dirs_use_stable_timestamp(tmp_path, monkeypatch):
+    monkeypatch.setattr(weekly_train, "MODELS_DIR", tmp_path / "models")
+    monkeypatch.setattr(weekly_train, "OUTPUT_DIR", tmp_path / "output")
+    monkeypatch.setenv("WEEKLY_STAGE_TAG", "20260418_100000")
+    monkeypatch.setattr(weekly_train, "_WEEKLY_STAGE_TAG", None)
+
+    models_dir = weekly_train._stage_models_dir()
+    output_dir = weekly_train._stage_output_dir()
+
+    assert models_dir == tmp_path / "models" / "weekly_runs" / "20260418_100000"
+    assert output_dir == tmp_path / "output" / "weekly_runs" / "20260418_100000"
+
+
+def test_evaluate_promotion_gate_rejects_weaker_candidate():
+    ok, reasons = weekly_train.evaluate_promotion_gate(
+        {"ann_return": "61.00%", "sharpe": "2.00", "max_drawdown": "15.50%"},
+        {"ann_return": "62.00%", "sharpe": "2.10", "max_drawdown": "14.90%"},
+    )
+
+    assert ok is False
+    assert any("ann_return below gate" in reason for reason in reasons)
+    assert any("sharpe below gate" in reason for reason in reasons)
+
+
+def test_send_report_email_uses_shared_reporter_delivery(tmp_path, monkeypatch):
+    saved = []
+    sent = []
+    monkeypatch.setattr(weekly_train, "save_report_locally", lambda filename, body: saved.append((filename, body)))
+    monkeypatch.setattr(weekly_train, "resolve_email_config", lambda: {
+        "smtp_host": "smtp.mail.me.com",
+        "smtp_port": "465",
+        "smtp_user": "bot@example.com",
+        "smtp_password": "secret",
+        "report_to": "owner@example.com",
+        "report_from": "bot@example.com",
+    })
+    monkeypatch.setattr(weekly_train, "log_email_config_status", lambda config: [])
+    monkeypatch.setattr(weekly_train, "send_email", lambda html, subject, report_filename=None: sent.append((subject, report_filename)) or True)
+
+    report_path = tmp_path / "backtest_report.png"
+    metrics_path = tmp_path / "metrics.txt"
+    report_path.write_text("png", encoding="utf-8")
+    metrics_path.write_text("metrics", encoding="utf-8")
+
+    result = weekly_train.send_report_email(
+        {"ic": "0.1", "icir": "0.2", "pred_start": "2026-01-01", "pred_end": "2026-04-01", "n_days": 50, "n_stocks": 100},
+        {"ann_return": "10.00%", "sharpe": "1.23", "max_drawdown": "5.00%"},
+        report_path,
+        metrics_path,
+    )
+
+    assert result is True
+    assert sent
+    assert sent[0][1].startswith("weekly_report_")
+    assert saved == []

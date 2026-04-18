@@ -28,6 +28,8 @@ NAS_HOST = os.environ.get("NAS_HOST", "")
 NAS_USER = os.environ.get("NAS_USER", "")
 NAS_QLIB_PATH = os.environ.get("NAS_QLIB_PATH", "/volume1/docker/quantpilot/qlib_data")
 SSH_KEY = os.environ.get("SSH_KEY", str(Path.home() / ".ssh" / "id_ed25519"))
+NAS_COLLECTOR_CONTAINER = os.environ.get("NAS_COLLECTOR_CONTAINER", "quantpilot-collector")
+TARGET_DATE_LOOKBACK_DAYS = int(os.environ.get("TARGET_DATE_LOOKBACK_DAYS", "31"))
 
 
 def log(message: str) -> None:
@@ -59,6 +61,20 @@ def latest_nas_completed_date() -> str:
         nas_user=NAS_USER,
         ssh_key=SSH_KEY,
         nas_qlib_path=NAS_QLIB_PATH,
+    )
+
+
+def expected_signal_date(now: datetime | None = None) -> str:
+    if not (NAS_HOST and NAS_USER):
+        return ""
+    now = now or datetime.now()
+    return a_share_readiness.previous_trade_date_via_collector(
+        nas_host=NAS_HOST,
+        nas_user=NAS_USER,
+        ssh_key=SSH_KEY,
+        today=now.strftime("%Y-%m-%d"),
+        collector_container=NAS_COLLECTOR_CONTAINER,
+        lookback_days=TARGET_DATE_LOOKBACK_DAYS,
     )
 
 
@@ -142,20 +158,27 @@ class WatchdogState:
     local_latest: str
     signal_date: str
     nas_completed: str
+    expected_signal_date: str
 
 
 def collect_state() -> WatchdogState:
     nas_completed = ""
+    expected = ""
     try:
         nas_completed = latest_nas_completed_date()
     except Exception as exc:
         log(f"WARNING: failed to query NAS completion metadata: {exc}")
+    try:
+        expected = expected_signal_date()
+    except Exception as exc:
+        log(f"WARNING: failed to resolve expected pre-trade signal date: {exc}")
 
     return WatchdogState(
         local_completed=latest_local_completed_date(),
         local_latest=latest_local_a_share_date(),
         signal_date=latest_signal_date(),
         nas_completed=nas_completed,
+        expected_signal_date=expected,
     )
 
 
@@ -166,13 +189,17 @@ def ensure_signal_ready() -> int:
         f"local_completed={state.local_completed or 'N/A'} "
         f"local_latest={state.local_latest or 'N/A'} "
         f"signal={state.signal_date or 'N/A'} "
-        f"nas_completed={state.nas_completed or 'N/A'}"
+        f"nas_completed={state.nas_completed or 'N/A'} "
+        f"expected_signal={state.expected_signal_date or 'N/A'}"
     )
 
     target_sync_date = state.nas_completed or state.local_completed
+    if state.expected_signal_date and state.nas_completed and state.nas_completed >= state.expected_signal_date:
+        target_sync_date = state.expected_signal_date
+
     if target_sync_date and (
-        (state.local_completed and state.local_completed < target_sync_date)
-        or (state.local_latest and state.local_latest < target_sync_date)
+        (not state.local_completed or state.local_completed < target_sync_date)
+        or (not state.local_latest or state.local_latest < target_sync_date)
     ):
         sync_if_needed(target_sync_date)
         state = collect_state()
@@ -187,20 +214,29 @@ def ensure_signal_ready() -> int:
         log("ERROR: local latest A-share date is unavailable")
         return 1
 
-    if state.signal_date == state.local_latest:
-        log(f"Signal already aligned with local A-share data ({state.local_latest})")
+    target_signal_date = state.expected_signal_date or state.local_latest
+
+    if state.expected_signal_date and state.local_latest < state.expected_signal_date:
+        log(
+            "ERROR: local latest A-share data still below expected pre-trade target: "
+            f"latest_a_share={state.local_latest} expected={state.expected_signal_date}"
+        )
+        return 1
+
+    if state.signal_date == target_signal_date:
+        log(f"Signal already aligned with target date ({target_signal_date})")
         return 0
 
     if process_running(["python -m inference.run_daily", "run_daily.sh"]):
         log("Nightly or inference process already running; skip duplicate watchdog rerun")
         return 0
 
-    run_inference(state.local_latest)
+    run_inference(target_signal_date)
     refreshed_signal_date = latest_signal_date()
-    if refreshed_signal_date != state.local_latest:
+    if refreshed_signal_date != target_signal_date:
         log(
             "ERROR: signal still stale after watchdog inference: "
-            f"signal={refreshed_signal_date or 'N/A'} latest_a_share={state.local_latest}"
+            f"signal={refreshed_signal_date or 'N/A'} target={target_signal_date}"
         )
         return 1
 

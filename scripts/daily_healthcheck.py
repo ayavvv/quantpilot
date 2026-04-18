@@ -31,6 +31,8 @@ NAS_HOST = os.environ.get("NAS_HOST", "")
 NAS_USER = os.environ.get("NAS_USER", "")
 NAS_QLIB_PATH = os.environ.get("NAS_QLIB_PATH", "/volume1/docker/quantpilot/qlib_data")
 SSH_KEY = os.environ.get("SSH_KEY", str(Path.home() / ".ssh" / "id_ed25519"))
+NAS_COLLECTOR_CONTAINER = os.environ.get("NAS_COLLECTOR_CONTAINER", "quantpilot-collector")
+TARGET_DATE_LOOKBACK_DAYS = int(os.environ.get("TARGET_DATE_LOOKBACK_DAYS", "31"))
 
 LEVEL_ORDER = {"ok": 0, "warn": 1, "error": 2}
 
@@ -61,6 +63,24 @@ def latest_nas_completed_date() -> tuple[str, str]:
             nas_user=NAS_USER,
             ssh_key=SSH_KEY,
             nas_qlib_path=NAS_QLIB_PATH,
+        )
+        return value, ""
+    except Exception as exc:
+        return "", str(exc)
+
+
+def expected_pretrade_signal_date(now: datetime | None = None) -> tuple[str, str]:
+    if not (NAS_HOST and NAS_USER):
+        return "", ""
+    now = now or datetime.now()
+    try:
+        value = a_share_readiness.previous_trade_date_via_collector(
+            nas_host=NAS_HOST,
+            nas_user=NAS_USER,
+            ssh_key=SSH_KEY,
+            today=now.strftime("%Y-%m-%d"),
+            collector_container=NAS_COLLECTOR_CONTAINER,
+            lookback_days=TARGET_DATE_LOOKBACK_DAYS,
         )
         return value, ""
     except Exception as exc:
@@ -137,6 +157,10 @@ def build_snapshot(
     local_latest = latest_local_a_share_date()
     signal_date = latest_signal_date()
     nas_completed, nas_error = latest_nas_completed_date()
+    expected_signal_date = ""
+    expected_signal_error = ""
+    if phase in {"pretrade", "trade"}:
+        expected_signal_date, expected_signal_error = expected_pretrade_signal_date(now)
     trade = analyze_trade_log(today)
     nightly_logs = analyze_daily_logs(today)
     processes = {
@@ -175,6 +199,29 @@ def build_snapshot(
                 "Signal output below nightly target: "
                 f"signal={signal_date or 'N/A'} target={target_a_share_date}"
             )
+
+    if expected_signal_date:
+        if not local_latest or local_latest < expected_signal_date:
+            overall = _bump_level(overall, "error")
+            issues.append(
+                "Local A-share snapshot below expected pre-trade target: "
+                f"latest_a_share={local_latest or 'N/A'} expected={expected_signal_date}"
+            )
+        if not signal_date or signal_date < expected_signal_date:
+            overall = _bump_level(overall, "error")
+            issues.append(
+                "Signal output below expected pre-trade target: "
+                f"signal={signal_date or 'N/A'} expected={expected_signal_date}"
+            )
+        if nas_completed and nas_completed < expected_signal_date:
+            overall = _bump_level(overall, "warn")
+            issues.append(
+                "NAS completion metadata below expected pre-trade target: "
+                f"nas_completed={nas_completed} expected={expected_signal_date}"
+            )
+    elif expected_signal_error:
+        overall = _bump_level(overall, "warn")
+        issues.append(f"Failed to resolve expected pre-trade signal date: {expected_signal_error}")
 
     if nas_completed:
         if not local_completed or local_completed < nas_completed:
@@ -237,6 +284,7 @@ def build_snapshot(
         "date": today,
         "phase": phase,
         "target_a_share_date": target_a_share_date,
+        "expected_signal_date": expected_signal_date,
         "overall_status": overall,
         "issues": issues,
         "local": {
@@ -286,6 +334,7 @@ def render_snapshot_html(snapshot: dict[str, Any]) -> str:
       <p>completed_a_share={local['completed_a_share_date'] or 'N/A'}<br>
       latest_a_share={local['latest_a_share_date'] or 'N/A'}<br>
       latest_signal={local['latest_signal_date'] or 'N/A'}<br>
+      expected_signal={snapshot.get('expected_signal_date') or 'N/A'}<br>
       signal_aligned={local['signal_aligned']}</p>
       <h2>NAS State</h2>
       <p>completed_a_share={nas['completed_a_share_date'] or 'N/A'}<br>

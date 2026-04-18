@@ -87,6 +87,25 @@ def test_latest_trade_date_via_collector_uses_last_non_empty_line(monkeypatch):
     assert latest == "2026-03-30"
 
 
+def test_previous_trade_date_via_collector_queries_day_before_today(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, check, capture_output, text):
+        captured["cmd"] = cmd
+        return _Result(stdout="2026-04-16\n")
+
+    monkeypatch.setattr(a_share_readiness.subprocess, "run", fake_run)
+    latest = a_share_readiness.previous_trade_date_via_collector(
+        nas_host="192.168.100.131",
+        nas_user="theo",
+        ssh_key="/tmp/nas_key",
+        today="2026-04-17",
+    )
+
+    assert latest == "2026-04-16"
+    assert "2026-04-17" in captured["cmd"][-1]
+
+
 def test_is_a_share_ready_compares_dates_lexicographically():
     assert a_share_readiness.is_a_share_ready("2026-03-30", "2026-03-30") is True
     assert a_share_readiness.is_a_share_ready("2026-03-31", "2026-03-30") is True
