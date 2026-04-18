@@ -165,8 +165,8 @@ def test_send_report_email_uses_shared_reporter_delivery(tmp_path, monkeypatch):
     monkeypatch.setattr(
         weekly_train,
         "send_email",
-        lambda html, subject, report_filename=None, report_dir=None: sent.append(
-            (subject, report_filename, report_dir)
+        lambda html, subject, report_filename=None, report_dir=None, attachment_paths=None: sent.append(
+            (subject, report_filename, report_dir, attachment_paths, html)
         ) or True,
     )
     monkeypatch.setattr(weekly_train, "OUTPUT_DIR", tmp_path / "weekly_output")
@@ -187,6 +187,11 @@ def test_send_report_email_uses_shared_reporter_delivery(tmp_path, monkeypatch):
     assert sent
     assert sent[0][1].startswith("weekly_report_")
     assert sent[0][2] == tmp_path / "weekly_output"
+    assert sent[0][3] == [report_path, metrics_path]
+    assert str(report_path) not in sent[0][4]
+    assert str(metrics_path) not in sent[0][4]
+    assert "backtest_report.png" in sent[0][4]
+    assert "metrics.txt" in sent[0][4]
     assert saved == []
 
 

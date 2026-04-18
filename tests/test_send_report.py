@@ -57,13 +57,13 @@ def test_send_email_falls_back_to_mail_app(monkeypatch, tmp_path):
         },
     )
     monkeypatch.setattr(send_report, "send_via_smtp", lambda config, msg: (False, "smtp down"))
-    monkeypatch.setattr(send_report, "send_via_sendmail", lambda *args: (False, "sendmail down"))
+    monkeypatch.setattr(send_report, "send_via_sendmail", lambda *args, **kwargs: (False, "sendmail down"))
     fallback_calls = []
     monkeypatch.setattr(
         send_report,
         "send_via_mail_app",
-        lambda subject, report_to, report_from, report_path: (
-            fallback_calls.append((subject, report_to, report_from, report_path)) or True,
+        lambda subject, report_to, report_from, report_path, attachment_paths=None: (
+            fallback_calls.append((subject, report_to, report_from, report_path, attachment_paths)) or True,
             "",
         ),
     )
@@ -72,6 +72,7 @@ def test_send_email_falls_back_to_mail_app(monkeypatch, tmp_path):
     assert len(fallback_calls) == 1
     assert fallback_calls[0][2] == "icloud@example.com"
     assert fallback_calls[0][3] == tmp_path / f"report_{send_report.datetime.now().strftime('%Y%m%d')}.html"
+    assert fallback_calls[0][4] is None
 
 
 def test_send_email_returns_false_when_all_delivery_paths_fail(monkeypatch, tmp_path):
@@ -95,8 +96,8 @@ def test_send_email_returns_false_when_all_delivery_paths_fail(monkeypatch, tmp_
         },
     )
     monkeypatch.setattr(send_report, "send_via_smtp", lambda config, msg: (False, "smtp down"))
-    monkeypatch.setattr(send_report, "send_via_sendmail", lambda *args: (False, "sendmail down"))
-    monkeypatch.setattr(send_report, "send_via_mail_app", lambda *args: (False, "mail down"))
+    monkeypatch.setattr(send_report, "send_via_sendmail", lambda *args, **kwargs: (False, "sendmail down"))
+    monkeypatch.setattr(send_report, "send_via_mail_app", lambda *args, **kwargs: (False, "mail down"))
 
     assert send_report.send_email("<html>hi</html>", "subject") is False
     assert (tmp_path / f"report_{send_report.datetime.now().strftime('%Y%m%d')}.html").exists()
@@ -123,7 +124,7 @@ def test_send_email_returns_true_when_sendmail_fallback_succeeds(monkeypatch, tm
         },
     )
     monkeypatch.setattr(send_report, "send_via_smtp", lambda config, msg: (False, "smtp down"))
-    monkeypatch.setattr(send_report, "send_via_sendmail", lambda *args: (True, ""))
+    monkeypatch.setattr(send_report, "send_via_sendmail", lambda *args, **kwargs: (True, ""))
 
     assert send_report.send_email("<html>hi</html>", "subject") is True
 
@@ -155,6 +156,26 @@ def test_send_email_uses_explicit_report_dir(monkeypatch, tmp_path):
     assert (explicit_dir / f"report_{send_report.datetime.now().strftime('%Y%m%d')}.html").exists()
 
 
+def test_build_message_attaches_files(tmp_path):
+    attachment = tmp_path / "metrics.txt"
+    attachment.write_text("ann_return: 10.00%\n", encoding="utf-8")
+
+    msg = send_report.build_message(
+        "<html>hi</html>",
+        "subject",
+        "sender@example.com",
+        "owner@example.com",
+        attachment_paths=[attachment],
+    )
+
+    filenames = [
+        part.get_filename()
+        for part in msg.walk()
+        if part.get_filename()
+    ]
+    assert "metrics.txt" in filenames
+
+
 def test_send_email_prefers_mailapp_when_configured(monkeypatch, tmp_path):
     monkeypatch.setattr(send_report, "REPORT_DIR", tmp_path)
     monkeypatch.setattr(
@@ -176,12 +197,12 @@ def test_send_email_prefers_mailapp_when_configured(monkeypatch, tmp_path):
         },
     )
     called = {"smtp": 0, "sendmail": 0, "mailapp": 0}
-    monkeypatch.setattr(send_report, "send_via_smtp", lambda *args: (called.__setitem__("smtp", called["smtp"] + 1) or False, "smtp down"))
-    monkeypatch.setattr(send_report, "send_via_sendmail", lambda *args: (called.__setitem__("sendmail", called["sendmail"] + 1) or False, "sendmail down"))
+    monkeypatch.setattr(send_report, "send_via_smtp", lambda *args, **kwargs: (called.__setitem__("smtp", called["smtp"] + 1) or False, "smtp down"))
+    monkeypatch.setattr(send_report, "send_via_sendmail", lambda *args, **kwargs: (called.__setitem__("sendmail", called["sendmail"] + 1) or False, "sendmail down"))
     monkeypatch.setattr(
         send_report,
         "send_via_mail_app",
-        lambda *args: (called.__setitem__("mailapp", called["mailapp"] + 1) or True, ""),
+        lambda *args, **kwargs: (called.__setitem__("mailapp", called["mailapp"] + 1) or True, ""),
     )
 
     assert send_report.send_email("<html>hi</html>", "subject") is True

@@ -139,6 +139,7 @@ def _safe_send_email(
     *,
     report_filename: str,
     report_dir: Path,
+    attachment_paths: list[Path] | None = None,
     error_prefix: str,
 ) -> bool:
     try:
@@ -147,6 +148,7 @@ def _safe_send_email(
             subject,
             report_filename=report_filename,
             report_dir=report_dir,
+            attachment_paths=attachment_paths,
         )
     except Exception as exc:
         log.error(f"  {error_prefix}: {exc}")
@@ -583,11 +585,12 @@ def send_report_email(train_info: dict, metrics: dict, report_path: Path, metric
         body_lines.append(f"  {k}: {v}")
 
     attachment_paths = [filepath for filepath in [report_path, metrics_path] if filepath.exists()]
-    if attachment_paths:
+    attachment_names = [filepath.name for filepath in attachment_paths]
+    if attachment_names:
         body_lines.extend([
             "",
-            "[Artifacts]",
-            *[f"  {filepath}" for filepath in attachment_paths],
+            "[Attachments]",
+            *[f"  {name}" for name in attachment_names],
         ])
 
     body_text = "\n".join(body_lines)
@@ -614,8 +617,8 @@ def send_report_email(train_info: dict, metrics: dict, report_path: Path, metric
                 [f"{k}: {v}" for k, v in metrics.items()],
             ),
             (
-                "Artifacts",
-                [str(filepath) for filepath in attachment_paths] or ["No local artifacts"],
+                "Attachments",
+                attachment_names or ["No attachments"],
             ),
         ],
     )
@@ -624,6 +627,7 @@ def send_report_email(train_info: dict, metrics: dict, report_path: Path, metric
         subject,
         report_filename=f"weekly_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
         report_dir=OUTPUT_DIR,
+        attachment_paths=attachment_paths,
         error_prefix="Weekly report email sending failed",
     )
     if not sent:

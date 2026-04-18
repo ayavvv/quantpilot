@@ -10,6 +10,7 @@ import smtplib
 import ssl
 import subprocess
 import sys
+import mimetypes
 from datetime import datetime, time
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -278,12 +279,42 @@ def log_config_status(config):
     ]
 
 
-def build_message(html_content, subject, report_from, report_to):
-    msg = MIMEMultipart("alternative")
+def _normalize_attachment_paths(attachment_paths):
+    if not attachment_paths:
+        return []
+    normalized = []
+    for path in attachment_paths:
+        candidate = Path(path)
+        if candidate.exists():
+            normalized.append(candidate)
+    return normalized
+
+
+def _attach_files(msg, attachment_paths):
+    for path in _normalize_attachment_paths(attachment_paths):
+        mime_type, _ = mimetypes.guess_type(path.name)
+        if mime_type:
+            maintype, subtype = mime_type.split("/", 1)
+        else:
+            maintype, subtype = "application", "octet-stream"
+
+        with open(path, "rb") as f:
+            attachment = MIMEBase(maintype, subtype)
+            attachment.set_payload(f.read())
+        encoders.encode_base64(attachment)
+        attachment.add_header("Content-Disposition", f"attachment; filename={path.name}")
+        msg.attach(attachment)
+
+
+def build_message(html_content, subject, report_from, report_to, attachment_paths=None):
+    msg = MIMEMultipart("mixed")
     msg["Subject"] = subject
     msg["From"] = report_from
     msg["To"] = report_to
-    msg.attach(MIMEText(html_content, "html", "utf-8"))
+    body = MIMEMultipart("alternative")
+    body.attach(MIMEText(html_content, "html", "utf-8"))
+    msg.attach(body)
+    _attach_files(msg, attachment_paths)
     return msg
 
 
@@ -321,7 +352,7 @@ def send_via_smtp(config, msg):
     return False, str(last_error) if last_error else "unknown SMTP error"
 
 
-def send_via_mail_app(subject, report_to, report_from, report_path):
+def send_via_mail_app(subject, report_to, report_from, report_path, attachment_paths=None):
     if sys.platform != "darwin":
         return False, "Mail.app fallback only available on macOS"
     if not report_to:
@@ -332,8 +363,7 @@ on run argv
     set subjectLine to item 1 of argv
     set recipientAddress to item 2 of argv
     set preferredSender to item 3 of argv
-    set reportPath to POSIX file (item 4 of argv)
-    set plainBody to item 5 of argv
+    set plainBody to item 4 of argv
 
     tell application "Mail"
         set accountList to every account
@@ -357,7 +387,10 @@ on run argv
             try
                 set sender to item 1 of (email addresses of selectedAccount)
             end try
-            make new attachment with properties {file name:reportPath} at after the last paragraph
+            repeat with idx from 5 to count of argv
+                set attachmentPath to POSIX file (item idx of argv)
+                make new attachment with properties {file name:attachmentPath} at after the last paragraph
+            end repeat
         end tell
         ignoring application responses
             send outgoingMessage
@@ -369,6 +402,7 @@ end run
         "QuantPilot daily report attached.\n\n"
         "Queued via Mail.app on this Mac."
     )
+    attachments = [str(report_path), *[str(path) for path in _normalize_attachment_paths(attachment_paths)]]
     try:
         proc = subprocess.Popen(
             [
@@ -378,8 +412,8 @@ end run
                 subject,
                 report_to,
                 report_from,
-                str(report_path),
                 fallback_body,
+                *attachments,
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -391,7 +425,7 @@ end run
         return False, str(exc)
 
 
-def build_sendmail_message(subject, report_to, report_from, report_path):
+def build_sendmail_message(subject, report_to, report_from, report_path, attachment_paths=None):
     msg = MIMEMultipart()
     msg["Subject"] = subject
     msg["From"] = report_from
@@ -407,14 +441,15 @@ def build_sendmail_message(subject, report_to, report_from, report_path):
     encoders.encode_base64(attachment)
     attachment.add_header("Content-Disposition", f"attachment; filename={report_path.name}")
     msg.attach(attachment)
+    _attach_files(msg, attachment_paths)
     return msg
 
 
-def send_via_sendmail(subject, report_to, report_from, report_path):
+def send_via_sendmail(subject, report_to, report_from, report_path, attachment_paths=None):
     sendmail_bin = shutil.which("sendmail")
     if not sendmail_bin:
         return False, "sendmail not found"
-    msg = build_sendmail_message(subject, report_to, report_from, report_path)
+    msg = build_sendmail_message(subject, report_to, report_from, report_path, attachment_paths=attachment_paths)
     try:
         subprocess.run(
             [sendmail_bin, "-t", "-oi"],
@@ -444,6 +479,7 @@ def send_email(
     subject,
     report_filename: str | None = None,
     report_dir: str | os.PathLike[str] | Path | None = None,
+    attachment_paths=None,
 ):
     """Send email using configured delivery method(s)."""
     config = email_config()
@@ -458,7 +494,13 @@ def send_email(
             if missing:
                 print(f"SMTP not fully configured, missing: {', '.join(missing)}")
                 continue
-            msg = build_message(html_content, subject, config["report_from"], config["report_to"])
+            msg = build_message(
+                html_content,
+                subject,
+                config["report_from"],
+                config["report_to"],
+                attachment_paths=attachment_paths,
+            )
             sent, error = send_via_smtp(config, msg)
             if sent:
                 return True
@@ -471,6 +513,7 @@ def send_email(
                 config["report_to"],
                 config["report_from"],
                 report_path,
+                attachment_paths=attachment_paths,
             )
             if sent:
                 return True
@@ -483,6 +526,7 @@ def send_email(
                 config["report_to"],
                 config["mail_app_from"],
                 report_path,
+                attachment_paths=attachment_paths,
             )
             if sent:
                 return True
