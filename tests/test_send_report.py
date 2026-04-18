@@ -128,6 +128,33 @@ def test_send_email_returns_true_when_sendmail_fallback_succeeds(monkeypatch, tm
     assert send_report.send_email("<html>hi</html>", "subject") is True
 
 
+def test_send_email_uses_explicit_report_dir(monkeypatch, tmp_path):
+    monkeypatch.setattr(send_report, "REPORT_DIR", Path("/data/reports"))
+    monkeypatch.setattr(
+        send_report,
+        "email_config",
+        lambda: {
+            "smtp_host": "smtp.mail.me.com",
+            "smtp_port": 465,
+            "smtp_user": "user@example.com",
+            "smtp_password": "secret",
+            "report_to": "owner@example.com",
+            "report_from": "sender@example.com",
+            "mail_app_from": "icloud@example.com",
+            "report_delivery_method": "smtp",
+            "smtp_timeout": 5,
+            "smtp_retries": 1,
+            "sendmail_fallback": False,
+            "mail_app_fallback": False,
+        },
+    )
+    monkeypatch.setattr(send_report, "send_via_smtp", lambda *args: (True, ""))
+
+    explicit_dir = tmp_path / "weekly_output"
+    assert send_report.send_email("<html>hi</html>", "subject", report_dir=explicit_dir) is True
+    assert (explicit_dir / f"report_{send_report.datetime.now().strftime('%Y%m%d')}.html").exists()
+
+
 def test_send_email_prefers_mailapp_when_configured(monkeypatch, tmp_path):
     monkeypatch.setattr(send_report, "REPORT_DIR", tmp_path)
     monkeypatch.setattr(

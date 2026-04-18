@@ -221,10 +221,15 @@ def load_env_defaults():
         os.environ.setdefault(key, value)
 
 
-def save_report_locally(html_content: str, filename: str | None = None) -> Path:
-    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+def save_report_locally(
+    html_content: str,
+    filename: str | None = None,
+    report_dir: str | os.PathLike[str] | Path | None = None,
+) -> Path:
+    target_dir = Path(report_dir) if report_dir is not None else Path(os.environ.get("REPORT_DIR", str(REPORT_DIR)))
+    target_dir.mkdir(parents=True, exist_ok=True)
     report_name = filename or f"report_{datetime.now().strftime('%Y%m%d')}.html"
-    report_path = REPORT_DIR / report_name
+    report_path = target_dir / report_name
     report_path.write_text(html_content, encoding="utf-8")
     print(f"Report saved: {report_path}")
     return report_path
@@ -434,11 +439,16 @@ def build_delivery_plan(config):
     return ["smtp", "sendmail", "mailapp"]
 
 
-def send_email(html_content, subject, report_filename: str | None = None):
+def send_email(
+    html_content,
+    subject,
+    report_filename: str | None = None,
+    report_dir: str | os.PathLike[str] | Path | None = None,
+):
     """Send email using configured delivery method(s)."""
     config = email_config()
     missing = log_config_status(config)
-    report_path = save_report_locally(html_content, filename=report_filename)
+    report_path = save_report_locally(html_content, filename=report_filename, report_dir=report_dir)
     if missing and not config["sendmail_fallback"] and not config["mail_app_fallback"]:
         print(f"Email not configured, missing: {', '.join(missing)}.")
         return False

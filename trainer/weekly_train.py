@@ -138,6 +138,7 @@ def _safe_send_email(
     subject: str,
     *,
     report_filename: str,
+    report_dir: Path,
     error_prefix: str,
 ) -> bool:
     try:
@@ -145,6 +146,7 @@ def _safe_send_email(
             html_content,
             subject,
             report_filename=report_filename,
+            report_dir=report_dir,
         )
     except Exception as exc:
         log.error(f"  {error_prefix}: {exc}")
@@ -621,6 +623,7 @@ def send_report_email(train_info: dict, metrics: dict, report_path: Path, metric
         html_content,
         subject,
         report_filename=f"weekly_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
+        report_dir=OUTPUT_DIR,
         error_prefix="Weekly report email sending failed",
     )
     if not sent:
@@ -647,6 +650,7 @@ def send_failure_email(error: Exception):
         html_content,
         subject,
         report_filename=f"weekly_report_failed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
+        report_dir=OUTPUT_DIR,
         error_prefix="Failure email sending failed",
     ):
         save_report_locally(f"weekly_report_failed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt", body_text)
