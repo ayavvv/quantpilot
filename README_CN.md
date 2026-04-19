@@ -43,7 +43,7 @@ A 股量化交易系统 —— 自动化数据采集、模型训练、每日推�
 ### 1. 克隆并配置
 
 ```bash
-git clone https://github.com/ayavvv/quantpilot.git
+git clone https://github.com/your-username/quantpilot.git
 cd quantpilot
 cp .env.example .env
 # 编辑 .env 填入你的配置
@@ -68,7 +68,7 @@ docker compose --profile collector up -d
 # 在 .env 中配置 NAS 连接：
 # NAS_HOST=192.168.x.x
 # NAS_USER=your_user
-# SSH_KEY=~/.ssh/id_ed25519
+# SSH_KEY=/path/to/ssh_private_key
 
 # A 股交易入口（宿主机 venv；若 OpenD 判断沪深休市会自动切到预演）
 ./scripts/run_trade.sh
@@ -115,7 +115,7 @@ US_TARGET_CODES=US.AAPL,US.MSFT US_ANALYSIS_TOP_K=2 ./scripts/run_us_daily.sh
 ./scripts/run_us_daily.sh
 
 # 如果当前机器不是通过 futu-opend:11111 暴露 OpenD，显式覆盖地址和 RSA key
-FUTU_HOST=192.168.100.248 FUTU_PORT=11111 FUTU_RSA_KEY=/path/to/futu_rsa_1024.pem US_TARGET_CODES=US.AAPL,US.MSFT US_ANALYSIS_TOP_K=2 ./scripts/run_us_daily.sh
+FUTU_HOST=<your-futu-host> FUTU_PORT=11111 FUTU_RSA_KEY=/path/to/futu_rsa_1024.pem US_TARGET_CODES=US.AAPL,US.MSFT US_ANALYSIS_TOP_K=2 ./scripts/run_us_daily.sh
 
 # 只做执行预演
 DRY_RUN=true ./scripts/run_us_trade.sh

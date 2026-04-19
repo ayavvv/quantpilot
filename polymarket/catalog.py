@@ -1,0 +1,129 @@
+"""Market catalog ingestion for Polymarket."""
+from __future__ import annotations
+
+import json
+from typing import Any, Iterable
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+
+from polymarket.config import PolySettings, settings
+from polymarket.models import MarketInfo
+
+
+class GammaClient:
+    def __init__(self, cfg: PolySettings | None = None):
+        self.cfg = cfg or settings
+
+    def _get_json(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        query = f"?{urlencode(params)}" if params else ""
+        url = f"{self.cfg.gamma_base_url.rstrip('/')}/{path.lstrip('/')}" + query
+        request = Request(url, headers={"User-Agent": self.cfg.user_agent, "Accept": "application/json"})
+        with urlopen(request, timeout=self.cfg.http_timeout_seconds) as response:
+            return json.load(response)
+
+    def fetch_markets(self, limit: int | None = None) -> list[dict[str, Any]]:
+        params = {"active": "true", "closed": "false", "limit": limit or self.cfg.max_active_markets}
+        data = self._get_json("markets", params=params)
+        return list(data)
+
+    def fetch_fee_rate_bps(self, token_id: str) -> float | None:
+        try:
+            data = self._get_json("fee-rate", params={"asset_id": token_id})
+        except Exception:
+            return None
+        for key in ("fee_rate_bps", "feeRateBps", "rate_bps", "rateBps"):
+            value = data.get(key) if isinstance(data, dict) else None
+            if value is not None:
+                return float(value)
+        return None
+
+
+def _parse_json_list(raw_value: Any) -> list[Any]:
+    if raw_value is None:
+        return []
+    if isinstance(raw_value, list):
+        return raw_value
+    if isinstance(raw_value, str):
+        try:
+            parsed = json.loads(raw_value)
+        except json.JSONDecodeError:
+            return []
+        return parsed if isinstance(parsed, list) else []
+    return []
+
+
+def _token_pair(token_ids: Iterable[Any], outcomes: Iterable[Any]) -> tuple[str, str] | None:
+    ordered = list(zip(token_ids, outcomes))
+    yes_token = None
+    no_token = None
+    for token_id, outcome in ordered:
+        name = str(outcome).strip().lower()
+        if name == "yes":
+            yes_token = str(token_id)
+        elif name == "no":
+            no_token = str(token_id)
+    if yes_token and no_token:
+        return yes_token, no_token
+    return None
+
+
+def normalize_market(raw_market: dict[str, Any], fee_rate_bps: float | None = None) -> MarketInfo | None:
+    if not raw_market.get("active") or raw_market.get("closed"):
+        return None
+    if raw_market.get("negRisk") or raw_market.get("neg_risk"):
+        return None
+    enable_order_book = raw_market.get("enableOrderBook")
+    if enable_order_book is None:
+        enable_order_book = raw_market.get("enable_order_book")
+    if enable_order_book is False:
+        return None
+
+    token_ids = _parse_json_list(raw_market.get("clobTokenIds"))
+    outcomes = _parse_json_list(raw_market.get("outcomes"))
+    if len(token_ids) != 2 or len(outcomes) != 2:
+        return None
+
+    pair = _token_pair(token_ids, outcomes)
+    if pair is None:
+        return None
+
+    min_order_size = raw_market.get("minimumOrderSize")
+    tick_size = raw_market.get("minimumTickSize")
+    taker_fee_bps = fee_rate_bps
+    if taker_fee_bps is None:
+        taker_fee_bps = raw_market.get("takerBaseFee")
+    if taker_fee_bps is None:
+        taker_fee_bps = raw_market.get("taker_base_fee")
+    events = raw_market.get("events") or []
+    slug = raw_market.get("marketSlug") or raw_market.get("market_slug")
+    if slug is None and events:
+        slug = events[0].get("slug")
+
+    return MarketInfo(
+        market_id=str(raw_market.get("conditionId") or raw_market.get("condition_id") or raw_market.get("id")),
+        condition_id=str(raw_market.get("conditionId") or raw_market.get("condition_id") or raw_market.get("id")),
+        question=str(raw_market.get("question") or ""),
+        slug=slug,
+        end_date_iso=raw_market.get("endDateIso") or raw_market.get("end_date_iso"),
+        min_order_size=float(min_order_size or 0),
+        tick_size=float(tick_size or 0.01),
+        neg_risk=bool(raw_market.get("negRisk") or raw_market.get("neg_risk")),
+        enable_order_book=bool(raw_market.get("enableOrderBook", raw_market.get("enable_order_book", True))),
+        taker_base_fee_bps=float(taker_fee_bps or 0),
+        yes_token_id=pair[0],
+        no_token_id=pair[1],
+    )
+
+
+def load_binary_markets(cfg: PolySettings | None = None) -> list[MarketInfo]:
+    client = GammaClient(cfg=cfg)
+    normalized: list[MarketInfo] = []
+    for raw_market in client.fetch_markets():
+        token_ids = _parse_json_list(raw_market.get("clobTokenIds"))
+        fee_rate_bps = None
+        if token_ids:
+            fee_rate_bps = client.fetch_fee_rate_bps(str(token_ids[0]))
+        market = normalize_market(raw_market, fee_rate_bps=fee_rate_bps)
+        if market is not None:
+            normalized.append(market)
+    return normalized

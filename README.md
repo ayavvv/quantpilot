@@ -67,7 +67,7 @@ docker compose --profile collector up -d
 # Configure NAS connection in .env:
 # NAS_HOST=192.168.x.x
 # NAS_USER=your_user
-# SSH_KEY=~/.ssh/id_ed25519
+# SSH_KEY=/path/to/ssh_private_key
 
 # Trading (host venv; auto preview if SH/SZ market is closed)
 ./scripts/run_trade.sh
@@ -111,7 +111,7 @@ US_TARGET_CODES=US.AAPL,US.MSFT US_ANALYSIS_TOP_K=2 ./scripts/run_us_daily.sh
 ./scripts/run_us_daily.sh
 
 # If OpenD is not exposed as futu-opend:11111 on this host, override it explicitly
-FUTU_HOST=192.168.100.248 FUTU_PORT=11111 FUTU_RSA_KEY=/path/to/futu_rsa_1024.pem US_TARGET_CODES=US.AAPL,US.MSFT US_ANALYSIS_TOP_K=2 ./scripts/run_us_daily.sh
+FUTU_HOST=<your-futu-host> FUTU_PORT=11111 FUTU_RSA_KEY=/path/to/futu_rsa_1024.pem US_TARGET_CODES=US.AAPL,US.MSFT US_ANALYSIS_TOP_K=2 ./scripts/run_us_daily.sh
 
 # Preview execution only
 DRY_RUN=true ./scripts/run_us_trade.sh
