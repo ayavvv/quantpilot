@@ -1,0 +1,25 @@
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+RUN_POLY_SCHEDULER = REPO_ROOT / "scripts" / "run_polymarket_scheduler.sh"
+
+
+def test_run_polymarket_scheduler_script_stays_poly_scoped():
+    content = RUN_POLY_SCHEDULER.read_text()
+    assert 'load_env_defaults "$PROJECT_DIR/.env"' in content
+    assert ': "${POLY_DATA_DIR:=$DATA_DIR/polymarket}"' in content
+    assert ': "${POLY_ENABLE_TOP_TRADER_MIRROR:=false}"' in content
+    assert ': "${POLY_SCAN_INTERVAL_SECONDS:=300}"' in content
+    assert 'PYTHON_BIN="$PROJECT_DIR/.venv/bin/python"' in content
+    assert 'export DATA_DIR POLY_DATA_DIR POLY_PAPER_ONLY POLY_ENABLE_SPLIT_SELL POLY_ENABLE_TOP_TRADER_MIRROR' in content
+    assert '"$PYTHON_BIN" -m polymarket.scheduler' in content
+    assert 'mkdir -p "$PROJECT_DIR/logs"' in content
+
+
+def test_run_polymarket_scheduler_script_does_not_call_a_share_paths():
+    content = RUN_POLY_SCHEDULER.read_text()
+    assert 'trader.trade_daily' not in content
+    assert 'run_daily.sh' not in content
+    assert 'scripts.daily_healthcheck' not in content
+    assert 'a_share_readiness' not in content

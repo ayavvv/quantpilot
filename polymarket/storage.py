@@ -10,7 +10,7 @@ import duckdb
 import pandas as pd
 
 from polymarket.config import PolySettings, settings
-from polymarket.models import MarketInfo, Opportunity, OrderBook, PaperFill
+from polymarket.models import MarketInfo, Opportunity, OrderBook, PaperFill, TraderProfile, TraderScore, TraderEvent, MirrorSignal
 
 
 class PolyStorage:
@@ -105,6 +105,8 @@ class PolyStorage:
                     price DOUBLE,
                     fee DOUBLE,
                     filled_at TIMESTAMP,
+                    strategy_type TEXT,
+                    source_trader_wallet TEXT,
                     PRIMARY KEY (opportunity_id, token_id, side)
                 )
                 """
@@ -141,7 +143,8 @@ class PolyStorage:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS paper_daily_summary (
-                    date TEXT PRIMARY KEY,
+                    date TEXT,
+                    strategy_type TEXT,
                     signals INTEGER,
                     accepted_signals INTEGER,
                     simulated_trades INTEGER,
@@ -149,7 +152,8 @@ class PolyStorage:
                     net_edge_sum DOUBLE,
                     realized_pnl DOUBLE,
                     max_inventory_used DOUBLE,
-                    updated_at TIMESTAMP
+                    updated_at TIMESTAMP,
+                    PRIMARY KEY (date, strategy_type)
                 )
                 """
             )
@@ -274,7 +278,7 @@ class PolyStorage:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO paper_fills
-                SELECT opportunity_id, market_id, token_id, side, qty, price, fee, filled_at
+                SELECT opportunity_id, market_id, token_id, side, qty, price, fee, filled_at, strategy_type, source_trader_wallet
                 FROM fill_rows
                 """
             )
@@ -330,17 +334,19 @@ class PolyStorage:
 
     def upsert_daily_summary(self, summary: dict[str, object]) -> None:
         date_value = str(summary["date"])
+        strategy_type = str(summary.get("strategy_type", "full_set_arb"))
         with self._connect() as conn:
             existing = conn.execute(
                 """
                 SELECT signals, accepted_signals, simulated_trades,
                        gross_edge_sum, net_edge_sum, realized_pnl, max_inventory_used
                 FROM paper_daily_summary
-                WHERE date = ?
+                WHERE date = ? AND strategy_type = ?
                 """,
-                [date_value],
+                [date_value, strategy_type],
             ).fetchone()
         merged = dict(summary)
+        merged["strategy_type"] = strategy_type
         if existing is not None:
             merged["signals"] = int(existing[0]) + int(summary["signals"])
             merged["accepted_signals"] = int(existing[1]) + int(summary["accepted_signals"])
@@ -356,7 +362,7 @@ class PolyStorage:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO paper_daily_summary
-                SELECT date, signals, accepted_signals, simulated_trades,
+                SELECT date, strategy_type, signals, accepted_signals, simulated_trades,
                        gross_edge_sum, net_edge_sum, realized_pnl,
                        max_inventory_used, updated_at
                 FROM summary_row
@@ -367,6 +373,80 @@ class PolyStorage:
     @staticmethod
     def _read_only_connect(db_path: Path):
         return duckdb.connect(str(db_path), read_only=True)
+
+    def upsert_trader_profiles(self, profiles: Iterable[TraderProfile]) -> int:
+        rows = [profile.as_dict() | {"updated_at": datetime.now(timezone.utc)} for profile in profiles]
+        if not rows:
+            return 0
+        frame = pd.DataFrame(rows)
+        frame["updated_at"] = pd.to_datetime(frame["updated_at"])
+        with self._connect() as conn:
+            conn.register("profile_rows", frame)
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO tracked_traders
+                SELECT wallet, user_name, pseudonym, verified_badge, profile_image, updated_at
+                FROM profile_rows
+                """
+            )
+            conn.unregister("profile_rows")
+        return len(rows)
+
+    def upsert_trader_scores(self, scores: Iterable[TraderScore]) -> int:
+        rows = [score.as_dict() | {"updated_at": datetime.now(timezone.utc)} for score in scores]
+        if not rows:
+            return 0
+        frame = pd.DataFrame(rows)
+        frame["updated_at"] = pd.to_datetime(frame["updated_at"])
+        with self._connect() as conn:
+            conn.register("score_rows", frame)
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO trader_scores
+                SELECT wallet, score, rank, pnl, volume, trade_count, diversity_count, realized_pnl, updated_at
+                FROM score_rows
+                """
+            )
+            conn.unregister("score_rows")
+        return len(rows)
+
+    def save_trader_events(self, events: Iterable[TraderEvent]) -> int:
+        rows = [event.as_dict() | {"observed_at": datetime.now(timezone.utc)} for event in events]
+        if not rows:
+            return 0
+        frame = pd.DataFrame(rows)
+        frame["observed_at"] = pd.to_datetime(frame["observed_at"])
+        with self._connect() as conn:
+            conn.register("event_rows", frame)
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO trader_events
+                SELECT fingerprint, wallet, event_type, market_id, asset, side, size, price,
+                       timestamp, transaction_hash, title, outcome, user_name, observed_at
+                FROM event_rows
+                """
+            )
+            conn.unregister("event_rows")
+        return len(rows)
+
+    def save_mirror_signals(self, signals: Iterable[MirrorSignal]) -> int:
+        rows = [signal.as_dict() | {"created_at": datetime.now(timezone.utc)} for signal in signals]
+        if not rows:
+            return 0
+        frame = pd.DataFrame(rows)
+        frame["created_at"] = pd.to_datetime(frame["created_at"])
+        with self._connect() as conn:
+            conn.register("signal_rows", frame)
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO mirror_signals
+                SELECT fingerprint, wallet, market_id, asset, title, outcome, side,
+                       source_size, source_price, signal_size, lag_seconds, timestamp, created_at
+                FROM signal_rows
+                """
+            )
+            conn.unregister("signal_rows")
+        return len(rows)
 
     @classmethod
     def load_daily_summary(cls, db_path: Path, date_value: str) -> dict[str, Any] | None:

@@ -43,8 +43,8 @@ class PaperLedger:
 
         side = "buy" if opportunity.direction == "buy_both_merge" else "sell"
         fills = [
-            PaperFill(opportunity_id, market.market_id, market.yes_token_id, side, opportunity.yes_qty, opportunity.yes_price, opportunity.yes_fee_cost, now),
-            PaperFill(opportunity_id, market.market_id, market.no_token_id, side, opportunity.no_qty, opportunity.no_price, opportunity.no_fee_cost, now),
+            PaperFill(opportunity_id, market.market_id, market.yes_token_id, side, opportunity.yes_qty, opportunity.yes_price, opportunity.yes_fee_cost, now, strategy_type=opportunity.strategy_type, source_trader_wallet=opportunity.source_trader_wallet),
+            PaperFill(opportunity_id, market.market_id, market.no_token_id, side, opportunity.no_qty, opportunity.no_price, opportunity.no_fee_cost, now, strategy_type=opportunity.strategy_type, source_trader_wallet=opportunity.source_trader_wallet),
         ]
 
         if opportunity.direction == "buy_both_merge":

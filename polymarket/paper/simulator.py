@@ -39,9 +39,11 @@ class PaperSimulator:
             self.storage.save_fills(fills)
         self.storage.upsert_positions(self.ledger.positions)
         self.storage.save_state(self.ledger.state.cash, self.ledger.state.realized_pnl)
+        strategy_type = opportunities[0].strategy_type if opportunities else "full_set_arb"
         self.storage.upsert_daily_summary(
             {
                 "date": datetime.now(timezone.utc).date().isoformat(),
+                "strategy_type": strategy_type,
                 "signals": len(opportunities),
                 "accepted_signals": accepted,
                 "simulated_trades": accepted,

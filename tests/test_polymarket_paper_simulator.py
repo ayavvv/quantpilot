@@ -63,12 +63,14 @@ def test_paper_simulator_persists_summary_and_fills(tmp_path):
     conn = duckdb.connect(str(cfg.duckdb_path), read_only=True)
     try:
         fills = conn.execute("SELECT count(*) FROM paper_fills").fetchone()[0]
+        strategy_type = conn.execute("SELECT strategy_type FROM paper_fills LIMIT 1").fetchone()[0]
         summaries = conn.execute("SELECT count(*) FROM paper_daily_summary").fetchone()[0]
         processed = conn.execute("SELECT count(*) FROM processed_opportunities").fetchone()[0]
     finally:
         conn.close()
 
     assert fills == 2
+    assert strategy_type == 'full_set_arb'
     assert summaries == 1
     assert processed == 1
 
@@ -99,6 +101,7 @@ def test_paper_simulator_restores_state_between_runs(tmp_path):
                 no_qty=1.0,
                 yes_price=0.49,
                 no_price=0.49,
+                strategy_type='full_set_arb',
                 yes_book_timestamp_ms=1000,
                 no_book_timestamp_ms=1000,
                 ts=datetime.now(timezone.utc),

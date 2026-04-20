@@ -1,0 +1,48 @@
+#!/bin/bash
+# Polymarket continuous scheduler — isolated from A-share automation
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+load_env_defaults() {
+    local env_file="$1"
+    local line key value
+    [ -f "$env_file" ] || return 0
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            ''|\#*) continue ;;
+        esac
+        key="${line%%=*}"
+        value="${line#*=}"
+        if [ -z "${!key+x}" ]; then
+            eval "export ${key}=${value}"
+        fi
+    done < "$env_file"
+}
+
+load_env_defaults "$PROJECT_DIR/.env"
+
+: "${DATA_DIR:=$HOME/quantpilot_data}"
+: "${POLY_DATA_DIR:=$DATA_DIR/polymarket}"
+: "${POLY_PAPER_ONLY:=true}"
+: "${POLY_ENABLE_SPLIT_SELL:=false}"
+: "${POLY_ENABLE_TOP_TRADER_MIRROR:=false}"
+: "${POLY_SCAN_INTERVAL_SECONDS:=300}"
+: "${POLY_CATALOG_REFRESH_SECONDS:=900}"
+: "${POLY_MIN_NET_EDGE:=0.01}"
+: "${POLY_DEFAULT_GAS_COST:=0}"
+: "${POLY_SLIPPAGE_BUFFER:=0.005}"
+PYTHON_BIN="$PROJECT_DIR/.venv/bin/python"
+PYTHONPATH="${PROJECT_DIR}${PYTHONPATH:+:$PYTHONPATH}"
+export DATA_DIR POLY_DATA_DIR POLY_PAPER_ONLY POLY_ENABLE_SPLIT_SELL POLY_ENABLE_TOP_TRADER_MIRROR
+export POLY_SCAN_INTERVAL_SECONDS POLY_CATALOG_REFRESH_SECONDS POLY_MIN_NET_EDGE POLY_DEFAULT_GAS_COST POLY_SLIPPAGE_BUFFER
+export PYTHON_BIN PYTHONPATH
+
+mkdir -p "$PROJECT_DIR/logs"
+cd "$PROJECT_DIR"
+source .venv/bin/activate
+
+exec "$PYTHON_BIN" -m polymarket.scheduler

@@ -72,6 +72,8 @@ def test_generate_daily_report_writes_json_artifacts(tmp_path):
     assert payload["status"] == "ok"
     assert payload["summary"]["signals"] == 1
     assert payload["summary"]["fill_count"] == 2
+    assert payload["mirror_enabled"] is False
+    assert payload["mirror_summary"] is None
     assert Path(paths["latest"]).exists()
     assert Path(paths["dated"]).exists()
 
@@ -79,3 +81,4 @@ def test_generate_daily_report_writes_json_artifacts(tmp_path):
     assert latest_payload["report_date"] == report_date
     assert latest_payload["summary"]["fill_count"] == 2
     assert latest_payload["summary"]["market_count"] >= 0
+    assert 'mirror_reports_path' in latest_payload
