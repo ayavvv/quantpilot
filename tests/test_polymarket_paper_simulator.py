@@ -156,3 +156,39 @@ def test_paper_simulator_skips_duplicate_opportunity(tmp_path):
 
     assert fills == 2
     assert processed == 1
+
+
+def test_paper_simulator_skips_all_writes_when_no_opportunities(tmp_path):
+    cfg = PolySettings(data_dir=str(tmp_path), paper_initial_cash=100)
+    storage = PolyStorage(cfg)
+    simulator = PaperSimulator(storage=storage, cfg=cfg)
+
+    accepted = simulator.consume(_market(), [])
+
+    assert accepted == 0
+
+    conn = duckdb.connect(str(cfg.duckdb_path), read_only=True)
+    try:
+        fills = conn.execute("SELECT count(*) FROM paper_fills").fetchone()[0]
+        summaries = conn.execute("SELECT count(*) FROM paper_daily_summary").fetchone()[0]
+    finally:
+        conn.close()
+
+    assert fills == 0
+    assert summaries == 0
+
+
+def test_paper_simulator_records_zero_activity_heartbeat(tmp_path):
+    cfg = PolySettings(data_dir=str(tmp_path), paper_initial_cash=100)
+    storage = PolyStorage(cfg)
+    simulator = PaperSimulator(storage=storage, cfg=cfg)
+
+    simulator.record_scan_heartbeat()
+
+    conn = duckdb.connect(str(cfg.duckdb_path), read_only=True)
+    try:
+        row = conn.execute("SELECT signals, accepted_signals, simulated_trades FROM paper_daily_summary LIMIT 1").fetchone()
+    finally:
+        conn.close()
+
+    assert row == (0, 0, 0)

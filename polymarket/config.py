@@ -44,6 +44,9 @@ class PolySettings(BaseSettings):
     top_trader_mirror_lag_seconds: int = Field(default=300)
     top_trader_min_signal_size: float = Field(default=50.0)
     top_trader_max_signal_notional: float = Field(default=100.0)
+    book_fetch_workers: int = Field(default=8)
+    email_report_enabled: bool = Field(default=False)
+    email_report_attach_json: bool = Field(default=True)
 
     @property
     def root_data_path(self) -> Path:

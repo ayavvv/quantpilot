@@ -82,3 +82,32 @@ def test_generate_daily_report_writes_json_artifacts(tmp_path):
     assert latest_payload["summary"]["fill_count"] == 2
     assert latest_payload["summary"]["market_count"] >= 0
     assert 'mirror_reports_path' in latest_payload
+
+
+def test_daily_report_uses_book_top_for_market_count(tmp_path):
+    cfg = PolySettings(data_dir=str(tmp_path))
+    storage = PolyStorage(cfg)
+    market = _market()
+    from polymarket.models import OrderBook
+    yes_book = OrderBook(token_id='yes', market_id='m1', timestamp_ms=1, bids=[], asks=[], tick_size=0.01, min_order_size=1, neg_risk=False)
+    no_book = OrderBook(token_id='no', market_id='m1', timestamp_ms=1, bids=[], asks=[], tick_size=0.01, min_order_size=1, neg_risk=False)
+    storage.save_book_snapshot(market, yes_book, no_book, persist_depth=False, persist_top=True)
+    storage.upsert_daily_summary(
+        {
+            'date': datetime.now(timezone.utc).date().isoformat(),
+            'strategy_type': 'full_set_arb',
+            'signals': 0,
+            'accepted_signals': 0,
+            'simulated_trades': 0,
+            'gross_edge_sum': 0.0,
+            'net_edge_sum': 0.0,
+            'realized_pnl': 0.0,
+            'max_inventory_used': 0.0,
+            'updated_at': datetime.now(timezone.utc),
+        }
+    )
+
+    payload = build_daily_report(cfg=cfg, target_date=datetime.now(timezone.utc).date().isoformat())
+
+    assert payload['status'] == 'ok'
+    assert payload['summary']['market_count'] == 1

@@ -40,6 +40,7 @@ from polymarket.config import PolySettings
 from polymarket.models import Opportunity, MarketInfo
 from polymarket.paper.simulator import PaperSimulator
 from polymarket.reporting.daily import default_report_date
+from polymarket.pipeline import PipelineResult
 from polymarket.scheduler import PolymarketScheduler, main
 from polymarket.storage import PolyStorage
 
@@ -128,6 +129,37 @@ def test_scheduler_daily_report_generates_previous_day_artifact(tmp_path):
     assert paths["latest"].exists()
 
 
+def test_scheduler_sends_email_when_enabled(monkeypatch, tmp_path):
+    cfg = PolySettings(data_dir=str(tmp_path), email_report_enabled=True)
+    scheduler = PolymarketScheduler(cfg)
+    calls = {"sent": False}
+
+    def fake_generate_daily_report(cfg=None, target_date=None):
+        return {
+            "status": "no_data",
+            "report_date": target_date,
+            "generated_at": "2026-04-20T00:05:00+00:00",
+            "summary": None,
+            "mirror_summary": None,
+            "db_path": str(cfg.duckdb_path),
+            "reports_path": str(cfg.reports_path),
+            "mirror_enabled": False,
+            "mirror_reports_path": str(cfg.mirror_reports_path),
+        }, {"latest": cfg.reports_path / "daily_summary_latest.json", "dated": cfg.reports_path / f"daily_summary_{target_date}.json"}
+
+    def fake_send_daily_report_email(payload, paths, cfg=None):
+        calls["sent"] = True
+        return True
+
+    monkeypatch.setattr("polymarket.scheduler.generate_daily_report", fake_generate_daily_report)
+    monkeypatch.setattr("polymarket.scheduler.send_daily_report_email", fake_send_daily_report_email)
+
+    payload, _ = scheduler.run_daily_report("2026-04-19")
+
+    assert payload["report_date"] == "2026-04-19"
+    assert calls["sent"] is True
+
+
 def test_scheduler_start_runs_initial_scan_before_blocking(monkeypatch, tmp_path):
     scheduler = PolymarketScheduler(PolySettings(data_dir=str(tmp_path)))
     calls = []
@@ -146,6 +178,20 @@ def test_scheduler_start_runs_initial_scan_before_blocking(monkeypatch, tmp_path
     scheduler.start()
 
     assert calls == ['scan', 'start']
+
+
+def test_scheduler_run_scan_logs_duration(monkeypatch, tmp_path):
+    scheduler = PolymarketScheduler(PolySettings(data_dir=str(tmp_path)))
+    result = PipelineResult(markets_seen=1, opportunities_found=0, trades_simulated=0)
+    messages = []
+
+    monkeypatch.setattr(scheduler.pipeline, 'run_once', lambda: result)
+    monkeypatch.setattr('polymarket.scheduler.logger.info', lambda message: messages.append(message))
+
+    returned = scheduler.run_scan()
+
+    assert returned == result
+    assert any('duration_seconds=' in message for message in messages)
 
 
 def test_scheduler_main_starts_blocking_scheduler(monkeypatch):

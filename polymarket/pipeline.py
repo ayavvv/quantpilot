@@ -1,14 +1,16 @@
 """Orchestration pipeline for isolated Polymarket paper trading."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 from loguru import logger
 
 from polymarket.books import ClobClient
 from polymarket.catalog import load_binary_markets
 from polymarket.config import PolySettings, settings
-from polymarket.models import MarketInfo, Opportunity
+from polymarket.models import MarketInfo, Opportunity, OrderBook
 from polymarket.paper.simulator import PaperSimulator
 from polymarket.scanner.full_set import scan_market
 from polymarket.storage import PolyStorage
@@ -41,20 +43,49 @@ class PolymarketPipeline:
         self.profile_client = PublicProfileClient(self.cfg)
         self.history_client = TraderHistoryClient(self.cfg)
         self.mirror_bookkeeper = MirrorBookkeeper(storage=self.mirror_storage, initial_cash=self.cfg.paper_initial_cash)
+        self._markets_cache: list[MarketInfo] = []
+        self._markets_refreshed_at: datetime | None = None
+
+    def _get_markets(self) -> tuple[list[MarketInfo], bool]:
+        now = datetime.now(timezone.utc)
+        expires_at = None
+        if self._markets_refreshed_at is not None:
+            expires_at = self._markets_refreshed_at + timedelta(seconds=self.cfg.catalog_refresh_seconds)
+        if self._markets_cache and expires_at is not None and now < expires_at:
+            return self._markets_cache, False
+        markets = load_binary_markets(self.cfg)
+        self._markets_cache = markets
+        self._markets_refreshed_at = now
+        return markets, True
+
+    def _fetch_market_books(self, market: MarketInfo) -> tuple[OrderBook, OrderBook]:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            yes_future = executor.submit(self.clob.fetch_book, market.yes_token_id)
+            no_future = executor.submit(self.clob.fetch_book, market.no_token_id)
+            return yes_future.result(), no_future.result()
 
     def _run_full_set_strategy(self, markets: list[MarketInfo]) -> tuple[int, int]:
         opportunities_found = 0
         trades_simulated = 0
-        for market in markets:
-            try:
-                yes_book = self.clob.fetch_book(market.yes_token_id)
-                no_book = self.clob.fetch_book(market.no_token_id)
-                self.storage.save_book_snapshot(market, yes_book, no_book)
-                opportunities = scan_market(market, yes_book, no_book, cfg=self.cfg)
-                opportunities_found += self.storage.save_opportunities(opportunities)
-                trades_simulated += self.simulator.consume(market, opportunities)
-            except Exception as exc:  # pragma: no cover
-                logger.warning(f"polymarket pipeline skipped {market.market_id}: {exc}")
+        scanned_markets = 0
+        max_workers = max(1, min(self.cfg.book_fetch_workers, len(markets) or 1))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(self._fetch_market_books, market): market for market in markets}
+            for future in as_completed(futures):
+                market = futures[future]
+                try:
+                    yes_book, no_book = future.result()
+                    self.storage.save_book_snapshot(market, yes_book, no_book, persist_depth=False, persist_top=True)
+                    scanned_markets += 1
+                    opportunities = scan_market(market, yes_book, no_book, cfg=self.cfg)
+                    if opportunities:
+                        self.storage.save_book_snapshot(market, yes_book, no_book, persist_depth=True, persist_top=False)
+                        opportunities_found += self.storage.save_opportunities(opportunities)
+                        trades_simulated += self.simulator.consume(market, opportunities)
+                except Exception as exc:  # pragma: no cover
+                    logger.warning(f"polymarket pipeline skipped {market.market_id}: {exc}")
+        if opportunities_found == 0 and scanned_markets > 0:
+            self.simulator.record_scan_heartbeat()
         return opportunities_found, trades_simulated
 
     def _build_market_map(self, markets: list[MarketInfo]) -> dict[str, MarketInfo]:
@@ -128,8 +159,9 @@ class PolymarketPipeline:
         return len(scores), len(mirror_signals)
 
     def run_once(self) -> PipelineResult:
-        markets = load_binary_markets(self.cfg)
-        self.storage.save_catalog_snapshot(markets)
+        markets, refreshed = self._get_markets()
+        if refreshed:
+            self.storage.save_catalog_snapshot(markets)
         opportunities_found, trades_simulated = self._run_full_set_strategy(markets)
         mirror_traders_tracked = 0
         mirror_signals_generated = 0

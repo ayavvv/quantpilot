@@ -176,49 +176,53 @@ class PolyStorage:
                 conn.unregister("markets_frame")
         return path
 
-    def save_book_snapshot(self, market: MarketInfo, yes_book: OrderBook, no_book: OrderBook) -> Path:
+    def save_book_snapshot(self, market: MarketInfo, yes_book: OrderBook, no_book: OrderBook, persist_depth: bool = True, persist_top: bool = True) -> Path | None:
         now = datetime.now(timezone.utc)
-        rows = []
-        for book in (yes_book, no_book):
-            rows.append(
-                {
-                    "market_id": market.market_id,
-                    "token_id": book.token_id,
-                    "timestamp_ms": book.timestamp_ms,
-                    "last_trade_price": book.last_trade_price,
-                    "tick_size": book.tick_size,
-                    "min_order_size": book.min_order_size,
-                    "neg_risk": book.neg_risk,
-                    "bids": json.dumps(book.as_dict()["bids"]),
-                    "asks": json.dumps(book.as_dict()["asks"]),
-                }
-            )
-        frame = pd.DataFrame(rows)
-        day_dir = self.cfg.books_path / now.strftime("%Y-%m-%d")
-        day_dir.mkdir(parents=True, exist_ok=True)
-        path = day_dir / f"{market.market_id}_{now.strftime('%H%M%S%f')}.parquet"
-        frame.to_parquet(path, index=False)
+        if persist_depth:
+            rows = []
+            for book in (yes_book, no_book):
+                rows.append(
+                    {
+                        "market_id": market.market_id,
+                        "token_id": book.token_id,
+                        "timestamp_ms": book.timestamp_ms,
+                        "last_trade_price": book.last_trade_price,
+                        "tick_size": book.tick_size,
+                        "min_order_size": book.min_order_size,
+                        "neg_risk": book.neg_risk,
+                        "bids": json.dumps(book.as_dict()["bids"]),
+                        "asks": json.dumps(book.as_dict()["asks"]),
+                    }
+                )
+            frame = pd.DataFrame(rows)
+            day_dir = self.cfg.books_path / now.strftime("%Y-%m-%d")
+            day_dir.mkdir(parents=True, exist_ok=True)
+            path = day_dir / f"{market.market_id}_{now.strftime('%H%M%S%f')}.parquet"
+            frame.to_parquet(path, index=False)
+        else:
+            path = None
 
-        top_rows = pd.DataFrame(
-            [
-                {
-                    "ts": now,
-                    "market_id": market.market_id,
-                    "token_id": book.token_id,
-                    "best_bid": book.best_bid.price if book.best_bid else None,
-                    "best_bid_size": book.best_bid.size if book.best_bid else None,
-                    "best_ask": book.best_ask.price if book.best_ask else None,
-                    "best_ask_size": book.best_ask.size if book.best_ask else None,
-                    "last_trade": book.last_trade_price,
-                    "book_timestamp_ms": book.timestamp_ms,
-                }
-                for book in (yes_book, no_book)
-            ]
-        )
-        with self._connect() as conn:
-            conn.register("top_rows", top_rows)
-            conn.execute("INSERT INTO book_top SELECT * FROM top_rows")
-            conn.unregister("top_rows")
+        if persist_top:
+            top_rows = pd.DataFrame(
+                [
+                    {
+                        "ts": now,
+                        "market_id": market.market_id,
+                        "token_id": book.token_id,
+                        "best_bid": book.best_bid.price if book.best_bid else None,
+                        "best_bid_size": book.best_bid.size if book.best_bid else None,
+                        "best_ask": book.best_ask.price if book.best_ask else None,
+                        "best_ask_size": book.best_ask.size if book.best_ask else None,
+                        "last_trade": book.last_trade_price,
+                        "book_timestamp_ms": book.timestamp_ms,
+                    }
+                    for book in (yes_book, no_book)
+                ]
+            )
+            with self._connect() as conn:
+                conn.register("top_rows", top_rows)
+                conn.execute("INSERT INTO book_top SELECT * FROM top_rows")
+                conn.unregister("top_rows")
         return path
 
     def save_opportunities(self, opportunities: Iterable[Opportunity]) -> int:
@@ -521,7 +525,7 @@ class PolyStorage:
             market_count = conn.execute(
                 """
                 SELECT count(DISTINCT market_id)
-                FROM opportunities
+                FROM book_top
                 WHERE CAST(ts AS DATE) = CAST(? AS DATE)
                 """,
                 [target_date],

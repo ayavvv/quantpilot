@@ -1,6 +1,8 @@
 """Scheduler for isolated Polymarket paper-trading jobs."""
 from __future__ import annotations
 
+from time import perf_counter
+
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 from loguru import logger
@@ -8,6 +10,7 @@ from loguru import logger
 from polymarket.config import PolySettings, settings
 from polymarket.pipeline import PolymarketPipeline
 from polymarket.reporting.daily import default_report_date, generate_daily_report
+from polymarket.reporting.email import send_daily_report_email
 
 
 class PolymarketScheduler:
@@ -38,16 +41,24 @@ class PolymarketScheduler:
         )
 
     def run_scan(self):
+        started = perf_counter()
         result = self.pipeline.run_once()
+        duration_seconds = perf_counter() - started
         logger.info(
             f"polymarket scan complete: markets={result.markets_seen} "
-            f"opps={result.opportunities_found} trades={result.trades_simulated}"
+            f"opps={result.opportunities_found} trades={result.trades_simulated} "
+            f"duration_seconds={duration_seconds:.2f}"
         )
         return result
 
     def run_daily_report(self, target_date: str | None = None):
         target_date = target_date or default_report_date()
         payload, paths = generate_daily_report(cfg=self.cfg, target_date=target_date)
+        if self.cfg.email_report_enabled:
+            email_sent = send_daily_report_email(payload, paths, cfg=self.cfg)
+            logger.info(
+                f"polymarket daily email complete: date={payload['report_date']} sent={email_sent}"
+            )
         logger.info(
             f"polymarket daily report complete: status={payload['status']} "
             f"date={payload['report_date']} latest={paths['latest']}"
