@@ -1,6 +1,7 @@
 """Baostock client - A-share daily K-line data collection."""
 
 import time
+import socket
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 
@@ -13,9 +14,10 @@ class BaostockClient:
 
     LOGIN_EXPIRED_MARKERS = ("用户未登录", "未登录")
 
-    def __init__(self, rate_limit: float = 0.3, max_retries: int = 3):
+    def __init__(self, rate_limit: float = 0.3, max_retries: int = 3, socket_timeout: float = 20.0):
         self.rate_limit = rate_limit
         self.max_retries = max_retries
+        self.socket_timeout = socket_timeout
         self._bs = None
         self._logged_in = False
         self._last_history_kline_status: dict[str, Any] | None = None
@@ -24,21 +26,109 @@ class BaostockClient:
         if not self._logged_in:
             import baostock as bs
             self._bs = bs
-            lg = bs.login()
+            self._patch_baostock_socket(bs)
+
+            previous_timeout = socket.getdefaulttimeout()
+            socket.setdefaulttimeout(self.socket_timeout)
+            try:
+                lg = bs.login()
+            except Exception:
+                self._close_default_socket()
+                raise
+            finally:
+                socket.setdefaulttimeout(previous_timeout)
             if lg.error_code != "0":
                 raise RuntimeError(f"baostock login failed: {lg.error_msg}")
             self._logged_in = True
             logger.info("baostock: logged in")
 
-    def _reset_login_state(self):
+    def _patch_baostock_socket(self, bs_module):
+        """Patch baostock's blocking socket loop so closed sockets cannot spin forever."""
+        try:
+            import baostock.common.contants as cons
+            import baostock.common.context as context
+            import baostock.util.socketutil as socketutil
+            import zlib
+        except Exception as exc:
+            raise RuntimeError(f"failed to patch baostock socket handling: {exc}") from exc
+
+        if getattr(socketutil, "_quantpilot_safe_send_msg", False):
+            socketutil._quantpilot_socket_timeout = self.socket_timeout
+            return
+
+        def safe_send_msg(msg):
+            if not hasattr(context, "default_socket"):
+                print("you don't login.")
+                return None
+
+            default_socket = getattr(context, "default_socket")
+            if default_socket is None:
+                return None
+
+            timeout = getattr(socketutil, "_quantpilot_socket_timeout", self.socket_timeout)
+            default_socket.settimeout(timeout)
+            default_socket.sendall(bytes(msg + "\n", encoding="utf-8"))
+
+            receive = b""
+            while True:
+                try:
+                    recv = default_socket.recv(8192)
+                except socket.timeout as exc:
+                    raise TimeoutError(f"baostock socket recv timed out after {timeout}s") from exc
+
+                if recv == b"":
+                    raise ConnectionError("baostock socket closed before full response")
+
+                receive += recv
+                if receive[-13:] == b"<![CDATA[]]>\n":
+                    break
+
+            head_bytes = receive[0:cons.MESSAGE_HEADER_LENGTH]
+            head_str = bytes.decode(head_bytes)
+            head_arr = head_str.split(cons.MESSAGE_SPLIT)
+            if head_arr[1] in cons.COMPRESSED_MESSAGE_TYPE_TUPLE:
+                head_inner_length = int(head_arr[2])
+                body_bytes = receive[
+                    cons.MESSAGE_HEADER_LENGTH:cons.MESSAGE_HEADER_LENGTH + head_inner_length
+                ]
+                body_str = bytes.decode(zlib.decompress(body_bytes))
+                return head_str + body_str
+            return bytes.decode(receive)
+
+        socketutil.send_msg = safe_send_msg
+        socketutil._quantpilot_safe_send_msg = True
+        socketutil._quantpilot_socket_timeout = self.socket_timeout
+
+    def _reset_login_state(self, close_socket: bool = True):
+        if close_socket:
+            self._close_default_socket()
         self._logged_in = False
+
+    def _close_default_socket(self):
+        try:
+            import baostock.common.context as context
+
+            default_socket = getattr(context, "default_socket", None)
+            if default_socket is not None:
+                default_socket.close()
+            setattr(context, "default_socket", None)
+        except Exception as exc:
+            logger.debug(f"baostock socket cleanup skipped: {exc}")
 
     def _is_login_expired_error(self, error_msg: str) -> bool:
         return any(marker in error_msg for marker in self.LOGIN_EXPIRED_MARKERS)
 
     def _run_query(self, query_fn, *args, allow_relogin: bool = True, **kwargs):
         self._ensure_login()
-        rs = query_fn(*args, **kwargs)
+        try:
+            rs = query_fn(*args, **kwargs)
+        except (TimeoutError, ConnectionError, OSError) as exc:
+            if not allow_relogin:
+                raise
+            logger.warning(f"baostock socket error, re-authenticating: {exc}")
+            self._reset_login_state()
+            self._ensure_login()
+            rs = query_fn(*args, **kwargs)
         if rs.error_code == "0":
             return rs
 
@@ -59,6 +149,8 @@ class BaostockClient:
             try:
                 self._bs.logout()
                 logger.info("baostock: logged out")
+            except Exception as exc:
+                logger.warning(f"baostock logout failed: {exc}")
             finally:
                 self._reset_login_state()
 

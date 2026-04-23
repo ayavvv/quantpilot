@@ -21,6 +21,7 @@ def _run_ssh_command(
     nas_user: str,
     ssh_key: str,
     remote_command: str,
+    timeout_seconds: int = 60,
 ) -> str:
     cmd = [
         "ssh",
@@ -33,7 +34,16 @@ def _run_ssh_command(
         f"{nas_user}@{nas_host}",
         remote_command,
     ]
-    result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+    try:
+        result = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"ssh timed out after {timeout_seconds}s") from exc
     if result.returncode != 0:
         stderr = result.stderr.strip() or result.stdout.strip()
         raise RuntimeError(f"ssh failed ({result.returncode}): {stderr}")
@@ -131,38 +141,25 @@ def latest_trade_date_via_collector(
     today: str,
     collector_container: str = "quantpilot-collector",
     lookback_days: int = 31,
+    baostock_timeout: int = 20,
 ) -> str:
     script = """
 import sys
-from datetime import datetime, timedelta
 
-import baostock as bs
+from collector.baostock_client import BaostockClient
 
 today = sys.argv[1]
 lookback_days = int(sys.argv[2])
-start = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
-lg = bs.login()
-if lg.error_code != "0":
-    raise SystemExit(f"baostock login failed: {lg.error_msg}")
+timeout = float(sys.argv[3])
+client = BaostockClient(rate_limit=0, max_retries=1, socket_timeout=timeout)
 try:
-    rs = bs.query_trade_dates(start_date=start, end_date=today)
-    if rs.error_code != "0":
-        raise SystemExit(f"query_trade_dates error: {rs.error_msg}")
-    field_map = {name: idx for idx, name in enumerate(rs.fields)}
-    cal_idx = field_map["calendar_date"]
-    trade_idx = field_map["is_trading_day"]
-    dates = []
-    while rs.next():
-        row = rs.get_row_data()
-        if row[trade_idx] == "1":
-            dates.append(row[cal_idx])
-    print(dates[-1] if dates else "")
+    print(client.latest_trade_date(on_or_before=today, lookback_days=lookback_days) or "")
 finally:
-    bs.logout()
+    client.close()
 """.strip()
     remote_command = (
         f"sudo /usr/local/bin/docker exec {shlex.quote(collector_container)} "
-        f"python -c {shlex.quote(script)} {shlex.quote(today)} {lookback_days}"
+        f"python -c {shlex.quote(script)} {shlex.quote(today)} {lookback_days} {baostock_timeout}"
     )
     return _last_date_line(
         _run_ssh_command(
@@ -170,6 +167,7 @@ finally:
             nas_user=nas_user,
             ssh_key=ssh_key,
             remote_command=remote_command,
+            timeout_seconds=baostock_timeout + 15,
         )
     )
 
@@ -182,39 +180,29 @@ def previous_trade_date_via_collector(
     today: str,
     collector_container: str = "quantpilot-collector",
     lookback_days: int = 31,
+    baostock_timeout: int = 20,
 ) -> str:
     script = """
 import sys
 from datetime import datetime, timedelta
 
-import baostock as bs
+from collector.baostock_client import BaostockClient
 
 today = datetime.strptime(sys.argv[1], "%Y-%m-%d")
 lookback_days = int(sys.argv[2])
+timeout = float(sys.argv[3])
 end_date = (today - timedelta(days=1)).strftime("%Y-%m-%d")
 start_date = (today - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
-lg = bs.login()
-if lg.error_code != "0":
-    raise SystemExit(f"baostock login failed: {lg.error_msg}")
+client = BaostockClient(rate_limit=0, max_retries=1, socket_timeout=timeout)
 try:
-    rs = bs.query_trade_dates(start_date=start_date, end_date=end_date)
-    if rs.error_code != "0":
-        raise SystemExit(f"query_trade_dates error: {rs.error_msg}")
-    field_map = {name: idx for idx, name in enumerate(rs.fields)}
-    cal_idx = field_map["calendar_date"]
-    trade_idx = field_map["is_trading_day"]
-    dates = []
-    while rs.next():
-        row = rs.get_row_data()
-        if row[trade_idx] == "1":
-            dates.append(row[cal_idx])
+    dates = client.get_trade_dates(start=start_date, end=end_date)
     print(dates[-1] if dates else "")
 finally:
-    bs.logout()
+    client.close()
 """.strip()
     remote_command = (
         f"sudo /usr/local/bin/docker exec {shlex.quote(collector_container)} "
-        f"python -c {shlex.quote(script)} {shlex.quote(today)} {lookback_days}"
+        f"python -c {shlex.quote(script)} {shlex.quote(today)} {lookback_days} {baostock_timeout}"
     )
     return _last_date_line(
         _run_ssh_command(
@@ -222,6 +210,7 @@ finally:
             nas_user=nas_user,
             ssh_key=ssh_key,
             remote_command=remote_command,
+            timeout_seconds=baostock_timeout + 15,
         )
     )
 
@@ -343,6 +332,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         type=int,
         default=31,
     )
+    target_parser.add_argument(
+        "--baostock-timeout",
+        type=int,
+        default=20,
+    )
 
     signal_parser = subparsers.add_parser("pred-latest-signal-date")
     signal_parser.add_argument("--pred-path", required=True)
@@ -384,6 +378,7 @@ def main(argv: list[str] | None = None) -> int:
                 today=args.today,
                 collector_container=args.collector_container,
                 lookback_days=args.lookback_days,
+                baostock_timeout=args.baostock_timeout,
             )
         )
         return 0

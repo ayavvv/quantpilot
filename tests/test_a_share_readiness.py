@@ -16,8 +16,9 @@ class _Result:
 def test_latest_nas_a_share_date_uses_instruments_metadata(monkeypatch):
     captured = {}
 
-    def fake_run(cmd, check, capture_output, text):
+    def fake_run(cmd, check, capture_output, text, timeout=None):
         captured["cmd"] = cmd
+        captured["timeout"] = timeout
         return _Result(stdout="2026-03-30\n")
 
     monkeypatch.setattr(a_share_readiness.subprocess, "run", fake_run)
@@ -31,12 +32,13 @@ def test_latest_nas_a_share_date_uses_instruments_metadata(monkeypatch):
     assert latest == "2026-03-30"
     assert captured["cmd"][-1].startswith("python3 -c ")
     assert "/volume1/docker/quantpilot/qlib_data/instruments/all.txt" in captured["cmd"][-1]
+    assert captured["timeout"] == 60
 
 
 def test_latest_nas_a_share_completed_date_uses_status_metadata(monkeypatch):
     captured = {}
 
-    def fake_run(cmd, check, capture_output, text):
+    def fake_run(cmd, check, capture_output, text, timeout=None):
         captured["cmd"] = cmd
         return _Result(stdout="2026-03-30\n")
 
@@ -55,8 +57,9 @@ def test_latest_nas_a_share_completed_date_uses_status_metadata(monkeypatch):
 def test_latest_trade_date_via_collector_runs_in_collector_container(monkeypatch):
     captured = {}
 
-    def fake_run(cmd, check, capture_output, text):
+    def fake_run(cmd, check, capture_output, text, timeout=None):
         captured["cmd"] = cmd
+        captured["timeout"] = timeout
         return _Result(stdout="2026-03-30\n")
 
     monkeypatch.setattr(a_share_readiness.subprocess, "run", fake_run)
@@ -69,11 +72,13 @@ def test_latest_trade_date_via_collector_runs_in_collector_container(monkeypatch
 
     assert latest == "2026-03-30"
     assert "docker exec quantpilot-collector" in captured["cmd"][-1]
+    assert "BaostockClient" in captured["cmd"][-1]
     assert "2026-03-31" in captured["cmd"][-1]
+    assert captured["timeout"] == 35
 
 
 def test_latest_trade_date_via_collector_uses_last_non_empty_line(monkeypatch):
-    def fake_run(cmd, check, capture_output, text):
+    def fake_run(cmd, check, capture_output, text, timeout=None):
         return _Result(stdout="login success!\n2026-03-30\nlogout success!\n")
 
     monkeypatch.setattr(a_share_readiness.subprocess, "run", fake_run)
@@ -90,8 +95,9 @@ def test_latest_trade_date_via_collector_uses_last_non_empty_line(monkeypatch):
 def test_previous_trade_date_via_collector_queries_day_before_today(monkeypatch):
     captured = {}
 
-    def fake_run(cmd, check, capture_output, text):
+    def fake_run(cmd, check, capture_output, text, timeout=None):
         captured["cmd"] = cmd
+        captured["timeout"] = timeout
         return _Result(stdout="2026-04-16\n")
 
     monkeypatch.setattr(a_share_readiness.subprocess, "run", fake_run)
@@ -104,6 +110,8 @@ def test_previous_trade_date_via_collector_queries_day_before_today(monkeypatch)
 
     assert latest == "2026-04-16"
     assert "2026-04-17" in captured["cmd"][-1]
+    assert "BaostockClient" in captured["cmd"][-1]
+    assert captured["timeout"] == 35
 
 
 def test_is_a_share_ready_compares_dates_lexicographically():
