@@ -35,10 +35,6 @@ services:
       - ${QLIB_DATA_DIR:-./qlib_data}:/qlib_data
       - ./logs:/app/logs
       - ./keys/futu_rsa_1024.pem:/app/keys/futu_rsa_1024.pem:ro
-    extra_hosts:
-      # Avoid LAN fake-IP DNS for Baostock's custom TCP protocol.
-      - "www.baostock.com:114.94.20.92"
-      - "baostock.com:114.94.20.92"
 
   # --- Daily Inference ---
   inference:
