@@ -89,3 +89,45 @@ def test_load_binary_markets_skips_fee_fetch_when_market_fee_present(monkeypatch
 
     assert len(markets) == 1
     assert markets[0].taker_base_fee_bps == 12.0
+
+
+def test_load_binary_markets_keeps_trying_fee_lookup_per_token(monkeypatch):
+    cfg = PolySettings()
+    rows = [
+        {
+            "id": "m1",
+            "conditionId": "c1",
+            "question": "One",
+            "active": True,
+            "closed": False,
+            "enableOrderBook": True,
+            "negRisk": False,
+            "clobTokenIds": json.dumps(["yes-token-1", "no-token-1"]),
+            "outcomes": json.dumps(["Yes", "No"]),
+        },
+        {
+            "id": "m2",
+            "conditionId": "c2",
+            "question": "Two",
+            "active": True,
+            "closed": False,
+            "enableOrderBook": True,
+            "negRisk": False,
+            "clobTokenIds": json.dumps(["yes-token-2", "no-token-2"]),
+            "outcomes": json.dumps(["Yes", "No"]),
+        },
+    ]
+    calls = {"count": 0}
+
+    monkeypatch.setattr("polymarket.catalog.GammaClient.fetch_markets", lambda self: rows)
+
+    def fake_fee_fetch(self, token_id):
+        calls["count"] += 1
+        return None
+
+    monkeypatch.setattr("polymarket.catalog.GammaClient.fetch_fee_rate_bps", fake_fee_fetch)
+
+    markets = load_binary_markets(cfg)
+
+    assert len(markets) == 2
+    assert calls["count"] == 2

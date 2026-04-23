@@ -25,6 +25,8 @@ def test_env_example_documents_polymarket_keys():
         'POLY_MAX_ACTIVE_MARKETS=',
         'POLY_HTTP_TIMEOUT_SECONDS=',
         'POLY_USER_AGENT=',
+        'POLY_EMAIL_REPORT_ENABLED=',
+        'POLY_EMAIL_REPORT_ATTACH_JSON=',
     ):
         assert key in content
 

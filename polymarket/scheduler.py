@@ -44,10 +44,16 @@ class PolymarketScheduler:
         started = perf_counter()
         result = self.pipeline.run_once()
         duration_seconds = perf_counter() - started
+        stage_timings = result.stage_timings or {}
         logger.info(
             f"polymarket scan complete: markets={result.markets_seen} "
             f"opps={result.opportunities_found} trades={result.trades_simulated} "
-            f"duration_seconds={duration_seconds:.2f}"
+            f"duration_seconds={duration_seconds:.2f} "
+            f"catalog_load_seconds={stage_timings.get('catalog_load_seconds', 0.0):.2f} "
+            f"catalog_snapshot_seconds={stage_timings.get('catalog_snapshot_seconds', 0.0):.2f} "
+            f"book_fetch_seconds={stage_timings.get('book_fetch_seconds', 0.0):.2f} "
+            f"scan_compute_seconds={stage_timings.get('scan_compute_seconds', 0.0):.2f} "
+            f"storage_write_seconds={stage_timings.get('storage_write_seconds', 0.0):.2f}"
         )
         return result
 

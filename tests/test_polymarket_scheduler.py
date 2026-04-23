@@ -192,6 +192,8 @@ def test_scheduler_run_scan_logs_duration(monkeypatch, tmp_path):
 
     assert returned == result
     assert any('duration_seconds=' in message for message in messages)
+    assert any('catalog_load_seconds=' in message for message in messages)
+    assert any('book_fetch_seconds=' in message for message in messages)
 
 
 def test_scheduler_main_starts_blocking_scheduler(monkeypatch):

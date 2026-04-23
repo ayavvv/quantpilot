@@ -167,14 +167,51 @@ class PolyStorage:
             rows.append(payload)
         frame = pd.DataFrame(rows)
         path = self.cfg.catalog_path / f"markets_{now.strftime('%Y%m%dT%H%M%SZ')}.parquet"
-        if not frame.empty:
-            frame.to_parquet(path, index=False)
-            with self._connect() as conn:
-                conn.execute("DELETE FROM markets")
+        with self._connect() as conn:
+            conn.execute("DELETE FROM markets")
+            if not frame.empty:
+                frame.to_parquet(path, index=False)
                 conn.register("markets_frame", frame)
                 conn.execute("INSERT INTO markets SELECT * FROM markets_frame")
                 conn.unregister("markets_frame")
         return path
+
+    def load_markets(self) -> tuple[list[MarketInfo], datetime | None]:
+        if not self.db_path.exists():
+            return [], None
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT market_id, condition_id, question, slug, end_date_iso, min_order_size,
+                       tick_size, neg_risk, enable_order_book, taker_base_fee_bps,
+                       yes_token_id, no_token_id, collateral_symbol, fee_source, updated_at
+                FROM markets
+                """
+            ).fetchall()
+        markets = [
+            MarketInfo(
+                market_id=str(row[0]),
+                condition_id=str(row[1]),
+                question=str(row[2]),
+                slug=row[3],
+                end_date_iso=row[4],
+                min_order_size=float(row[5] or 0),
+                tick_size=float(row[6] or 0.01),
+                neg_risk=bool(row[7]),
+                enable_order_book=bool(row[8]),
+                taker_base_fee_bps=float(row[9] or 0),
+                yes_token_id=str(row[10]),
+                no_token_id=str(row[11]),
+                collateral_symbol=str(row[12] or 'USDC.e'),
+                fee_source=str(row[13] or 'taker_base_fee'),
+            )
+            for row in rows
+        ]
+        updated_at_values = [row[14] for row in rows if row[14] is not None]
+        updated_at = max(updated_at_values) if updated_at_values else None
+        if updated_at is not None and updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        return markets, updated_at
 
     def save_book_snapshot(self, market: MarketInfo, yes_book: OrderBook, no_book: OrderBook, persist_depth: bool = True, persist_top: bool = True) -> Path | None:
         now = datetime.now(timezone.utc)
@@ -203,7 +240,7 @@ class PolyStorage:
             path = None
 
         if persist_top:
-            top_rows = pd.DataFrame(
+            self.save_book_tops(
                 [
                     {
                         "ts": now,
@@ -219,11 +256,17 @@ class PolyStorage:
                     for book in (yes_book, no_book)
                 ]
             )
-            with self._connect() as conn:
-                conn.register("top_rows", top_rows)
-                conn.execute("INSERT INTO book_top SELECT * FROM top_rows")
-                conn.unregister("top_rows")
         return path
+
+    def save_book_tops(self, rows: list[dict[str, object]]) -> int:
+        if not rows:
+            return 0
+        top_rows = pd.DataFrame(rows)
+        with self._connect() as conn:
+            conn.register("top_rows", top_rows)
+            conn.execute("INSERT INTO book_top SELECT * FROM top_rows")
+            conn.unregister("top_rows")
+        return len(rows)
 
     def save_opportunities(self, opportunities: Iterable[Opportunity]) -> int:
         rows = [opportunity.as_dict() for opportunity in opportunities]

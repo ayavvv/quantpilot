@@ -98,7 +98,7 @@ DRY_RUN=true ./scripts/run_us_trade.sh
 流程：
 
 ```text
-S&P 500 成分股（或 US_TARGET_CODES 覆盖）
+S&P 500 成分股（nightly 默认；US_TARGET_CODES 仅用于手工小范围联调）
   -> 价格 / 流动性过滤
   -> 对候选股逐个跑 deep-analysis
   -> 产出 us_trade_plan_latest.json
@@ -111,11 +111,12 @@ S&P 500 成分股（或 US_TARGET_CODES 覆盖）
 # 先用少量 ticker 验证整条链路
 US_TARGET_CODES=US.AAPL,US.MSFT US_ANALYSIS_TOP_K=2 ./scripts/run_us_daily.sh
 
-# 生产默认：每天 Top 20 分析、并发 10、单票 1 小时、最终 Top 5 模拟持仓
-./scripts/run_us_daily.sh
+# nightly / full-universe 默认行为：跑完整 S&P 500 universe，再由 Top-K 控制深度分析数量
+# 若 Wikipedia 刷新失败，流程会自动回退到本地 SP500 cache 文件。
+US_UNIVERSE=sp500 US_ANALYSIS_TOP_K=8 US_MAX_POSITIONS=4 ./scripts/run_us_daily.sh
 
 # 如果当前机器不是通过 futu-opend:11111 暴露 OpenD，显式覆盖地址和 RSA key
-FUTU_HOST=<your-futu-host> FUTU_PORT=11111 FUTU_RSA_KEY=/path/to/futu_rsa_1024.pem US_TARGET_CODES=US.AAPL,US.MSFT US_ANALYSIS_TOP_K=2 ./scripts/run_us_daily.sh
+FUTU_HOST=<your-futu-host> FUTU_PORT=11111 FUTU_RSA_KEY=/path/to/futu_rsa_1024.pem US_UNIVERSE=sp500 US_ANALYSIS_TOP_K=8 ./scripts/run_us_daily.sh
 
 # 只做执行预演
 DRY_RUN=true ./scripts/run_us_trade.sh

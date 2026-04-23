@@ -94,7 +94,7 @@ The US pipeline is intentionally isolated from the A-share production path. It d
 Flow:
 
 ```text
-S&P 500 universe (or US_TARGET_CODES override)
+S&P 500 universe (nightly default; US_TARGET_CODES only for manual smoke tests)
   -> liquidity / price filter
   -> deep-analysis per ticker
   -> us_trade_plan_latest.json
@@ -107,11 +107,12 @@ Useful commands:
 # Small-scope validation before using the full S&P 500 universe
 US_TARGET_CODES=US.AAPL,US.MSFT US_ANALYSIS_TOP_K=2 ./scripts/run_us_daily.sh
 
-# Production defaults: Top 20 analyses/day, concurrency 10, 1h per ticker, Top 5 simulated holdings
-./scripts/run_us_daily.sh
+# Nightly/full-universe behavior: use the full S&P 500 universe with an explicit Top-K
+# If Wikipedia refresh is blocked, the pipeline falls back to the local SP500 cache file.
+US_UNIVERSE=sp500 US_ANALYSIS_TOP_K=8 US_MAX_POSITIONS=4 ./scripts/run_us_daily.sh
 
 # If OpenD is not exposed as futu-opend:11111 on this host, override it explicitly
-FUTU_HOST=<your-futu-host> FUTU_PORT=11111 FUTU_RSA_KEY=/path/to/futu_rsa_1024.pem US_TARGET_CODES=US.AAPL,US.MSFT US_ANALYSIS_TOP_K=2 ./scripts/run_us_daily.sh
+FUTU_HOST=<your-futu-host> FUTU_PORT=11111 FUTU_RSA_KEY=/path/to/futu_rsa_1024.pem US_UNIVERSE=sp500 US_ANALYSIS_TOP_K=8 ./scripts/run_us_daily.sh
 
 # Preview execution only
 DRY_RUN=true ./scripts/run_us_trade.sh

@@ -1,6 +1,7 @@
 # 数据加载器依赖（Python 3.10+ 均可）
 python-dotenv>=1.0
 pandas>=2.0
+lxml>=5.2.0
 numpy>=1.24
 fastparquet>=2023.0.0
 PyYAML>=6.0
