@@ -9,7 +9,7 @@ import re
 import shlex
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from market_scope import a_share_model_prefixes, code_matches_prefixes
@@ -58,6 +58,20 @@ def _last_non_empty_line(output: str) -> str:
 def _last_date_line(output: str) -> str:
     lines = [line.strip() for line in output.splitlines() if re.fullmatch(r"\d{4}-\d{2}-\d{2}", line.strip())]
     return lines[-1] if lines else _last_non_empty_line(output)
+
+
+def _latest_weekday_on_or_before(date_value: str) -> str:
+    day = datetime.strptime(date_value, "%Y-%m-%d").date()
+    while day.weekday() >= 5:
+        day -= timedelta(days=1)
+    return day.isoformat()
+
+
+def _previous_weekday_before(date_value: str) -> str:
+    day = datetime.strptime(date_value, "%Y-%m-%d").date() - timedelta(days=1)
+    while day.weekday() >= 5:
+        day -= timedelta(days=1)
+    return day.isoformat()
 
 
 def latest_nas_a_share_date(
@@ -161,15 +175,24 @@ finally:
         f"sudo /usr/local/bin/docker exec {shlex.quote(collector_container)} "
         f"python -c {shlex.quote(script)} {shlex.quote(today)} {lookback_days} {baostock_timeout}"
     )
-    return _last_date_line(
-        _run_ssh_command(
-            nas_host=nas_host,
-            nas_user=nas_user,
-            ssh_key=ssh_key,
-            remote_command=remote_command,
-            timeout_seconds=baostock_timeout + 15,
+    try:
+        return _last_date_line(
+            _run_ssh_command(
+                nas_host=nas_host,
+                nas_user=nas_user,
+                ssh_key=ssh_key,
+                remote_command=remote_command,
+                timeout_seconds=baostock_timeout + 15,
+            )
         )
-    )
+    except Exception as exc:
+        fallback = _latest_weekday_on_or_before(today)
+        print(
+            "WARNING: failed to resolve A-share target date via Baostock "
+            f"({exc}); falling back to weekday {fallback}",
+            file=sys.stderr,
+        )
+        return fallback
 
 
 def previous_trade_date_via_collector(
@@ -204,15 +227,24 @@ finally:
         f"sudo /usr/local/bin/docker exec {shlex.quote(collector_container)} "
         f"python -c {shlex.quote(script)} {shlex.quote(today)} {lookback_days} {baostock_timeout}"
     )
-    return _last_date_line(
-        _run_ssh_command(
-            nas_host=nas_host,
-            nas_user=nas_user,
-            ssh_key=ssh_key,
-            remote_command=remote_command,
-            timeout_seconds=baostock_timeout + 15,
+    try:
+        return _last_date_line(
+            _run_ssh_command(
+                nas_host=nas_host,
+                nas_user=nas_user,
+                ssh_key=ssh_key,
+                remote_command=remote_command,
+                timeout_seconds=baostock_timeout + 15,
+            )
         )
-    )
+    except Exception as exc:
+        fallback = _previous_weekday_before(today)
+        print(
+            "WARNING: failed to resolve previous A-share trade date via Baostock "
+            f"({exc}); falling back to weekday {fallback}",
+            file=sys.stderr,
+        )
+        return fallback
 
 
 def is_a_share_ready(latest_date: str, target_date: str) -> bool:

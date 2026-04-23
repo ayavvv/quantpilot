@@ -92,6 +92,21 @@ def test_latest_trade_date_via_collector_uses_last_non_empty_line(monkeypatch):
     assert latest == "2026-03-30"
 
 
+def test_latest_trade_date_via_collector_falls_back_to_weekday(monkeypatch):
+    def fake_run(cmd, check, capture_output, text, timeout=None):
+        return _Result(returncode=1, stderr="baostock unavailable")
+
+    monkeypatch.setattr(a_share_readiness.subprocess, "run", fake_run)
+    latest = a_share_readiness.latest_trade_date_via_collector(
+        nas_host="192.168.100.131",
+        nas_user="theo",
+        ssh_key="/tmp/nas_key",
+        today="2026-04-26",
+    )
+
+    assert latest == "2026-04-24"
+
+
 def test_previous_trade_date_via_collector_queries_day_before_today(monkeypatch):
     captured = {}
 
@@ -112,6 +127,21 @@ def test_previous_trade_date_via_collector_queries_day_before_today(monkeypatch)
     assert "2026-04-17" in captured["cmd"][-1]
     assert "BaostockClient" in captured["cmd"][-1]
     assert captured["timeout"] == 35
+
+
+def test_previous_trade_date_via_collector_falls_back_to_previous_weekday(monkeypatch):
+    def fake_run(cmd, check, capture_output, text, timeout=None):
+        return _Result(returncode=1, stderr="baostock unavailable")
+
+    monkeypatch.setattr(a_share_readiness.subprocess, "run", fake_run)
+    latest = a_share_readiness.previous_trade_date_via_collector(
+        nas_host="192.168.100.131",
+        nas_user="theo",
+        ssh_key="/tmp/nas_key",
+        today="2026-04-27",
+    )
+
+    assert latest == "2026-04-24"
 
 
 def test_is_a_share_ready_compares_dates_lexicographically():
