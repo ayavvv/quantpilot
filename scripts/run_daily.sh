@@ -37,8 +37,12 @@ AUTO_RETRY_LOG_PATH="${AUTO_RETRY_LOG_PATH:-$PROJECT_DIR/logs/daily_retry.log}"
 NAS_COLLECTOR_CONTAINER="${NAS_COLLECTOR_CONTAINER:-quantpilot-collector}"
 TARGET_DATE_LOOKBACK_DAYS="${TARGET_DATE_LOOKBACK_DAYS:-31}"
 TARGET_A_SHARE_DATE_OVERRIDE="${TARGET_A_SHARE_DATE_OVERRIDE:-}"
+LOCAL_A_SHARE_RESCUE="${LOCAL_A_SHARE_RESCUE:-true}"
+LOCAL_A_SHARE_RESCUE_RATE_LIMIT="${LOCAL_A_SHARE_RESCUE_RATE_LIMIT:-0.03}"
+LOCAL_A_SHARE_RESCUE_SOCKET_TIMEOUT="${LOCAL_A_SHARE_RESCUE_SOCKET_TIMEOUT:-20}"
 PYTHON_BIN="${PYTHON_BIN:-$PROJECT_DIR/.venv/bin/python}"
 PYTHONPATH="${PROJECT_DIR}${PYTHONPATH:+:$PYTHONPATH}"
+SKIP_NAS_SYNC="false"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
@@ -148,19 +152,32 @@ if [ -n "$NAS_HOST" ] && [ -n "$NAS_USER" ]; then
                 SYNC_TARGET_A_SHARE_DATE=""
             fi
         else
-            spawn_ready_retry "$TARGET_A_SHARE_DATE"
-            run_healthcheck nightly error
-            log "  ERROR: NAS A-share data not ready after ${MAX_WAIT_SECONDS}s, aborting to avoid stale/inconsistent sync (completed=${NAS_LAST:-N/A}, latest=${NAS_LATEST:-N/A})"
-            exit 1
+            if [ "$LOCAL_A_SHARE_RESCUE" = "true" ]; then
+                log "  WARNING: NAS A-share data not ready after ${MAX_WAIT_SECONDS}s; running local Baostock rescue for $TARGET_A_SHARE_DATE"
+                PYTHONPATH="$PYTHONPATH" "$PYTHON_BIN" -m scripts.backfill_a_share_baostock \
+                    --qlib-dir "$DATA_DIR/qlib_data" \
+                    --target-date "$TARGET_A_SHARE_DATE" \
+                    --rate-limit "$LOCAL_A_SHARE_RESCUE_RATE_LIMIT" \
+                    --socket-timeout "$LOCAL_A_SHARE_RESCUE_SOCKET_TIMEOUT"
+                SYNC_TARGET_A_SHARE_DATE="$TARGET_A_SHARE_DATE"
+                SKIP_NAS_SYNC="true"
+            else
+                spawn_ready_retry "$TARGET_A_SHARE_DATE"
+                run_healthcheck nightly error
+                log "  ERROR: NAS A-share data not ready after ${MAX_WAIT_SECONDS}s, aborting to avoid stale/inconsistent sync (completed=${NAS_LAST:-N/A}, latest=${NAS_LATEST:-N/A})"
+                exit 1
+            fi
         fi
     fi
 fi
 
 # Step 1: Sync Qlib data from NAS (if NAS_HOST is configured)
-if [ -n "$NAS_HOST" ]; then
+if [ -n "$NAS_HOST" ] && [ "$SKIP_NAS_SYNC" != "true" ]; then
     log "Step 1: Syncing Qlib data from NAS..."
     EXPECTED_TARGET_A_SHARE_DATE="${SYNC_TARGET_A_SHARE_DATE:-}" "$SCRIPT_DIR/sync_data.sh"
     log "  Sync complete"
+elif [ "$SKIP_NAS_SYNC" = "true" ]; then
+    log "Step 1: Skipped NAS sync (local Baostock rescue already updated local Qlib)"
 else
     log "Step 1: Skipped (NAS_HOST not configured, single-machine mode)"
 fi

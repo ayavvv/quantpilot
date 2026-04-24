@@ -887,6 +887,9 @@ class DataCollectorScheduler:
             today = job_start_time.strftime("%Y-%m-%d")
             a_share_source = "baostock"
             force_futu_a_share = os.environ.get("A_SHARE_FORCE_FUTU", "false").lower() == "true"
+            enable_futu_a_share_fallback = (
+                os.environ.get("A_SHARE_ENABLE_FUTU_FALLBACK", "false").lower() == "true"
+            )
             target_override = os.environ.get("A_SHARE_TARGET_DATE_OVERRIDE", "").strip()
             if target_override:
                 target_a_share_date = target_override
@@ -899,12 +902,20 @@ class DataCollectorScheduler:
                     target_a_share_date = self.bs_client.latest_trade_date(on_or_before=today)
                 except Exception as e:
                     target_a_share_date = self._latest_weekday_on_or_before(today)
-                    a_share_source = "futu"
-                    logger.error(
-                        "Baostock A-share calendar failed: {}; falling back to weekday target={} and Futu K-line",
-                        e,
-                        target_a_share_date,
-                    )
+                    if enable_futu_a_share_fallback:
+                        a_share_source = "futu"
+                        logger.error(
+                            "Baostock A-share calendar failed: {}; falling back to weekday target={} and Futu K-line",
+                            e,
+                            target_a_share_date,
+                        )
+                    else:
+                        logger.error(
+                            "Baostock A-share calendar failed: {}; Futu full-market fallback disabled "
+                            "(set A_SHARE_ENABLE_FUTU_FALLBACK=true to enable), weekday target={}",
+                            e,
+                            target_a_share_date,
+                        )
             if force_futu_a_share:
                 a_share_source = "futu"
             try:
@@ -936,16 +947,20 @@ class DataCollectorScheduler:
                     logger.info(f"Baostock A-share targets: {len(a_share_codes)}")
                 except Exception as e:
                     logger.error(f"Baostock A-share list failed: {e}")
-                    a_share_source = "futu"
+                    if enable_futu_a_share_fallback:
+                        a_share_source = "futu"
 
             if not a_share_codes:
-                a_share_codes = self._a_share_codes_from_qlib()
-                if a_share_codes:
+                if a_share_source == "futu":
+                    a_share_codes = self._a_share_codes_from_qlib()
+                if a_share_codes and a_share_source == "futu":
                     a_share_source = "futu"
                     logger.warning(
                         "Using Qlib A-share universe as fallback targets: {} stocks",
                         len(a_share_codes),
                     )
+                elif not a_share_codes:
+                    logger.error("No A-share targets available; skipping A-share collection")
 
             # HK stocks: via Futu index constituents
             hk_codes = []
