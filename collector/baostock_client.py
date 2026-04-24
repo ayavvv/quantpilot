@@ -2,7 +2,9 @@
 
 import time
 import socket
+import os
 from datetime import datetime, timedelta
+from importlib import metadata
 from typing import List, Dict, Any, Optional
 
 import pandas as pd
@@ -13,6 +15,7 @@ class BaostockClient:
     """A-share data client (powered by baostock, API-compatible with FutuClient)."""
 
     LOGIN_EXPIRED_MARKERS = ("用户未登录", "未登录")
+    DEFAULT_SERVER_HOST = "public-api.baostock.com"
 
     def __init__(self, rate_limit: float = 0.3, max_retries: int = 3, socket_timeout: float = 20.0):
         self.rate_limit = rate_limit
@@ -26,6 +29,7 @@ class BaostockClient:
         if not self._logged_in:
             import baostock as bs
             self._bs = bs
+            self._configure_baostock_server()
             self._patch_baostock_socket(bs)
 
             previous_timeout = socket.getdefaulttimeout()
@@ -41,6 +45,46 @@ class BaostockClient:
                 raise RuntimeError(f"baostock login failed: {lg.error_msg}")
             self._logged_in = True
             logger.info("baostock: logged in")
+
+    def _configure_baostock_server(self):
+        """Pin baostock to the current public socket API endpoint.
+
+        Older baostock releases default to www.baostock.com:10030. That host can
+        still accept TCP connections but closes the baostock protocol stream
+        before a full response. public-api.baostock.com is the endpoint used by
+        current baostock releases and works from the NAS container.
+        """
+        try:
+            import baostock.common.contants as cons
+        except Exception as exc:
+            raise RuntimeError(f"failed to load baostock constants: {exc}") from exc
+
+        target_host = os.environ.get("BAOSTOCK_SERVER_HOST", self.DEFAULT_SERVER_HOST).strip()
+        if not target_host:
+            target_host = self.DEFAULT_SERVER_HOST
+
+        current_host = getattr(cons, "BAOSTOCK_SERVER_IP", "")
+        current_port = getattr(cons, "BAOSTOCK_SERVER_PORT", "")
+        if current_host != target_host:
+            logger.warning(
+                "baostock: overriding server {}:{} -> {}:{}",
+                current_host or "N/A",
+                current_port or "N/A",
+                target_host,
+                current_port or "N/A",
+            )
+            cons.BAOSTOCK_SERVER_IP = target_host
+
+        try:
+            version = metadata.version("baostock")
+        except metadata.PackageNotFoundError:
+            version = "unknown"
+        logger.info(
+            "baostock: package version={} server={}:{}",
+            version,
+            getattr(cons, "BAOSTOCK_SERVER_IP", "N/A"),
+            getattr(cons, "BAOSTOCK_SERVER_PORT", "N/A"),
+        )
 
     def _patch_baostock_socket(self, bs_module):
         """Patch baostock's blocking socket loop so closed sockets cannot spin forever."""

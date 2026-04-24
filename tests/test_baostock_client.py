@@ -59,6 +59,36 @@ def test_get_trade_dates_filters_non_trading_days():
     assert client._bs.calls == [("2026-03-28", "2026-03-31")]
 
 
+def test_configure_baostock_server_overrides_legacy_endpoint(monkeypatch):
+    import baostock.common.contants as cons
+
+    old_host = cons.BAOSTOCK_SERVER_IP
+    try:
+        cons.BAOSTOCK_SERVER_IP = "www.baostock.com"
+        monkeypatch.delenv("BAOSTOCK_SERVER_HOST", raising=False)
+
+        BaostockClient()._configure_baostock_server()
+
+        assert cons.BAOSTOCK_SERVER_IP == "public-api.baostock.com"
+    finally:
+        cons.BAOSTOCK_SERVER_IP = old_host
+
+
+def test_configure_baostock_server_respects_env_override(monkeypatch):
+    import baostock.common.contants as cons
+
+    old_host = cons.BAOSTOCK_SERVER_IP
+    try:
+        cons.BAOSTOCK_SERVER_IP = "www.baostock.com"
+        monkeypatch.setenv("BAOSTOCK_SERVER_HOST", "custom.baostock.internal")
+
+        BaostockClient()._configure_baostock_server()
+
+        assert cons.BAOSTOCK_SERVER_IP == "custom.baostock.internal"
+    finally:
+        cons.BAOSTOCK_SERVER_IP = old_host
+
+
 def test_latest_trade_date_returns_last_available_trading_day(monkeypatch):
     client = BaostockClient()
     monkeypatch.setattr(

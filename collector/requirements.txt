@@ -9,4 +9,4 @@ pydantic-settings>=2.0.0
 duckdb>=0.8.0
 pyarrow>=12.0.0
 yfinance>=0.2.0
-baostock>=0.8.8
+baostock>=0.9.1
