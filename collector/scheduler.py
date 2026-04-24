@@ -21,6 +21,7 @@ class DataCollectorScheduler:
 
     A_SHARE_SYNC_STATUS_METADATA = "a_share_sync_status"
     A_SHARE_SYNC_SUMMARY_METADATA = "a_share_sync_summary"
+    A_SHARE_PREFIXES = ("SH.", "SZ.")
     DEFAULT_ALLOWED_A_SHARE_FAILURES = 0
     DEFAULT_MIN_A_SHARE_TARGET_HIT_RATIO = 0.995
     DEFAULT_MAX_NON_BLOCKING_A_SHARE_GAPS = 20
@@ -456,13 +457,100 @@ class DataCollectorScheduler:
             "rows": len(data),
         }
 
+    def sync_a_share_kline_via_futu(self, code: str, target_end_date: str | None = None) -> dict:
+        """
+        Sync A-share daily K-line using Futu as a fallback when Baostock is unavailable.
+
+        This keeps the same result shape as sync_a_share_kline() so completion
+        evaluation can treat Baostock and Futu runs uniformly.
+        """
+        end = target_end_date or datetime.now().strftime("%Y-%m-%d")
+
+        if self.qlib_writer:
+            max_date = self.qlib_writer.get_stock_last_date(code)
+        else:
+            max_date = self.db_engine.get_kline_max_date(code, "K_DAY")
+
+        if max_date is not None:
+            if max_date >= end:
+                return {
+                    "ok": True,
+                    "reason": "already_up_to_date",
+                    "code": code,
+                    "target_end_date": end,
+                    "latest_date": max_date,
+                    "query_status": {"source": "futu", "status": "already_up_to_date"},
+                }
+            start = (datetime.strptime(max_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+        else:
+            start = (datetime.strptime(end, "%Y-%m-%d") - timedelta(days=365 * 15)).strftime("%Y-%m-%d")
+            logger.info(f"Futu fallback {code} K_DAY first fetch: {start} ~ {end}")
+
+        if start > end:
+            return {
+                "ok": True,
+                "reason": "already_up_to_date",
+                "code": code,
+                "target_end_date": end,
+                "latest_date": max_date,
+                "query_status": {"source": "futu", "status": "already_up_to_date"},
+            }
+
+        try:
+            data = self.client.get_history_kline(
+                code=code, start=start, end=end, ktype="K_DAY", autype="qfq"
+            )
+        except Exception as e:
+            logger.warning(f"Futu fallback {code} failed for target={end}: {e}")
+            return {
+                "ok": False,
+                "reason": "query_failed",
+                "code": code,
+                "target_end_date": end,
+                "latest_date": max_date,
+                "query_status": {"source": "futu", "status": "query_failed", "error": str(e)},
+                "error": str(e),
+            }
+
+        if not data:
+            logger.warning(f"Futu fallback {code} returned no usable data for target={end}")
+            return {
+                "ok": False,
+                "reason": "empty_data",
+                "code": code,
+                "target_end_date": end,
+                "latest_date": max_date,
+                "query_status": {"source": "futu", "status": "empty_data"},
+            }
+
+        if self.qlib_writer:
+            n = self.qlib_writer.write_stock_records(code, data)
+            if n > 0:
+                self.db_engine.log_job("success", f"Futu fallback {code} +{n} days (qlib)", code, "K_DAY")
+            refreshed_max_date = self.qlib_writer.get_stock_last_date(code)
+        else:
+            self.db_engine.append_kline(pd.DataFrame(data), code, "K_DAY")
+            self.db_engine.log_job("success", f"Futu fallback {code} +{len(data)} records", code, "K_DAY")
+            refreshed_max_date = self.db_engine.get_kline_max_date(code, "K_DAY")
+
+        ok = bool(refreshed_max_date) and refreshed_max_date >= end
+        return {
+            "ok": ok,
+            "reason": "ok" if ok else "target_not_reached",
+            "code": code,
+            "target_end_date": end,
+            "latest_date": refreshed_max_date,
+            "query_status": {"source": "futu", "status": "ok", "rows": len(data)},
+            "rows": len(data),
+        }
+
     def _latest_a_share_date(self) -> str | None:
         """Read the latest A-share end date from Qlib instruments metadata."""
         self._init_qlib_writer()
         if self.qlib_writer is not None:
             latest = None
             for code, instrument_range in getattr(self.qlib_writer, "instruments", {}).items():
-                if not code.startswith(("SH.", "SZ.")):
+                if not code.startswith(self.A_SHARE_PREFIXES):
                     continue
                 if not instrument_range or len(instrument_range) < 2:
                     continue
@@ -487,7 +575,7 @@ class DataCollectorScheduler:
             if len(parts) < 3:
                 continue
             code, _, end_date = parts[:3]
-            if not code.startswith(("SH.", "SZ.")):
+            if not code.startswith(self.A_SHARE_PREFIXES):
                 continue
             if latest is None or end_date > latest:
                 latest = end_date
@@ -508,6 +596,53 @@ class DataCollectorScheduler:
         status = self._load_a_share_sync_status() or {}
         completed = status.get("last_completed_trade_date")
         return completed if isinstance(completed, str) and completed else None
+
+    @staticmethod
+    def _latest_weekday_on_or_before(date_value: str) -> str:
+        """Return a conservative weekday fallback when Baostock calendar is unavailable."""
+        day = datetime.strptime(date_value, "%Y-%m-%d")
+        while day.weekday() >= 5:
+            day -= timedelta(days=1)
+        return day.strftime("%Y-%m-%d")
+
+    def _a_share_codes_from_qlib(self) -> list[str]:
+        """Use the existing Qlib universe as an A-share fallback when Baostock listing is unavailable."""
+        self._init_qlib_writer()
+        if self.qlib_writer is not None:
+            codes = sorted(
+                code for code in getattr(self.qlib_writer, "instruments", {})
+                if code.startswith(self.A_SHARE_PREFIXES)
+            )
+            if codes:
+                return codes
+
+        qlib_dir_raw = os.environ.get("QLIB_DATA_DIR", "")
+        if not qlib_dir_raw:
+            return []
+        inst_path = Path(qlib_dir_raw) / "instruments" / "all.txt"
+        if not inst_path.exists():
+            return []
+
+        codes = []
+        for line in inst_path.read_text().splitlines():
+            parts = line.strip().split("\t")
+            if not parts:
+                continue
+            code = parts[0]
+            if code.startswith(self.A_SHARE_PREFIXES):
+                codes.append(code)
+        return sorted(set(codes))
+
+    def _ensure_futu_connected(self) -> bool:
+        """Ensure a Futu quote context is available for HK and A-share fallback collection."""
+        if self.client and self.client.ctx:
+            return True
+        try:
+            self.client = FutuClient(settings.futu_host, settings.futu_port)
+            return self.client.connect()
+        except Exception as e:
+            logger.error(f"Futu connection failed: {e}")
+            return False
 
     def _allowed_a_share_failures(self) -> int:
         raw = os.environ.get("ALLOWED_A_SHARE_FAILURES")
@@ -750,14 +885,42 @@ class DataCollectorScheduler:
 
             self._init_qlib_writer()
             today = job_start_time.strftime("%Y-%m-%d")
-            target_a_share_date = self.bs_client.latest_trade_date(on_or_before=today)
+            a_share_source = "baostock"
+            force_futu_a_share = os.environ.get("A_SHARE_FORCE_FUTU", "false").lower() == "true"
+            target_override = os.environ.get("A_SHARE_TARGET_DATE_OVERRIDE", "").strip()
+            if target_override:
+                target_a_share_date = target_override
+                logger.warning("A-share target date override: {}", target_a_share_date)
+            elif force_futu_a_share:
+                target_a_share_date = self._latest_weekday_on_or_before(today)
+                logger.warning("A-share Futu fallback forced, weekday target={}", target_a_share_date)
+            else:
+                try:
+                    target_a_share_date = self.bs_client.latest_trade_date(on_or_before=today)
+                except Exception as e:
+                    target_a_share_date = self._latest_weekday_on_or_before(today)
+                    a_share_source = "futu"
+                    logger.error(
+                        "Baostock A-share calendar failed: {}; falling back to weekday target={} and Futu K-line",
+                        e,
+                        target_a_share_date,
+                    )
+            if force_futu_a_share:
+                a_share_source = "futu"
+            try:
+                if not target_a_share_date:
+                    raise ValueError("empty target")
+                datetime.strptime(target_a_share_date, "%Y-%m-%d")
+            except (TypeError, ValueError):
+                raise RuntimeError(f"Invalid A-share target date: {target_a_share_date}")
             completed_a_share_date = self._latest_completed_a_share_date()
             latest_a_share_date = self._latest_a_share_date()
             logger.info(
-                "A-share target date: {} | latest completed: {} | latest observed: {}",
+                "A-share target date: {} | latest completed: {} | latest observed: {} | source={}",
                 target_a_share_date or "N/A",
                 completed_a_share_date or "N/A",
                 latest_a_share_date or "N/A",
+                a_share_source,
             )
             completed_a_share_target = None
 
@@ -765,40 +928,54 @@ class DataCollectorScheduler:
 
             # A-shares: via baostock
             a_share_codes = []
-            try:
-                a_share_codes = self.bs_client.get_a_share_list()
-                logger.info(f"Baostock A-share targets: {len(a_share_codes)}")
-            except Exception as e:
-                logger.error(f"Baostock A-share list failed: {e}")
+            if force_futu_a_share:
+                logger.warning("Skipping Baostock A-share list because A_SHARE_FORCE_FUTU=true")
+            else:
+                try:
+                    a_share_codes = self.bs_client.get_a_share_list()
+                    logger.info(f"Baostock A-share targets: {len(a_share_codes)}")
+                except Exception as e:
+                    logger.error(f"Baostock A-share list failed: {e}")
+                    a_share_source = "futu"
+
+            if not a_share_codes:
+                a_share_codes = self._a_share_codes_from_qlib()
+                if a_share_codes:
+                    a_share_source = "futu"
+                    logger.warning(
+                        "Using Qlib A-share universe as fallback targets: {} stocks",
+                        len(a_share_codes),
+                    )
 
             # HK stocks: via Futu index constituents
             hk_codes = []
             futu_ok = False
             hk_indexes = [idx for idx in settings.index_list if idx.startswith("HK.")]
             if hk_indexes:
-                try:
-                    self.client = FutuClient(settings.futu_host, settings.futu_port)
-                    if self.client.connect():
-                        futu_ok = True
-                        for index_code in hk_indexes:
-                            try:
-                                constituents = self.client.get_index_constituents(index_code)
-                                hk_codes.extend(constituents)
-                                logger.info(f"Futu index {index_code}: {len(constituents)} stocks")
-                            except Exception as e:
-                                logger.error(f"Failed to get constituents for {index_code}: {e}")
-                        hk_codes = sorted(set(hk_codes))
-                        logger.info(f"Futu HK targets: {len(hk_codes)}")
-                except Exception as e:
-                    logger.error(f"Futu connection failed: {e}")
+                if self._ensure_futu_connected():
+                    futu_ok = True
+                    for index_code in hk_indexes:
+                        try:
+                            constituents = self.client.get_index_constituents(index_code)
+                            hk_codes.extend(constituents)
+                            logger.info(f"Futu index {index_code}: {len(constituents)} stocks")
+                        except Exception as e:
+                            logger.error(f"Failed to get constituents for {index_code}: {e}")
+                    hk_codes = sorted(set(hk_codes))
+                    logger.info(f"Futu HK targets: {len(hk_codes)}")
+
+            if a_share_source == "futu" and not futu_ok:
+                futu_ok = self._ensure_futu_connected()
 
             # Extra codes
             extra_codes = [c.strip() for c in settings.extra_codes if c.strip()]
 
-            # 2. A-share daily K-line (Baostock)
+            # 2. A-share daily K-line (Baostock, or Futu fallback)
             if a_share_codes:
                 if not target_a_share_date:
                     logger.warning("Cannot determine latest A-share trading date, skipping A-share collection")
+                elif a_share_source == "futu" and not futu_ok:
+                    logger.error("Futu fallback unavailable, skipping A-share collection")
                 elif completed_a_share_date and completed_a_share_date >= target_a_share_date:
                     logger.info(
                         "A-share already up to date: completed={} target={}, skipping",
@@ -807,13 +984,20 @@ class DataCollectorScheduler:
                     )
                 else:
                     logger.info(
-                        f"=== Baostock A-share collection: {len(a_share_codes)} stocks, "
+                        f"=== {a_share_source} A-share collection: {len(a_share_codes)} stocks, "
                         f"target={target_a_share_date} ==="
                     )
                     failed_a_share_runs = []
                     for idx, code in enumerate(a_share_codes, 1):
                         try:
-                            result = self.sync_a_share_kline(code, target_end_date=target_a_share_date)
+                            if a_share_source == "futu":
+                                result = self.sync_a_share_kline_via_futu(
+                                    code, target_end_date=target_a_share_date
+                                )
+                            else:
+                                result = self.sync_a_share_kline(
+                                    code, target_end_date=target_a_share_date
+                                )
                             if not result.get("ok"):
                                 failed_a_share_runs.append(result)
                             if idx % 50 == 0:
@@ -834,7 +1018,7 @@ class DataCollectorScheduler:
                                     "error": str(e),
                                 }
                             )
-                            logger.error(f"[{idx}/{len(a_share_codes)}] Baostock {code} failed: {e}")
+                            logger.error(f"[{idx}/{len(a_share_codes)}] {a_share_source} {code} failed: {e}")
                             continue
 
                     latest_a_share_date = self._latest_a_share_date()
@@ -884,6 +1068,7 @@ class DataCollectorScheduler:
                     self._save_a_share_sync_summary(
                         {
                             "status": summary_status,
+                            "data_source": a_share_source,
                             "target_trade_date": target_a_share_date,
                             "latest_observed_trade_date": latest_a_share_date,
                             "started_at": job_start_time.strftime("%Y-%m-%d %H:%M:%S"),
