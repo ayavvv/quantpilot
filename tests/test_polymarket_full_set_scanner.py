@@ -1,7 +1,7 @@
 import pytest
 
 from polymarket.models import BookLevel, MarketInfo, OrderBook
-from polymarket.scanner.full_set import scan_market
+from polymarket.scanner.full_set import rejection_reason, scan_market
 from polymarket.config import PolySettings
 
 
@@ -56,6 +56,7 @@ def test_scan_market_rejects_stale_books():
     opportunities = scan_market(_market(), _book("yes", bid=0.4, ask=0.49, ts=1000), _book("no", bid=0.4, ask=0.49, ts=1200), cfg)
 
     assert opportunities == []
+    assert rejection_reason(_market(), _book("yes", bid=0.4, ask=0.49, ts=1000), _book("no", bid=0.4, ask=0.49, ts=1200), cfg) == "stale_books"
 
 
 def test_scan_market_fee_can_remove_thin_opportunity():
@@ -65,6 +66,7 @@ def test_scan_market_fee_can_remove_thin_opportunity():
     opportunities = scan_market(market, _book("yes", bid=0.4, ask=0.49), _book("no", bid=0.4, ask=0.49), cfg)
 
     assert opportunities == []
+    assert rejection_reason(market, _book("yes", bid=0.4, ask=0.49), _book("no", bid=0.4, ask=0.49), cfg) in {"edge_below_threshold", "capacity_below_min_order"}
 
 
 def test_scan_market_applies_max_notional_cap():

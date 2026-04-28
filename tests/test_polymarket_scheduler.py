@@ -66,9 +66,13 @@ def test_scheduler_registers_isolated_jobs(tmp_path):
     scheduler = PolymarketScheduler(PolySettings(data_dir=str(tmp_path)))
     scheduler.register_jobs()
 
-    assert len(scheduler.scheduler.jobs) == 2
-    assert scheduler.scheduler.jobs[0][2]["id"] == "polymarket_scan"
-    assert scheduler.scheduler.jobs[1][2]["id"] == "polymarket_daily_report"
+    job_ids = [job[2]["id"] for job in scheduler.scheduler.jobs]
+    assert job_ids == [
+        "polymarket_scan",
+        "polymarket_daily_report",
+        "polymarket_catalog_refresh",
+        "polymarket_book_top_retention",
+    ]
     assert scheduler.scheduler.jobs[0][2]["max_instances"] == 1
     assert scheduler.scheduler.jobs[0][2]["coalesce"] is True
 
@@ -160,9 +164,13 @@ def test_scheduler_sends_email_when_enabled(monkeypatch, tmp_path):
     assert calls["sent"] is True
 
 
-def test_scheduler_start_runs_initial_scan_before_blocking(monkeypatch, tmp_path):
+def test_scheduler_start_runs_scan_before_blocking(monkeypatch, tmp_path):
     scheduler = PolymarketScheduler(PolySettings(data_dir=str(tmp_path)))
     calls = []
+
+    def fake_retention():
+        calls.append('retention')
+        return None
 
     def fake_scan():
         calls.append('scan')
@@ -172,12 +180,13 @@ def test_scheduler_start_runs_initial_scan_before_blocking(monkeypatch, tmp_path
         calls.append('start')
         return None
 
+    monkeypatch.setattr(scheduler, 'run_book_top_retention', fake_retention)
     monkeypatch.setattr(scheduler, 'run_scan', fake_scan)
     monkeypatch.setattr(scheduler.scheduler, 'start', fake_start)
 
     scheduler.start()
 
-    assert calls == ['scan', 'start']
+    assert calls == ['retention', 'scan', 'start']
 
 
 def test_scheduler_run_scan_logs_duration(monkeypatch, tmp_path):
@@ -194,6 +203,23 @@ def test_scheduler_run_scan_logs_duration(monkeypatch, tmp_path):
     assert any('duration_seconds=' in message for message in messages)
     assert any('catalog_load_seconds=' in message for message in messages)
     assert any('book_fetch_seconds=' in message for message in messages)
+
+
+def test_scheduler_run_book_top_retention_logs_deleted_rows(monkeypatch, tmp_path):
+    scheduler = PolymarketScheduler(PolySettings(data_dir=str(tmp_path), book_top_retention_hours=72))
+    messages = []
+
+    monkeypatch.setattr(scheduler.pipeline.storage, "prune_book_tops", lambda retention_hours: 123)
+    monkeypatch.setattr(scheduler.pipeline.storage, "prune_book_snapshots", lambda retention_hours: 4)
+    monkeypatch.setattr('polymarket.scheduler.logger.info', lambda message: messages.append(message))
+
+    deleted_rows, deleted_snapshot_files = scheduler.run_book_top_retention()
+
+    assert deleted_rows == 123
+    assert deleted_snapshot_files == 4
+    assert any('retention_hours=72' in message for message in messages)
+    assert any('deleted_rows=123' in message for message in messages)
+    assert any('deleted_snapshot_files=4' in message for message in messages)
 
 
 def test_scheduler_main_starts_blocking_scheduler(monkeypatch):

@@ -123,14 +123,13 @@ def load_binary_markets(cfg: PolySettings | None = None) -> list[MarketInfo]:
         fee_rate_bps = raw_market.get("takerBaseFee")
         if fee_rate_bps is None:
             fee_rate_bps = raw_market.get("taker_base_fee")
-        if fee_rate_bps is None:
-            token_ids = _parse_json_list(raw_market.get("clobTokenIds"))
-            if token_ids:
-                token_id = str(token_ids[0])
-                if token_id not in fee_rate_cache:
-                    fee_rate_cache[token_id] = client.fetch_fee_rate_bps(token_id)
-                fee_rate_bps = fee_rate_cache[token_id]
         market = normalize_market(raw_market, fee_rate_bps=float(fee_rate_bps) if fee_rate_bps is not None else None)
         if market is not None:
+            if fee_rate_bps is None:
+                token_id = market.yes_token_id
+                if token_id not in fee_rate_cache:
+                    fee_rate_cache[token_id] = client.fetch_fee_rate_bps(token_id)
+                fetched_fee = fee_rate_cache[token_id]
+                market.taker_base_fee_bps = float(fetched_fee or 0)
             normalized.append(market)
     return normalized

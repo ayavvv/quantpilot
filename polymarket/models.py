@@ -53,11 +53,15 @@ class OrderBook:
 
     @property
     def best_bid(self) -> BookLevel | None:
-        return self.bids[0] if self.bids else None
+        if not self.bids:
+            return None
+        return max(self.bids, key=lambda level: level.price)
 
     @property
     def best_ask(self) -> BookLevel | None:
-        return self.asks[0] if self.asks else None
+        if not self.asks:
+            return None
+        return min(self.asks, key=lambda level: level.price)
 
     def as_dict(self) -> dict[str, Any]:
         return {

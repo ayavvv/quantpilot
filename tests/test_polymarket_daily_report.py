@@ -111,3 +111,28 @@ def test_daily_report_uses_book_top_for_market_count(tmp_path):
 
     assert payload['status'] == 'ok'
     assert payload['summary']['market_count'] == 1
+
+
+def test_daily_report_includes_rejection_counts(tmp_path):
+    cfg = PolySettings(data_dir=str(tmp_path))
+    storage = PolyStorage(cfg)
+    storage.upsert_daily_summary(
+        {
+            'date': datetime.now(timezone.utc).date().isoformat(),
+            'strategy_type': 'full_set_arb',
+            'signals': 0,
+            'accepted_signals': 0,
+            'simulated_trades': 0,
+            'gross_edge_sum': 0.0,
+            'net_edge_sum': 0.0,
+            'realized_pnl': 0.0,
+            'max_inventory_used': 0.0,
+            'rejection_counts_json': json.dumps({'edge_below_threshold': 5, 'stale_books': 2}),
+            'updated_at': datetime.now(timezone.utc),
+        }
+    )
+
+    payload = build_daily_report(cfg=cfg, target_date=datetime.now(timezone.utc).date().isoformat())
+
+    assert payload['summary']['rejection_counts']['edge_below_threshold'] == 5
+    assert payload['summary']['rejection_counts']['stale_books'] == 2

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Any
 
@@ -48,6 +48,16 @@ class PolyStorage:
                     collateral_symbol TEXT,
                     fee_source TEXT,
                     updated_at TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS market_snapshot_meta (
+                    snapshot_key TEXT PRIMARY KEY,
+                    updated_at TIMESTAMP,
+                    market_count INTEGER,
+                    source TEXT
                 )
                 """
             )
@@ -152,13 +162,14 @@ class PolyStorage:
                     net_edge_sum DOUBLE,
                     realized_pnl DOUBLE,
                     max_inventory_used DOUBLE,
+                    rejection_counts_json TEXT,
                     updated_at TIMESTAMP,
                     PRIMARY KEY (date, strategy_type)
                 )
                 """
             )
 
-    def save_catalog_snapshot(self, markets: Iterable[MarketInfo]) -> Path:
+    def save_catalog_snapshot(self, markets: Iterable[MarketInfo], source: str = "live_refresh") -> Path:
         now = datetime.now(timezone.utc)
         rows = []
         for market in markets:
@@ -174,6 +185,24 @@ class PolyStorage:
                 conn.register("markets_frame", frame)
                 conn.execute("INSERT INTO markets SELECT * FROM markets_frame")
                 conn.unregister("markets_frame")
+            meta_frame = pd.DataFrame([
+                {
+                    "snapshot_key": "active",
+                    "updated_at": now,
+                    "market_count": len(rows),
+                    "source": source,
+                }
+            ])
+            meta_frame["updated_at"] = pd.to_datetime(meta_frame["updated_at"])
+            conn.register("meta_row", meta_frame)
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO market_snapshot_meta
+                SELECT snapshot_key, updated_at, market_count, source
+                FROM meta_row
+                """
+            )
+            conn.unregister("meta_row")
         return path
 
     def load_markets(self) -> tuple[list[MarketInfo], datetime | None]:
@@ -212,6 +241,25 @@ class PolyStorage:
         if updated_at is not None and updated_at.tzinfo is None:
             updated_at = updated_at.replace(tzinfo=timezone.utc)
         return markets, updated_at
+
+    def load_catalog_meta(self) -> dict[str, object] | None:
+        if not self.db_path.exists():
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT snapshot_key, updated_at, market_count, source FROM market_snapshot_meta WHERE snapshot_key = 'active'"
+            ).fetchone()
+        if row is None:
+            return None
+        updated_at = row[1]
+        if updated_at is not None and updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        return {
+            "snapshot_key": row[0],
+            "updated_at": updated_at,
+            "market_count": int(row[2] or 0),
+            "source": str(row[3] or "unknown"),
+        }
 
     def save_book_snapshot(self, market: MarketInfo, yes_book: OrderBook, no_book: OrderBook, persist_depth: bool = True, persist_top: bool = True) -> Path | None:
         now = datetime.now(timezone.utc)
@@ -267,6 +315,42 @@ class PolyStorage:
             conn.execute("INSERT INTO book_top SELECT * FROM top_rows")
             conn.unregister("top_rows")
         return len(rows)
+
+    def prune_book_tops(self, retention_hours: int) -> int:
+        if retention_hours <= 0:
+            return 0
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=retention_hours)
+        with self._connect() as conn:
+            delete_count = conn.execute(
+                "SELECT count(*) FROM book_top WHERE ts < ?",
+                [cutoff],
+            ).fetchone()[0]
+            if delete_count:
+                conn.execute("DELETE FROM book_top WHERE ts < ?", [cutoff])
+                conn.execute("CHECKPOINT")
+        return int(delete_count)
+
+    def prune_book_snapshots(self, retention_hours: int) -> int:
+        if retention_hours <= 0:
+            return 0
+        cutoff_ts = (datetime.now(timezone.utc) - timedelta(hours=retention_hours)).timestamp()
+        deleted = 0
+        for path in self.cfg.books_path.glob("*/*.parquet"):
+            try:
+                if path.stat().st_mtime >= cutoff_ts:
+                    continue
+                path.unlink()
+                deleted += 1
+            except FileNotFoundError:
+                continue
+        for day_dir in self.cfg.books_path.iterdir():
+            if not day_dir.is_dir():
+                continue
+            try:
+                day_dir.rmdir()
+            except OSError:
+                continue
+        return deleted
 
     def save_opportunities(self, opportunities: Iterable[Opportunity]) -> int:
         rows = [opportunity.as_dict() for opportunity in opportunities]
@@ -382,36 +466,50 @@ class PolyStorage:
     def upsert_daily_summary(self, summary: dict[str, object]) -> None:
         date_value = str(summary["date"])
         strategy_type = str(summary.get("strategy_type", "full_set_arb"))
+        merged = dict(summary)
+        merged["strategy_type"] = strategy_type
+        merged.setdefault("rejection_counts_json", json.dumps({}, ensure_ascii=False, sort_keys=True))
         with self._connect() as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info('paper_daily_summary')").fetchall()}
+            if "rejection_counts_json" not in columns:
+                conn.execute("ALTER TABLE paper_daily_summary ADD COLUMN rejection_counts_json TEXT")
             existing = conn.execute(
                 """
                 SELECT signals, accepted_signals, simulated_trades,
-                       gross_edge_sum, net_edge_sum, realized_pnl, max_inventory_used
+                       gross_edge_sum, net_edge_sum, realized_pnl, max_inventory_used, rejection_counts_json
                 FROM paper_daily_summary
                 WHERE date = ? AND strategy_type = ?
                 """,
                 [date_value, strategy_type],
             ).fetchone()
-        merged = dict(summary)
-        merged["strategy_type"] = strategy_type
-        if existing is not None:
-            merged["signals"] = int(existing[0]) + int(summary["signals"])
-            merged["accepted_signals"] = int(existing[1]) + int(summary["accepted_signals"])
-            merged["simulated_trades"] = int(existing[2]) + int(summary["simulated_trades"])
-            merged["gross_edge_sum"] = float(existing[3]) + float(summary["gross_edge_sum"])
-            merged["net_edge_sum"] = float(existing[4]) + float(summary["net_edge_sum"])
-            merged["realized_pnl"] = float(summary["realized_pnl"])
-            merged["max_inventory_used"] = max(float(existing[6]), float(summary["max_inventory_used"]))
-        frame = pd.DataFrame([merged])
-        frame["updated_at"] = pd.to_datetime(frame["updated_at"])
-        with self._connect() as conn:
+            if existing is not None:
+                merged["signals"] = int(existing[0]) + int(summary["signals"])
+                merged["accepted_signals"] = int(existing[1]) + int(summary["accepted_signals"])
+                merged["simulated_trades"] = int(existing[2]) + int(summary["simulated_trades"])
+                merged["gross_edge_sum"] = float(existing[3]) + float(summary["gross_edge_sum"])
+                merged["net_edge_sum"] = float(existing[4]) + float(summary["net_edge_sum"])
+                merged["realized_pnl"] = float(summary["realized_pnl"])
+                merged["max_inventory_used"] = max(float(existing[6]), float(summary["max_inventory_used"]))
+                existing_rejections = json.loads(existing[7]) if existing[7] else {}
+                new_rejections = summary.get("rejection_counts_json")
+                new_rejections_dict = json.loads(new_rejections) if isinstance(new_rejections, str) and new_rejections else {}
+                merged_rejections = dict(existing_rejections)
+                for key, value in new_rejections_dict.items():
+                    merged_rejections[key] = int(merged_rejections.get(key, 0)) + int(value)
+                merged["rejection_counts_json"] = json.dumps(merged_rejections, ensure_ascii=False, sort_keys=True)
+            frame = pd.DataFrame([merged])
+            frame["updated_at"] = pd.to_datetime(frame["updated_at"])
             conn.register("summary_row", frame)
             conn.execute(
                 """
-                INSERT OR REPLACE INTO paper_daily_summary
+                INSERT OR REPLACE INTO paper_daily_summary (
+                    date, strategy_type, signals, accepted_signals, simulated_trades,
+                    gross_edge_sum, net_edge_sum, realized_pnl,
+                    max_inventory_used, updated_at, rejection_counts_json
+                )
                 SELECT date, strategy_type, signals, accepted_signals, simulated_trades,
                        gross_edge_sum, net_edge_sum, realized_pnl,
-                       max_inventory_used, updated_at
+                       max_inventory_used, updated_at, rejection_counts_json
                 FROM summary_row
                 """
             )
@@ -504,7 +602,7 @@ class PolyStorage:
                 """
                 SELECT date, signals, accepted_signals, simulated_trades,
                        gross_edge_sum, net_edge_sum, realized_pnl,
-                       max_inventory_used, updated_at
+                       max_inventory_used, rejection_counts_json, updated_at
                 FROM paper_daily_summary
                 WHERE date = ?
                 LIMIT 1
@@ -522,7 +620,8 @@ class PolyStorage:
             "net_edge_sum": float(row[5]),
             "realized_pnl": float(row[6]),
             "max_inventory_used": float(row[7]),
-            "updated_at": str(row[8]),
+            "rejection_counts": json.loads(row[8]) if row[8] else {},
+            "updated_at": str(row[9]),
         }
 
     @classmethod

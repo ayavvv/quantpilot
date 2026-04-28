@@ -13,7 +13,7 @@ from polymarket.catalog import load_binary_markets
 from polymarket.config import PolySettings, settings
 from polymarket.models import MarketInfo, Opportunity, OrderBook
 from polymarket.paper.simulator import PaperSimulator
-from polymarket.scanner.full_set import scan_market
+from polymarket.scanner.full_set import rejection_reason, scan_market
 from polymarket.storage import PolyStorage
 from polymarket.traders.discovery import LeaderboardClient, normalize_leaderboard_profiles
 from polymarket.traders.history import TraderHistoryClient, normalize_activity_events, summarize_trader_history
@@ -48,44 +48,67 @@ class PolymarketPipeline:
         self._markets_cache: list[MarketInfo] | None = None
         self._markets_refreshed_at: datetime | None = None
 
-    def _get_markets(self) -> tuple[list[MarketInfo], bool, float]:
+    def _load_scan_markets(self) -> tuple[list[MarketInfo], float]:
         started = perf_counter()
-        now = datetime.now(timezone.utc)
-        expires_at = None
-        if self._markets_refreshed_at is not None:
-            expires_at = self._markets_refreshed_at + timedelta(seconds=self.cfg.catalog_refresh_seconds)
-        if self._markets_cache is not None and expires_at is not None and now < expires_at:
-            return self._markets_cache, False, perf_counter() - started
-        if self._markets_cache is None:
-            persisted, persisted_updated_at = self.storage.load_markets()
-            if persisted and persisted_updated_at is not None:
-                persisted_age = (now - persisted_updated_at).total_seconds()
-                if persisted_age <= self.cfg.catalog_refresh_seconds:
-                    self._markets_cache = persisted
-                    self._markets_refreshed_at = persisted_updated_at
-                    logger.info("polymarket catalog loaded from persisted snapshot")
-                    return persisted, False, perf_counter() - started
-        try:
-            markets = load_binary_markets(self.cfg)
-            self._markets_cache = markets
-            self._markets_refreshed_at = now
-            return markets, True, perf_counter() - started
-        except Exception as exc:
-            if self._markets_cache is not None:
-                logger.warning(f"polymarket catalog refresh failed, using in-memory cache: {exc}")
-                return self._markets_cache, False, perf_counter() - started
-            raise
+        if self._markets_cache is not None:
+            return self._markets_cache, perf_counter() - started
+        persisted, persisted_updated_at = self.storage.load_markets()
+        if persisted:
+            self._markets_cache = persisted
+            self._markets_refreshed_at = persisted_updated_at
+            logger.info("polymarket scan loaded persisted snapshot")
+            return persisted, perf_counter() - started
+        raise RuntimeError("no persisted polymarket catalog snapshot available for fast scan")
+
+    def refresh_catalog(self) -> tuple[int, float, float]:
+        load_started = perf_counter()
+        markets = load_binary_markets(self.cfg)
+        catalog_load_seconds = perf_counter() - load_started
+        if not markets:
+            raise RuntimeError("live catalog refresh returned no eligible markets")
+        snapshot_started = perf_counter()
+        self.storage.save_catalog_snapshot(markets, source="live_refresh")
+        catalog_snapshot_seconds = perf_counter() - snapshot_started
+        self._markets_cache = markets
+        self._markets_refreshed_at = datetime.now(timezone.utc)
+        return len(markets), catalog_load_seconds, catalog_snapshot_seconds
 
     def _fetch_market_books(self, markets: list[MarketInfo]) -> tuple[dict[str, dict[str, OrderBook]], dict[str, Exception]]:
         books_by_market: dict[str, dict[str, OrderBook]] = {}
         errors: dict[str, Exception] = {}
-        total_requests = max(1, len(markets) * 2)
+        token_map: dict[str, tuple[str, str]] = {}
+        for market in markets:
+            token_map[market.yes_token_id] = (market.market_id, "yes")
+            token_map[market.no_token_id] = (market.market_id, "no")
+
+        if self.cfg.book_fetch_use_batch:
+            batch_size = max(1, min(self.cfg.book_fetch_batch_size, 500))
+            token_ids = list(token_map)
+            try:
+                for start in range(0, len(token_ids), batch_size):
+                    chunk = token_ids[start : start + batch_size]
+                    for token_id, book in self.clob.fetch_books(chunk).items():
+                        market_id, side = token_map.get(token_id, ("", ""))
+                        if market_id:
+                            books_by_market.setdefault(market_id, {})[side] = book
+            except Exception as exc:
+                logger.warning(f"polymarket batch book fetch failed, falling back to single fetch: {exc}")
+                books_by_market.clear()
+
+        missing_token_map = {
+            token_id: market_side
+            for token_id, market_side in token_map.items()
+            if market_side[1] not in books_by_market.get(market_side[0], {})
+        }
+        if not missing_token_map:
+            return books_by_market, errors
+
+        total_requests = max(1, len(missing_token_map))
         max_workers = max(1, min(self.cfg.book_fetch_workers, total_requests))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
-            for market in markets:
-                futures[executor.submit(self.clob.fetch_book, market.yes_token_id)] = (market.market_id, "yes")
-                futures[executor.submit(self.clob.fetch_book, market.no_token_id)] = (market.market_id, "no")
+            for token_id, (market_id, side) in missing_token_map.items():
+                futures[executor.submit(self.clob.fetch_book, token_id)] = (market_id, side)
             for future in as_completed(futures):
                 market_id, side = futures[future]
                 try:
@@ -103,6 +126,7 @@ class PolymarketPipeline:
         books_by_market, errors = self._fetch_market_books(markets)
         stage_timings["book_fetch_seconds"] = perf_counter() - fetch_started
         top_rows: list[dict[str, object]] = []
+        rejection_counts: dict[str, int] = {}
         now = datetime.now(timezone.utc)
         for market in markets:
             if market.market_id in errors:
@@ -133,8 +157,11 @@ class PolymarketPipeline:
             scanned_markets += 1
             try:
                 scan_started = perf_counter()
-                opportunities = scan_market(market, yes_book, no_book, cfg=self.cfg)
+                reason = rejection_reason(market, yes_book, no_book, cfg=self.cfg)
+                opportunities = [] if reason is not None else scan_market(market, yes_book, no_book, cfg=self.cfg)
                 stage_timings["scan_compute_seconds"] += perf_counter() - scan_started
+                if reason is not None:
+                    rejection_counts[reason] = int(rejection_counts.get(reason, 0)) + 1
                 if opportunities:
                     write_started = perf_counter()
                     self.storage.save_book_snapshot(market, yes_book, no_book, persist_depth=True, persist_top=False)
@@ -146,8 +173,8 @@ class PolymarketPipeline:
         write_started = perf_counter()
         try:
             self.storage.save_book_tops(top_rows)
-            if opportunities_found == 0 and scanned_markets > 0:
-                self.simulator.record_scan_heartbeat()
+            if scanned_markets > 0:
+                self.simulator.record_scan_heartbeat(rejection_counts=rejection_counts)
         except Exception as exc:  # pragma: no cover
             logger.warning(f"polymarket pipeline storage stage degraded: {exc}")
         stage_timings["storage_write_seconds"] += perf_counter() - write_started
@@ -225,12 +252,8 @@ class PolymarketPipeline:
         return len(scores), len(mirror_signals)
 
     def run_once(self) -> PipelineResult:
-        markets, refreshed, catalog_load_seconds = self._get_markets()
+        markets, catalog_load_seconds = self._load_scan_markets()
         catalog_snapshot_seconds = 0.0
-        if refreshed:
-            started = perf_counter()
-            self.storage.save_catalog_snapshot(markets)
-            catalog_snapshot_seconds = perf_counter() - started
         opportunities_found, trades_simulated, stage_timings = self._run_full_set_strategy(markets)
         mirror_traders_tracked = 0
         mirror_signals_generated = 0

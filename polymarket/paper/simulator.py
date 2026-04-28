@@ -1,6 +1,7 @@
 """Paper-trading simulator for isolated Polymarket opportunities."""
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 from polymarket.config import PolySettings, settings
@@ -20,7 +21,7 @@ class PaperSimulator:
         realized_pnl = 0.0 if state is None else state["realized_pnl"]
         self.ledger = PaperLedger(initial_cash=initial_cash, realized_pnl=realized_pnl)
 
-    def record_scan_heartbeat(self, strategy_type: str = "full_set_arb") -> None:
+    def record_scan_heartbeat(self, strategy_type: str = "full_set_arb", rejection_counts: dict[str, int] | None = None) -> None:
         self.storage.upsert_daily_summary(
             {
                 "date": datetime.now(timezone.utc).date().isoformat(),
@@ -32,6 +33,7 @@ class PaperSimulator:
                 "net_edge_sum": 0.0,
                 "realized_pnl": self.ledger.state.realized_pnl,
                 "max_inventory_used": 0.0,
+                "rejection_counts_json": json.dumps(rejection_counts or {}, ensure_ascii=False, sort_keys=True),
                 "updated_at": datetime.now(timezone.utc),
             }
         )

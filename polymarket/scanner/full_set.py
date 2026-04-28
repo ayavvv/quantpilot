@@ -74,6 +74,53 @@ def _clip_capacity(capacity: float, min_order_size: float, max_capacity: float |
     return round(capacity, 8)
 
 
+def rejection_reason(
+    market: MarketInfo,
+    yes_book: OrderBook,
+    no_book: OrderBook,
+    cfg: PolySettings | None = None,
+) -> str | None:
+    cfg = cfg or settings
+    if market.neg_risk or yes_book.neg_risk or no_book.neg_risk:
+        return "neg_risk_filtered"
+    if not _fresh_enough(yes_book, no_book, cfg):
+        return "stale_books"
+    if yes_book.best_ask is None or no_book.best_ask is None:
+        return "missing_best_ask"
+
+    fee_rate = fee_rate_from_bps(market.taker_base_fee_bps)
+    min_order_size = max(market.min_order_size, yes_book.min_order_size, no_book.min_order_size)
+    yes_price = yes_book.best_ask.price
+    no_price = no_book.best_ask.price
+    yes_factor = buy_net_share_factor(yes_price, fee_rate)
+    no_factor = buy_net_share_factor(no_price, fee_rate)
+    if yes_factor <= 0 or no_factor <= 0:
+        return "invalid_fee_adjustment"
+    raw_mergeable_capacity = min(
+        yes_book.best_ask.size * yes_factor,
+        no_book.best_ask.size * no_factor,
+    )
+    max_capacity = None
+    per_mergeable_cost = (yes_price / yes_factor) + (no_price / no_factor) + cfg.slippage_buffer
+    if cfg.max_notional_per_opp > 0 and per_mergeable_cost > 0 and cfg.max_notional_per_opp > cfg.default_gas_cost:
+        max_capacity = (cfg.max_notional_per_opp - cfg.default_gas_cost) / per_mergeable_cost
+    mergeable_qty = _clip_capacity(raw_mergeable_capacity, min_order_size, max_capacity)
+    if mergeable_qty <= 0:
+        return "capacity_below_min_order"
+    yes_qty = round(mergeable_qty / yes_factor, 8)
+    no_qty = round(mergeable_qty / no_factor, 8)
+    if yes_qty < min_order_size or no_qty < min_order_size:
+        return "qty_below_min_order"
+    gross_cost = (yes_qty * yes_price) + (no_qty * no_price)
+    slippage_cost = mergeable_qty * cfg.slippage_buffer
+    gas_cost = cfg.default_gas_cost
+    net_cost = gross_cost + slippage_cost + gas_cost
+    net_edge = mergeable_qty - net_cost
+    if net_edge < cfg.min_net_edge:
+        return "edge_below_threshold"
+    return None
+
+
 def scan_market(
     market: MarketInfo,
     yes_book: OrderBook,
@@ -82,9 +129,8 @@ def scan_market(
 ) -> list[Opportunity]:
     cfg = cfg or settings
     opportunities: list[Opportunity] = []
-    if market.neg_risk or yes_book.neg_risk or no_book.neg_risk:
-        return opportunities
-    if not _fresh_enough(yes_book, no_book, cfg):
+    reason = rejection_reason(market, yes_book, no_book, cfg)
+    if reason is not None:
         return opportunities
 
     fee_rate = fee_rate_from_bps(market.taker_base_fee_bps)

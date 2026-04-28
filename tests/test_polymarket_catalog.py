@@ -91,6 +91,61 @@ def test_load_binary_markets_skips_fee_fetch_when_market_fee_present(monkeypatch
     assert markets[0].taker_base_fee_bps == 12.0
 
 
+def test_load_binary_markets_skips_fee_fetch_for_rejected_markets(monkeypatch):
+    cfg = PolySettings()
+    rows = [
+        {
+            "id": "neg",
+            "conditionId": "neg",
+            "question": "Neg risk",
+            "active": True,
+            "closed": False,
+            "enableOrderBook": True,
+            "negRisk": True,
+            "clobTokenIds": json.dumps(["yes-neg", "no-neg"]),
+            "outcomes": json.dumps(["Yes", "No"]),
+        },
+        {
+            "id": "multi",
+            "conditionId": "multi",
+            "question": "Multi",
+            "active": True,
+            "closed": False,
+            "enableOrderBook": True,
+            "negRisk": False,
+            "clobTokenIds": json.dumps(["a", "b", "c"]),
+            "outcomes": json.dumps(["Yes", "No", "Maybe"]),
+        },
+        {
+            "id": "ok",
+            "conditionId": "ok",
+            "question": "OK",
+            "active": True,
+            "closed": False,
+            "enableOrderBook": True,
+            "negRisk": False,
+            "clobTokenIds": json.dumps(["yes-ok", "no-ok"]),
+            "outcomes": json.dumps(["Yes", "No"]),
+        },
+    ]
+    calls = []
+
+    monkeypatch.setattr("polymarket.catalog.GammaClient.fetch_markets", lambda self: rows)
+
+    def fake_fee_fetch(self, token_id):
+        calls.append(token_id)
+        return 9
+
+    monkeypatch.setattr("polymarket.catalog.GammaClient.fetch_fee_rate_bps", fake_fee_fetch)
+
+    markets = load_binary_markets(cfg)
+
+    assert len(markets) == 1
+    assert markets[0].market_id == "ok"
+    assert markets[0].taker_base_fee_bps == 9.0
+    assert calls == ["yes-ok"]
+
+
 def test_load_binary_markets_keeps_trying_fee_lookup_per_token(monkeypatch):
     cfg = PolySettings()
     rows = [
