@@ -14,7 +14,7 @@ def test_pipeline_result_supports_mirror_fields():
 
 
 def test_pipeline_reuses_catalog_until_ttl_expires(tmp_path, monkeypatch):
-    cfg = PolySettings(data_dir=str(tmp_path), catalog_refresh_seconds=3600)
+    cfg = PolySettings(_env_file=None, data_dir=str(tmp_path), catalog_refresh_seconds=3600)
     pipeline = PolymarketPipeline(cfg)
     market = MarketInfo(
         market_id="m1",
@@ -50,7 +50,7 @@ def test_pipeline_reuses_catalog_until_ttl_expires(tmp_path, monkeypatch):
 
 
 def test_pipeline_fetch_market_books_returns_per_market_pairs(tmp_path, monkeypatch):
-    cfg = PolySettings(data_dir=str(tmp_path), book_fetch_workers=2, book_fetch_use_batch=False)
+    cfg = PolySettings(_env_file=None, data_dir=str(tmp_path), book_fetch_workers=2, book_fetch_use_batch=False)
     pipeline = PolymarketPipeline(cfg)
     market = MarketInfo(
         market_id="m1",
@@ -81,7 +81,7 @@ def test_pipeline_fetch_market_books_returns_per_market_pairs(tmp_path, monkeypa
 
 
 def test_pipeline_fetch_market_books_uses_batch_books(tmp_path, monkeypatch):
-    cfg = PolySettings(data_dir=str(tmp_path), book_fetch_workers=2, book_fetch_use_batch=True)
+    cfg = PolySettings(_env_file=None, data_dir=str(tmp_path), book_fetch_workers=2, book_fetch_use_batch=True)
     pipeline = PolymarketPipeline(cfg)
     market = MarketInfo(
         market_id="m1",
@@ -117,7 +117,7 @@ def test_pipeline_fetch_market_books_uses_batch_books(tmp_path, monkeypatch):
 
 
 def test_pipeline_fetch_market_books_falls_back_for_missing_batch_tokens(tmp_path, monkeypatch):
-    cfg = PolySettings(data_dir=str(tmp_path), book_fetch_workers=2, book_fetch_use_batch=True)
+    cfg = PolySettings(_env_file=None, data_dir=str(tmp_path), book_fetch_workers=2, book_fetch_use_batch=True)
     pipeline = PolymarketPipeline(cfg)
     market = MarketInfo(
         market_id="m1",
@@ -153,8 +153,46 @@ def test_pipeline_fetch_market_books_falls_back_for_missing_batch_tokens(tmp_pat
     assert set(books_by_market["m1"].keys()) == {"yes", "no"}
 
 
+def test_pipeline_fetch_market_books_can_use_ws_cache(tmp_path, monkeypatch):
+    cfg = PolySettings(_env_file=None, data_dir=str(tmp_path), book_source="ws")
+    pipeline = PolymarketPipeline(cfg)
+    market = MarketInfo(
+        market_id="m1",
+        condition_id="m1",
+        question="Q",
+        slug="q",
+        end_date_iso="2026-12-31",
+        min_order_size=1,
+        tick_size=0.01,
+        neg_risk=False,
+        enable_order_book=True,
+        taker_base_fee_bps=0,
+        yes_token_id="yes",
+        no_token_id="no",
+    )
+    yes_book = OrderBook(token_id="yes", market_id="m1", timestamp_ms=1, bids=[], asks=[], tick_size=0.01, min_order_size=1, neg_risk=False)
+    no_book = OrderBook(token_id="no", market_id="m1", timestamp_ms=1, bids=[], asks=[], tick_size=0.01, min_order_size=1, neg_risk=False)
+    calls = {}
+
+    monkeypatch.setattr(pipeline, "_ensure_ws_stream", lambda markets: calls.__setitem__("ensured", len(markets)))
+    monkeypatch.setattr(
+        pipeline.book_cache,
+        "get_market_books",
+        lambda markets, connection_stale_seconds, top_only=True: ({"m1": {"yes": yes_book, "no": no_book}}, {}),
+    )
+    monkeypatch.setattr(pipeline.clob, "fetch_books", lambda token_ids: (_ for _ in ()).throw(AssertionError("HTTP should not be called")))
+    monkeypatch.setattr(pipeline.clob, "fetch_book", lambda token_id: (_ for _ in ()).throw(AssertionError("HTTP should not be called")))
+
+    books_by_market, errors = pipeline._fetch_market_books([market])
+
+    assert errors == {}
+    assert calls["ensured"] == 1
+    assert books_by_market["m1"]["yes"] == yes_book
+    assert books_by_market["m1"]["no"] == no_book
+
+
 def test_pipeline_get_markets_falls_back_to_persisted_catalog(tmp_path, monkeypatch):
-    cfg = PolySettings(data_dir=str(tmp_path), catalog_refresh_seconds=3600)
+    cfg = PolySettings(_env_file=None, data_dir=str(tmp_path), catalog_refresh_seconds=3600)
     pipeline = PolymarketPipeline(cfg)
     market = MarketInfo(
         market_id="m1",
@@ -187,7 +225,7 @@ def test_pipeline_get_markets_falls_back_to_persisted_catalog(tmp_path, monkeypa
 
 
 def test_pipeline_does_not_resurrect_stale_persisted_catalog_after_empty_refresh(tmp_path, monkeypatch):
-    cfg = PolySettings(data_dir=str(tmp_path), catalog_refresh_seconds=3600)
+    cfg = PolySettings(_env_file=None, data_dir=str(tmp_path), catalog_refresh_seconds=3600)
     pipeline = PolymarketPipeline(cfg)
     market = MarketInfo(
         market_id="m1",
@@ -223,7 +261,7 @@ def test_pipeline_does_not_resurrect_stale_persisted_catalog_after_empty_refresh
 
 
 def test_pipeline_full_set_strategy_skips_snapshot_and_simulator_when_no_opportunities(tmp_path, monkeypatch):
-    cfg = PolySettings(data_dir=str(tmp_path))
+    cfg = PolySettings(_env_file=None, data_dir=str(tmp_path))
     pipeline = PolymarketPipeline(cfg)
     market = MarketInfo(
         market_id="m1",

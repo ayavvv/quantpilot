@@ -63,7 +63,7 @@ def _market() -> MarketInfo:
 
 
 def test_scheduler_registers_isolated_jobs(tmp_path):
-    scheduler = PolymarketScheduler(PolySettings(data_dir=str(tmp_path)))
+    scheduler = PolymarketScheduler(PolySettings(_env_file=None, data_dir=str(tmp_path)))
     scheduler.register_jobs()
 
     job_ids = [job[2]["id"] for job in scheduler.scheduler.jobs]
@@ -78,7 +78,7 @@ def test_scheduler_registers_isolated_jobs(tmp_path):
 
 
 def test_scheduler_daily_report_generates_previous_day_artifact(tmp_path):
-    cfg = PolySettings(data_dir=str(tmp_path), paper_initial_cash=100)
+    cfg = PolySettings(_env_file=None, data_dir=str(tmp_path), paper_initial_cash=100)
     storage = PolyStorage(cfg)
     simulator = PaperSimulator(storage=storage, cfg=cfg)
     now = datetime.now(timezone.utc)
@@ -134,7 +134,7 @@ def test_scheduler_daily_report_generates_previous_day_artifact(tmp_path):
 
 
 def test_scheduler_sends_email_when_enabled(monkeypatch, tmp_path):
-    cfg = PolySettings(data_dir=str(tmp_path), email_report_enabled=True)
+    cfg = PolySettings(_env_file=None, data_dir=str(tmp_path), email_report_enabled=True)
     scheduler = PolymarketScheduler(cfg)
     calls = {"sent": False}
 
@@ -165,7 +165,7 @@ def test_scheduler_sends_email_when_enabled(monkeypatch, tmp_path):
 
 
 def test_scheduler_start_runs_scan_before_blocking(monkeypatch, tmp_path):
-    scheduler = PolymarketScheduler(PolySettings(data_dir=str(tmp_path)))
+    scheduler = PolymarketScheduler(PolySettings(_env_file=None, data_dir=str(tmp_path)))
     calls = []
 
     def fake_retention():
@@ -190,7 +190,7 @@ def test_scheduler_start_runs_scan_before_blocking(monkeypatch, tmp_path):
 
 
 def test_scheduler_run_scan_logs_duration(monkeypatch, tmp_path):
-    scheduler = PolymarketScheduler(PolySettings(data_dir=str(tmp_path)))
+    scheduler = PolymarketScheduler(PolySettings(_env_file=None, data_dir=str(tmp_path)))
     result = PipelineResult(markets_seen=1, opportunities_found=0, trades_simulated=0)
     messages = []
 
@@ -206,7 +206,7 @@ def test_scheduler_run_scan_logs_duration(monkeypatch, tmp_path):
 
 
 def test_scheduler_run_book_top_retention_logs_deleted_rows(monkeypatch, tmp_path):
-    scheduler = PolymarketScheduler(PolySettings(data_dir=str(tmp_path), book_top_retention_hours=72))
+    scheduler = PolymarketScheduler(PolySettings(_env_file=None, data_dir=str(tmp_path), book_top_retention_hours=72))
     messages = []
 
     monkeypatch.setattr(scheduler.pipeline.storage, "prune_book_tops", lambda retention_hours: 123)
@@ -225,9 +225,13 @@ def test_scheduler_run_book_top_retention_logs_deleted_rows(monkeypatch, tmp_pat
 def test_scheduler_main_starts_blocking_scheduler(monkeypatch):
     started = {"value": False}
 
+    def fake_init(self, cfg=None):
+        return None
+
     def fake_start(self):
         started["value"] = True
 
+    monkeypatch.setattr(PolymarketScheduler, "__init__", fake_init)
     monkeypatch.setattr(PolymarketScheduler, "start", fake_start)
 
     main()

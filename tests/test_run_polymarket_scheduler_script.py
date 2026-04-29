@@ -12,13 +12,17 @@ def test_run_polymarket_scheduler_script_stays_poly_scoped():
     assert ': "${POLY_ENABLE_TOP_TRADER_MIRROR:=false}"' in content
     assert ': "${POLY_SCAN_INTERVAL_SECONDS:=300}"' in content
     assert ': "${POLY_CATALOG_REFRESH_JOB_SECONDS:=1800}"' in content
+    assert ': "${POLY_BOOK_SOURCE:=http}"' in content
     assert ': "${POLY_BOOK_FETCH_USE_BATCH:=true}"' in content
     assert ': "${POLY_BOOK_FETCH_BATCH_SIZE:=500}"' in content
+    assert ': "${POLY_WS_MARKET_URL:=wss://ws-subscriptions-clob.polymarket.com/ws/market}"' in content
+    assert ': "${POLY_STORAGE_ASYNC_FLUSH_ENABLED:=false}"' in content
     assert ': "${POLY_BOOK_TOP_RETENTION_HOURS:=72}"' in content
     assert ': "${POLY_BOOK_TOP_RETENTION_JOB_SECONDS:=3600}"' in content
     assert 'PYTHON_BIN="$PROJECT_DIR/.venv/bin/python"' in content
     assert 'export DATA_DIR POLY_DATA_DIR POLY_PAPER_ONLY POLY_ENABLE_SPLIT_SELL POLY_ENABLE_TOP_TRADER_MIRROR' in content
-    assert 'export POLY_BOOK_FETCH_USE_BATCH POLY_BOOK_FETCH_BATCH_SIZE POLY_BOOK_FETCH_WORKERS' in content
+    assert 'export POLY_BOOK_SOURCE POLY_BOOK_FETCH_USE_BATCH POLY_BOOK_FETCH_BATCH_SIZE POLY_BOOK_FETCH_WORKERS' in content
+    assert 'export POLY_STORAGE_ASYNC_FLUSH_ENABLED POLY_STORAGE_ASYNC_FLUSH_SECONDS' in content
     assert 'export POLY_BOOK_TOP_RETENTION_HOURS POLY_BOOK_TOP_RETENTION_JOB_SECONDS' in content
     assert '"$PYTHON_BIN" -m polymarket.scheduler' in content
     assert 'mkdir -p "$PROJECT_DIR/logs"' in content

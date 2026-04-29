@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 from time import perf_counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from loguru import logger
 
+from polymarket.async_storage import AsyncScanStorageWriter
 from polymarket.books import ClobClient
 from polymarket.catalog import load_binary_markets
 from polymarket.config import PolySettings, settings
@@ -22,6 +24,7 @@ from polymarket.traders.paper import MirrorBookkeeper
 from polymarket.traders.profile import PublicProfileClient
 from polymarket.traders.ranking import compute_trader_scores
 from polymarket.traders.storage import MirrorStorage
+from polymarket.ws_books import PolymarketBookCache, PolymarketBookStream
 
 
 @dataclass(slots=True)
@@ -45,6 +48,18 @@ class PolymarketPipeline:
         self.profile_client = PublicProfileClient(self.cfg)
         self.history_client = TraderHistoryClient(self.cfg)
         self.mirror_bookkeeper = MirrorBookkeeper(storage=self.mirror_storage, initial_cash=self.cfg.paper_initial_cash)
+        self.book_cache = PolymarketBookCache()
+        self.book_stream: PolymarketBookStream | None = None
+        self._storage_write_lock = Lock()
+        self.async_writer: AsyncScanStorageWriter | None = None
+        if self.cfg.storage_async_flush_enabled:
+            self.async_writer = AsyncScanStorageWriter(
+                storage=self.storage,
+                simulator=self.simulator,
+                storage_write_lock=self._storage_write_lock,
+                cfg=self.cfg,
+            )
+            self.async_writer.start()
         self._markets_cache: list[MarketInfo] | None = None
         self._markets_refreshed_at: datetime | None = None
 
@@ -71,9 +86,59 @@ class PolymarketPipeline:
         catalog_snapshot_seconds = perf_counter() - snapshot_started
         self._markets_cache = markets
         self._markets_refreshed_at = datetime.now(timezone.utc)
+        self._ensure_ws_stream(markets)
         return len(markets), catalog_load_seconds, catalog_snapshot_seconds
 
+    def _book_source(self) -> str:
+        return self.cfg.book_source.strip().lower()
+
+    def _market_token_ids(self, markets: list[MarketInfo]) -> list[str]:
+        token_ids: list[str] = []
+        for market in markets:
+            token_ids.append(market.yes_token_id)
+            token_ids.append(market.no_token_id)
+        return list(dict.fromkeys(token_ids))
+
+    def _ensure_ws_stream(self, markets: list[MarketInfo]) -> None:
+        if self._book_source() != "ws":
+            return
+        token_ids = self._market_token_ids(markets)
+        if self.book_stream is None:
+            self.book_stream = PolymarketBookStream(self.cfg, cache=self.book_cache)
+        self.book_stream.update_assets(token_ids)
+        self.book_stream.start()
+        if self.book_cache.ready_count(token_ids) >= max(1, int(len(token_ids) * self.cfg.ws_min_ready_ratio)):
+            return
+        ready = self.book_cache.wait_until_ready(
+            token_ids,
+            timeout_seconds=self.cfg.ws_ready_timeout_seconds,
+            min_ready_ratio=self.cfg.ws_min_ready_ratio,
+        )
+        stats = self.book_cache.stats(token_ids)
+        if ready:
+            logger.info(
+                f"polymarket websocket cache ready: ready_tokens={stats['ready_tokens']} "
+                f"total_tokens={stats['total_tokens']}"
+            )
+        else:
+            logger.warning(
+                f"polymarket websocket cache warmup incomplete: ready_tokens={stats['ready_tokens']} "
+                f"total_tokens={stats['total_tokens']} last_error={stats['last_error']}"
+            )
+
     def _fetch_market_books(self, markets: list[MarketInfo]) -> tuple[dict[str, dict[str, OrderBook]], dict[str, Exception]]:
+        if self._book_source() == "ws":
+            self._ensure_ws_stream(markets)
+            connection_stale_seconds = max(
+                self.cfg.ws_heartbeat_seconds * 3,
+                self.cfg.max_book_staleness_ms / 1000.0,
+            )
+            return self.book_cache.get_market_books(
+                markets,
+                connection_stale_seconds=connection_stale_seconds,
+                top_only=True,
+            )
+
         books_by_market: dict[str, dict[str, OrderBook]] = {}
         errors: dict[str, Exception] = {}
         token_map: dict[str, tuple[str, str]] = {}
@@ -164,21 +229,34 @@ class PolymarketPipeline:
                     rejection_counts[reason] = int(rejection_counts.get(reason, 0)) + 1
                 if opportunities:
                     write_started = perf_counter()
-                    self.storage.save_book_snapshot(market, yes_book, no_book, persist_depth=True, persist_top=False)
-                    opportunities_found += self.storage.save_opportunities(opportunities)
-                    trades_simulated += self.simulator.consume(market, opportunities)
+                    with self._storage_write_lock:
+                        self.storage.save_book_snapshot(market, yes_book, no_book, persist_depth=True, persist_top=False)
+                        opportunities_found += self.storage.save_opportunities(opportunities)
+                        trades_simulated += self.simulator.consume(market, opportunities)
                     stage_timings["storage_write_seconds"] += perf_counter() - write_started
             except Exception as exc:  # pragma: no cover
                 logger.warning(f"polymarket pipeline skipped {market.market_id}: {exc}")
         write_started = perf_counter()
         try:
-            self.storage.save_book_tops(top_rows)
-            if scanned_markets > 0:
-                self.simulator.record_scan_heartbeat(rejection_counts=rejection_counts)
+            if self.async_writer is not None:
+                self.async_writer.enqueue_book_tops(top_rows)
+                if scanned_markets > 0:
+                    self.async_writer.enqueue_heartbeat(rejection_counts=rejection_counts)
+            else:
+                with self._storage_write_lock:
+                    self.storage.save_book_tops(top_rows)
+                    if scanned_markets > 0:
+                        self.simulator.record_scan_heartbeat(rejection_counts=rejection_counts)
         except Exception as exc:  # pragma: no cover
             logger.warning(f"polymarket pipeline storage stage degraded: {exc}")
         stage_timings["storage_write_seconds"] += perf_counter() - write_started
-        logger.info(f"polymarket book fetch stage complete: markets={scanned_markets} duration_seconds={stage_timings['book_fetch_seconds']:.2f}")
+        cache_stats = self.book_cache.stats(self._market_token_ids(markets)) if self._book_source() == "ws" else {}
+        logger.info(
+            f"polymarket book fetch stage complete: markets={scanned_markets} "
+            f"source={self._book_source()} duration_seconds={stage_timings['book_fetch_seconds']:.2f} "
+            f"cache_ready_tokens={cache_stats.get('ready_tokens', 0)} "
+            f"cache_total_tokens={cache_stats.get('total_tokens', 0)}"
+        )
         return opportunities_found, trades_simulated, stage_timings
 
     def _build_market_map(self, markets: list[MarketInfo]) -> dict[str, MarketInfo]:
@@ -272,3 +350,21 @@ class PolymarketPipeline:
                 "catalog_snapshot_seconds": catalog_snapshot_seconds,
             },
         )
+
+    def flush_async_writes(self) -> tuple[int, dict[str, int]]:
+        if self.async_writer is None:
+            return 0, {}
+        return self.async_writer.flush_once()
+
+    def prune_book_data(self) -> tuple[int, int]:
+        self.flush_async_writes()
+        with self._storage_write_lock:
+            deleted_rows = self.storage.prune_book_tops(self.cfg.book_top_retention_hours)
+            deleted_snapshot_files = self.storage.prune_book_snapshots(self.cfg.book_top_retention_hours)
+        return deleted_rows, deleted_snapshot_files
+
+    def close(self) -> None:
+        if self.async_writer is not None:
+            self.async_writer.stop()
+        if self.book_stream is not None:
+            self.book_stream.stop()

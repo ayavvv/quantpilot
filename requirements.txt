@@ -15,5 +15,6 @@ fire
 scikit-learn
 watchdog
 apscheduler>=3.10.0
+websocket-client>=1.9.0
 
 # Qlib 需单独安装（仅支持 Python 3.9–3.12）: pip install -r requirements-qlib.txt

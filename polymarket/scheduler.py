@@ -110,10 +110,7 @@ class PolymarketScheduler:
     def run_book_top_retention(self):
         with self._job_lock:
             try:
-                deleted_rows = self.pipeline.storage.prune_book_tops(self.cfg.book_top_retention_hours)
-                deleted_snapshot_files = self.pipeline.storage.prune_book_snapshots(
-                    self.cfg.book_top_retention_hours
-                )
+                deleted_rows, deleted_snapshot_files = self.pipeline.prune_book_data()
             except Exception as exc:
                 logger.warning(f"polymarket book_top retention failed: {exc}")
                 return 0
@@ -133,7 +130,10 @@ class PolymarketScheduler:
         )
         self.run_book_top_retention()
         self.run_scan()
-        self.scheduler.start()
+        try:
+            self.scheduler.start()
+        finally:
+            self.pipeline.close()
 
 
 def main() -> None:
