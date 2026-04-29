@@ -50,6 +50,7 @@ class PolymarketPipeline:
         self.mirror_bookkeeper = MirrorBookkeeper(storage=self.mirror_storage, initial_cash=self.cfg.paper_initial_cash)
         self.book_cache = PolymarketBookCache()
         self.book_stream: PolymarketBookStream | None = None
+        self._ws_asset_ids: list[str] = []
         self._storage_write_lock = Lock()
         self.async_writer: AsyncScanStorageWriter | None = None
         if self.cfg.storage_async_flush_enabled:
@@ -99,14 +100,19 @@ class PolymarketPipeline:
             token_ids.append(market.no_token_id)
         return list(dict.fromkeys(token_ids))
 
-    def _ensure_ws_stream(self, markets: list[MarketInfo]) -> None:
+    def _ensure_ws_stream(self, markets: list[MarketInfo], wait_ready: bool = True) -> None:
         if self._book_source() != "ws":
             return
         token_ids = self._market_token_ids(markets)
         if self.book_stream is None:
             self.book_stream = PolymarketBookStream(self.cfg, cache=self.book_cache)
+        if token_ids == self._ws_asset_ids and self.book_stream.is_running():
+            return
+        self._ws_asset_ids = token_ids
         self.book_stream.update_assets(token_ids)
         self.book_stream.start()
+        if not wait_ready:
+            return
         if self.book_cache.ready_count(token_ids) >= max(1, int(len(token_ids) * self.cfg.ws_min_ready_ratio)):
             return
         ready = self.book_cache.wait_until_ready(
@@ -128,7 +134,7 @@ class PolymarketPipeline:
 
     def _fetch_market_books(self, markets: list[MarketInfo]) -> tuple[dict[str, dict[str, OrderBook]], dict[str, Exception]]:
         if self._book_source() == "ws":
-            self._ensure_ws_stream(markets)
+            self._ensure_ws_stream(markets, wait_ready=True)
             connection_stale_seconds = max(
                 self.cfg.ws_heartbeat_seconds * 3,
                 self.cfg.max_book_staleness_ms / 1000.0,

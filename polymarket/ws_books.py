@@ -42,12 +42,30 @@ class _CachedOrderBook:
     last_trade_price: float | None = None
     snapshot_ready: bool = False
     updated_monotonic: float = 0.0
+    best_bid_price: float | None = None
+    best_bid_size: float | None = None
+    best_ask_price: float | None = None
+    best_ask_size: float | None = None
 
-    def _top_levels(self, levels: dict[float, float], reverse: bool) -> list[BookLevel]:
+    @staticmethod
+    def _best_level(levels: dict[float, float], reverse: bool) -> tuple[float | None, float | None]:
         usable = [(price, size) for price, size in levels.items() if size > 0]
         if not usable:
-            return []
+            return None, None
         price, size = max(usable) if reverse else min(usable)
+        return price, size
+
+    def recompute_tops(self) -> None:
+        self.best_bid_price, self.best_bid_size = self._best_level(self.bids, reverse=True)
+        self.best_ask_price, self.best_ask_size = self._best_level(self.asks, reverse=False)
+
+    def _top_levels(self, side: str) -> list[BookLevel]:
+        if side == "bid":
+            price, size = self.best_bid_price, self.best_bid_size
+        else:
+            price, size = self.best_ask_price, self.best_ask_size
+        if price is None or size is None or size <= 0:
+            return []
         return [BookLevel(price=price, size=size)]
 
     def _all_levels(self, levels: dict[float, float], reverse: bool) -> list[BookLevel]:
@@ -56,8 +74,8 @@ class _CachedOrderBook:
 
     def to_order_book(self, timestamp_ms: int, top_only: bool = True) -> OrderBook:
         if top_only:
-            bids = self._top_levels(self.bids, reverse=True)
-            asks = self._top_levels(self.asks, reverse=False)
+            bids = self._top_levels("bid")
+            asks = self._top_levels("ask")
         else:
             bids = self._all_levels(self.bids, reverse=True)
             asks = self._all_levels(self.asks, reverse=False)
@@ -205,6 +223,7 @@ class PolymarketBookCache:
             state.last_trade_price = _parse_float(data.get("last_trade_price")) or state.last_trade_price
             state.snapshot_ready = True
             state.updated_monotonic = monotonic()
+            state.recompute_tops()
 
     def apply_price_change(self, data: dict[str, Any]) -> None:
         timestamp_ms = _parse_int(data.get("timestamp"))
@@ -230,6 +249,22 @@ class PolymarketBookCache:
                     levels.pop(price, None)
                 else:
                     levels[price] = size
+                if side == "BUY":
+                    if (
+                        state.best_bid_price is None
+                        or price > state.best_bid_price
+                        or price == state.best_bid_price
+                        or size <= 0
+                    ):
+                        state.best_bid_price, state.best_bid_size = state._best_level(state.bids, reverse=True)
+                else:
+                    if (
+                        state.best_ask_price is None
+                        or price < state.best_ask_price
+                        or price == state.best_ask_price
+                        or size <= 0
+                    ):
+                        state.best_ask_price, state.best_ask_size = state._best_level(state.asks, reverse=False)
                 state.timestamp_ms = timestamp_ms or state.timestamp_ms
                 state.updated_monotonic = monotonic()
 
@@ -315,6 +350,9 @@ class PolymarketBookStream:
         self._stop.clear()
         self._thread = Thread(target=self._run, name="polymarket-book-ws", daemon=True)
         self._thread.start()
+
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
 
     def stop(self, timeout: float = 2.0) -> None:
         self._stop.set()

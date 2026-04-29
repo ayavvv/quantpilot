@@ -174,7 +174,7 @@ def test_pipeline_fetch_market_books_can_use_ws_cache(tmp_path, monkeypatch):
     no_book = OrderBook(token_id="no", market_id="m1", timestamp_ms=1, bids=[], asks=[], tick_size=0.01, min_order_size=1, neg_risk=False)
     calls = {}
 
-    monkeypatch.setattr(pipeline, "_ensure_ws_stream", lambda markets: calls.__setitem__("ensured", len(markets)))
+    monkeypatch.setattr(pipeline, "_ensure_ws_stream", lambda markets, wait_ready=True: calls.__setitem__("ensured", len(markets)))
     monkeypatch.setattr(
         pipeline.book_cache,
         "get_market_books",
