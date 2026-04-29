@@ -1,6 +1,6 @@
 import json
 
-from polymarket.catalog import load_binary_markets, normalize_market
+from polymarket.catalog import GammaClient, load_binary_markets, normalize_market
 from polymarket.config import PolySettings
 
 
@@ -60,7 +60,7 @@ def test_normalize_market_rejects_neg_risk_and_non_binary():
 
 
 def test_load_binary_markets_skips_fee_fetch_when_market_fee_present(monkeypatch):
-    cfg = PolySettings()
+    cfg = PolySettings(_env_file=None)
     rows = [
         {
             "id": "m1",
@@ -92,7 +92,7 @@ def test_load_binary_markets_skips_fee_fetch_when_market_fee_present(monkeypatch
 
 
 def test_load_binary_markets_skips_fee_fetch_for_rejected_markets(monkeypatch):
-    cfg = PolySettings()
+    cfg = PolySettings(_env_file=None)
     rows = [
         {
             "id": "neg",
@@ -147,7 +147,7 @@ def test_load_binary_markets_skips_fee_fetch_for_rejected_markets(monkeypatch):
 
 
 def test_load_binary_markets_keeps_trying_fee_lookup_per_token(monkeypatch):
-    cfg = PolySettings()
+    cfg = PolySettings(_env_file=None)
     rows = [
         {
             "id": "m1",
@@ -186,3 +186,71 @@ def test_load_binary_markets_keeps_trying_fee_lookup_per_token(monkeypatch):
 
     assert len(markets) == 2
     assert calls["count"] == 2
+
+
+def test_gamma_client_fetch_markets_paginates_to_configured_limit(monkeypatch):
+    cfg = PolySettings(_env_file=None, max_active_markets=5, catalog_page_size=2)
+    client = GammaClient(cfg)
+    calls = []
+
+    def fake_get_json(path, params=None):
+        calls.append((path, dict(params or {})))
+        offset = int(params["offset"])
+        limit = int(params["limit"])
+        return [{"id": f"m{idx}"} for idx in range(offset, offset + limit)]
+
+    monkeypatch.setattr(client, "_get_json", fake_get_json)
+
+    rows = client.fetch_markets()
+
+    assert [row["id"] for row in rows] == ["m0", "m1", "m2", "m3", "m4"]
+    assert calls == [
+        ("markets", {"active": "true", "closed": "false", "limit": 2, "offset": 0}),
+        ("markets", {"active": "true", "closed": "false", "limit": 2, "offset": 2}),
+        ("markets", {"active": "true", "closed": "false", "limit": 1, "offset": 4}),
+    ]
+
+
+def test_gamma_client_fetch_markets_stops_on_short_page(monkeypatch):
+    cfg = PolySettings(_env_file=None, max_active_markets=0, catalog_page_size=3)
+    client = GammaClient(cfg)
+
+    def fake_get_json(path, params=None):
+        offset = int(params["offset"])
+        if offset == 0:
+            return [{"id": "m0"}, {"id": "m1"}, {"id": "m2"}]
+        return [{"id": "m3"}]
+
+    monkeypatch.setattr(client, "_get_json", fake_get_json)
+
+    rows = client.fetch_markets()
+
+    assert [row["id"] for row in rows] == ["m0", "m1", "m2", "m3"]
+
+
+def test_load_binary_markets_can_skip_fee_lookup_for_full_catalog(monkeypatch):
+    cfg = PolySettings(_env_file=None, catalog_fetch_fee_rates=False)
+    rows = [
+        {
+            "id": "m1",
+            "conditionId": "c1",
+            "question": "No fee fetch",
+            "active": True,
+            "closed": False,
+            "enableOrderBook": True,
+            "negRisk": False,
+            "clobTokenIds": json.dumps(["yes-token", "no-token"]),
+            "outcomes": json.dumps(["Yes", "No"]),
+        }
+    ]
+
+    monkeypatch.setattr("polymarket.catalog.GammaClient.fetch_markets", lambda self: rows)
+    monkeypatch.setattr(
+        "polymarket.catalog.GammaClient.fetch_fee_rate_bps",
+        lambda self, token_id: (_ for _ in ()).throw(AssertionError("fee fetch should not be called")),
+    )
+
+    markets = load_binary_markets(cfg)
+
+    assert len(markets) == 1
+    assert markets[0].taker_base_fee_bps == 0.0

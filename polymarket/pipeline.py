@@ -55,6 +55,7 @@ class PolymarketPipeline:
         self._storage_write_lock = Lock()
         self._reconcile_lock = Lock()
         self._full_scan_requested = Event()
+        self._reconcile_cursor = 0
         self._dirty_stop = Event()
         self._dirty_thread: Thread | None = None
         self._reconcile_stop = Event()
@@ -435,6 +436,8 @@ class PolymarketPipeline:
             markets, catalog_load_seconds = self._load_scan_markets()
             self._ensure_ws_stream(markets, wait_ready=False)
             token_ids = self._market_token_ids(markets)
+            total_tokens = len(token_ids)
+            token_ids = self._reconcile_token_window(token_ids)
             batch_size = max(1, min(self.cfg.ws_reconcile_batch_size, 500))
             chunks = [token_ids[start : start + batch_size] for start in range(0, len(token_ids), batch_size)]
             max_workers = max(1, min(self.cfg.ws_reconcile_workers, len(chunks) or 1))
@@ -470,6 +473,7 @@ class PolymarketPipeline:
             log = logger.warning if failed_batches else logger.info
             log(
                 f"polymarket websocket reconcile complete: tokens={fetched_tokens} "
+                f"cycle_tokens={len(token_ids)} total_tokens={total_tokens} next_cursor={self._reconcile_cursor} "
                 f"top_drifted_tokens={top_drifted_tokens} failed_batches={failed_batches} "
                 f"duration_seconds={duration_seconds:.2f} "
                 f"catalog_load_seconds={catalog_load_seconds:.2f}"
@@ -477,6 +481,9 @@ class PolymarketPipeline:
             return {
                 "enabled": True,
                 "tokens": fetched_tokens,
+                "cycle_tokens": len(token_ids),
+                "total_tokens": total_tokens,
+                "next_cursor": self._reconcile_cursor,
                 "top_drifted_tokens": top_drifted_tokens,
                 "failed_batches": failed_batches,
                 "duration_seconds": duration_seconds,
@@ -490,6 +497,23 @@ class PolymarketPipeline:
             return {"enabled": True, "error": str(exc), "duration_seconds": duration_seconds}
         finally:
             self._reconcile_lock.release()
+
+    def _reconcile_token_window(self, token_ids: list[str]) -> list[str]:
+        if not token_ids:
+            self._reconcile_cursor = 0
+            return []
+        max_tokens = max(int(self.cfg.ws_reconcile_max_tokens_per_cycle), 0)
+        if max_tokens <= 0 or max_tokens >= len(token_ids):
+            self._reconcile_cursor = 0
+            return token_ids
+        start = self._reconcile_cursor % len(token_ids)
+        end = start + max_tokens
+        if end <= len(token_ids):
+            selected = token_ids[start:end]
+        else:
+            selected = token_ids[start:] + token_ids[: end - len(token_ids)]
+        self._reconcile_cursor = end % len(token_ids)
+        return selected
 
     def start_background_workers(self) -> None:
         self.start_reconciler()

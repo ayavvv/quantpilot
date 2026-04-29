@@ -391,6 +391,19 @@ def test_pipeline_dirty_scan_yields_when_full_scan_is_waiting(tmp_path):
     assert pipeline.book_cache.pop_dirty_market_ids() == {"m1"}
 
 
+def test_pipeline_reconcile_token_window_rolls_across_assets(tmp_path):
+    cfg = PolySettings(_env_file=None, data_dir=str(tmp_path), ws_reconcile_max_tokens_per_cycle=3)
+    pipeline = PolymarketPipeline(cfg)
+
+    first = pipeline._reconcile_token_window(["t1", "t2", "t3", "t4", "t5"])
+    second = pipeline._reconcile_token_window(["t1", "t2", "t3", "t4", "t5"])
+    third = pipeline._reconcile_token_window(["t1", "t2", "t3", "t4", "t5"])
+
+    assert first == ["t1", "t2", "t3"]
+    assert second == ["t4", "t5", "t1"]
+    assert third == ["t2", "t3", "t4"]
+
+
 def test_pipeline_reconcile_overwrites_ws_cache_and_marks_drift(tmp_path, monkeypatch):
     cfg = PolySettings(_env_file=None, data_dir=str(tmp_path), book_source="ws", ws_reconcile_enabled=True)
     pipeline = PolymarketPipeline(cfg)

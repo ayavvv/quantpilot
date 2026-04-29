@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from time import sleep
 from typing import Any, Iterable
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -21,10 +22,39 @@ class GammaClient:
         with urlopen(request, timeout=self.cfg.http_timeout_seconds) as response:
             return json.load(response)
 
+    def fetch_markets_page(self, limit: int, offset: int = 0) -> list[dict[str, Any]]:
+        params = {"active": "true", "closed": "false", "limit": limit, "offset": offset}
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                data = self._get_json("markets", params=params)
+                return list(data)
+            except Exception as exc:  # pragma: no cover
+                last_exc = exc
+                if attempt == 2:
+                    raise
+                sleep(0.5 * (attempt + 1))
+        if last_exc is not None:
+            raise last_exc
+        return []
+
     def fetch_markets(self, limit: int | None = None) -> list[dict[str, Any]]:
-        params = {"active": "true", "closed": "false", "limit": limit or self.cfg.max_active_markets}
-        data = self._get_json("markets", params=params)
-        return list(data)
+        total_limit = self.cfg.max_active_markets if limit is None else limit
+        page_size = max(1, min(self.cfg.catalog_page_size, 1000))
+        markets: list[dict[str, Any]] = []
+        offset = 0
+        while total_limit <= 0 or len(markets) < total_limit:
+            current_limit = page_size if total_limit <= 0 else min(page_size, total_limit - len(markets))
+            if current_limit <= 0:
+                break
+            page = self.fetch_markets_page(limit=current_limit, offset=offset)
+            if not page:
+                break
+            markets.extend(page)
+            offset += len(page)
+            if len(page) < current_limit:
+                break
+        return markets
 
     def fetch_fee_rate_bps(self, token_id: str) -> float | None:
         try:
@@ -116,16 +146,21 @@ def normalize_market(raw_market: dict[str, Any], fee_rate_bps: float | None = No
 
 
 def load_binary_markets(cfg: PolySettings | None = None) -> list[MarketInfo]:
+    cfg = cfg or settings
     client = GammaClient(cfg=cfg)
     normalized: list[MarketInfo] = []
     fee_rate_cache: dict[str, float | None] = {}
+    seen_market_ids: set[str] = set()
     for raw_market in client.fetch_markets():
         fee_rate_bps = raw_market.get("takerBaseFee")
         if fee_rate_bps is None:
             fee_rate_bps = raw_market.get("taker_base_fee")
         market = normalize_market(raw_market, fee_rate_bps=float(fee_rate_bps) if fee_rate_bps is not None else None)
         if market is not None:
-            if fee_rate_bps is None:
+            if market.market_id in seen_market_ids:
+                continue
+            seen_market_ids.add(market.market_id)
+            if fee_rate_bps is None and cfg.catalog_fetch_fee_rates:
                 token_id = market.yes_token_id
                 if token_id not in fee_rate_cache:
                     fee_rate_cache[token_id] = client.fetch_fee_rate_bps(token_id)
