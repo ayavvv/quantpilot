@@ -225,18 +225,27 @@ class PolymarketPipeline:
         stage_timings["book_fetch_seconds"] = perf_counter() - fetch_started
         top_rows: list[dict[str, object]] = []
         rejection_counts: dict[str, int] = {}
+        skip_counts: dict[str, int] = {}
         now = datetime.now(timezone.utc)
+
+        def record_skip(reason: str) -> None:
+            if not (log_skips or log_stage):
+                return
+            skip_counts[reason] = int(skip_counts.get(reason, 0)) + 1
+
         for market in markets:
             if market.market_id in errors:
-                if log_skips:
-                    logger.warning(f"polymarket pipeline skipped {market.market_id}: {errors[market.market_id]}")
+                error_text = str(errors[market.market_id])
+                if "missing cached book" in error_text:
+                    record_skip("missing_cached_book")
+                else:
+                    record_skip(f"book_error:{type(errors[market.market_id]).__name__}")
                 continue
             market_books = books_by_market.get(market.market_id, {})
             yes_book = market_books.get("yes")
             no_book = market_books.get("no")
             if yes_book is None or no_book is None:
-                if log_skips:
-                    logger.warning(f"polymarket pipeline skipped {market.market_id}: missing paired books")
+                record_skip("missing_paired_books")
                 continue
             if persist_scan_artifacts:
                 top_rows.extend(
@@ -271,8 +280,7 @@ class PolymarketPipeline:
                         trades_simulated += self.simulator.consume(market, opportunities)
                     stage_timings["storage_write_seconds"] += perf_counter() - write_started
             except Exception as exc:  # pragma: no cover
-                if log_skips:
-                    logger.warning(f"polymarket pipeline skipped {market.market_id}: {exc}")
+                record_skip(f"scan_error:{type(exc).__name__}")
         write_started = perf_counter()
         try:
             if persist_scan_artifacts:
@@ -291,8 +299,11 @@ class PolymarketPipeline:
         stage_timings["scanned_markets"] = float(scanned_markets)
         cache_stats = self.book_cache.stats(self._market_token_ids(markets)) if self._book_source() == "ws" else {}
         if log_stage:
+            skipped_markets = sum(skip_counts.values())
+            skip_reasons = ",".join(f"{reason}:{count}" for reason, count in sorted(skip_counts.items()))
             logger.info(
                 f"polymarket book fetch stage complete: markets={scanned_markets} "
+                f"skipped_markets={skipped_markets} skip_reasons={skip_reasons or 'none'} "
                 f"source={self._book_source()} duration_seconds={stage_timings['book_fetch_seconds']:.2f} "
                 f"cache_ready_tokens={cache_stats.get('ready_tokens', 0)} "
                 f"cache_total_tokens={cache_stats.get('total_tokens', 0)}"
