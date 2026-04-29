@@ -455,6 +455,7 @@ class PolymarketPipeline:
             fetched_tokens = 0
             top_drifted_tokens = 0
             failed_batches = 0
+            failure_counts: dict[str, int] = {}
             timeout_seconds = max(float(self.cfg.ws_reconcile_timeout_seconds), 0.1)
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {
@@ -471,7 +472,8 @@ class PolymarketPipeline:
                         books = future.result()
                     except Exception as exc:  # pragma: no cover
                         failed_batches += 1
-                        logger.warning(f"polymarket websocket reconcile batch failed: tokens={len(futures[future])} error={exc}")
+                        failure_key = f"{type(exc).__name__}:{str(exc).splitlines()[0][:120]}"
+                        failure_counts[failure_key] = int(failure_counts.get(failure_key, 0)) + 1
                         continue
                     fetched_tokens += len(books)
                     for book in books.values():
@@ -482,10 +484,12 @@ class PolymarketPipeline:
                             top_drifted_tokens += 1
             duration_seconds = perf_counter() - started
             log = logger.warning if failed_batches else logger.info
+            failure_reasons = ",".join(f"{reason}:{count}" for reason, count in sorted(failure_counts.items()))
             log(
                 f"polymarket websocket reconcile complete: tokens={fetched_tokens} "
                 f"cycle_tokens={len(token_ids)} total_tokens={total_tokens} next_cursor={self._reconcile_cursor} "
                 f"top_drifted_tokens={top_drifted_tokens} failed_batches={failed_batches} "
+                f"failure_reasons={failure_reasons or 'none'} "
                 f"duration_seconds={duration_seconds:.2f} "
                 f"catalog_load_seconds={catalog_load_seconds:.2f}"
             )
@@ -497,6 +501,7 @@ class PolymarketPipeline:
                 "next_cursor": self._reconcile_cursor,
                 "top_drifted_tokens": top_drifted_tokens,
                 "failed_batches": failed_batches,
+                "failure_reasons": failure_counts,
                 "duration_seconds": duration_seconds,
                 "catalog_load_seconds": catalog_load_seconds,
             }
