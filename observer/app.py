@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import pickle
+import json
 import struct
 from datetime import datetime
 from pathlib import Path
@@ -21,9 +22,16 @@ import streamlit as st
 # Configuration
 # ---------------------------------------------------------------------------
 QLIB_DATA_DIR = Path(os.environ.get("QLIB_DATA_DIR", "/qlib_data"))
+DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 SIGNAL_DIR = Path(os.environ.get("SIGNAL_DIR", "/data/signals"))
 REPORT_DIR = Path(os.environ.get("REPORT_DIR", "/data/reports"))
 MODEL_DIR = Path(os.environ.get("MODEL_DIR", "/data/models"))
+US_WATCHLIST_FILE = Path(
+    os.environ.get("US_WATCHLIST_FILE", str(DATA_DIR / "config" / "us_watchlist.json"))
+)
+US_WATCHLIST_REPORT_DIR = Path(
+    os.environ.get("US_WATCHLIST_REPORT_DIR", str(DATA_DIR / "reports" / "us_watchlist"))
+)
 
 FREQ = "day"
 DEFAULT_FIELDS = ["open", "close", "high", "low", "volume", "amount", "change_rate"]
@@ -217,6 +225,101 @@ def load_model_list() -> list[dict]:
     return results
 
 
+def _normalize_watchlist_symbol(symbol: str) -> str:
+    raw = str(symbol or "").strip().upper()
+    if raw.startswith("US."):
+        raw = raw[3:]
+    return raw.replace("-", ".")
+
+
+def _default_watchlist_config() -> dict:
+    return {
+        "enabled": True,
+        "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "symbols": [
+            {"symbol": "LI", "name": "Li Auto", "enabled": True, "notes": ""},
+            {"symbol": "SPY", "name": "SPDR S&P 500 ETF", "enabled": True, "notes": ""},
+            {"symbol": "YINN", "name": "Direxion Daily FTSE China Bull 3X", "enabled": True, "notes": ""},
+            {"symbol": "CQQQ", "name": "Invesco China Technology ETF", "enabled": True, "notes": ""},
+        ],
+        "analysis": {
+            "concurrency": 2,
+            "timeout_seconds": 3600,
+            "retry_count": 0,
+        },
+    }
+
+
+@st.cache_data(ttl=10)
+def load_watchlist_config() -> dict:
+    if not US_WATCHLIST_FILE.exists():
+        return _default_watchlist_config()
+    try:
+        payload = json.loads(US_WATCHLIST_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return _default_watchlist_config()
+    if not isinstance(payload, dict):
+        return _default_watchlist_config()
+    payload.setdefault("enabled", True)
+    payload.setdefault("symbols", [])
+    payload.setdefault("analysis", {})
+    return payload
+
+
+def save_watchlist_config(payload: dict) -> Path:
+    rows = []
+    seen = set()
+    for row in payload.get("symbols", []):
+        if isinstance(row, str):
+            row = {"symbol": row, "enabled": True, "name": "", "notes": ""}
+        if not isinstance(row, dict):
+            continue
+        symbol = _normalize_watchlist_symbol(row.get("symbol", ""))
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        rows.append({
+            "symbol": symbol,
+            "name": str(row.get("name", "")).strip(),
+            "enabled": bool(row.get("enabled", True)),
+            "notes": str(row.get("notes", "")).strip(),
+        })
+
+    normalized = {
+        "enabled": bool(payload.get("enabled", True)),
+        "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "symbols": rows,
+        "analysis": {
+            "concurrency": int(payload.get("analysis", {}).get("concurrency", 2) or 2),
+            "timeout_seconds": int(payload.get("analysis", {}).get("timeout_seconds", 3600) or 3600),
+            "retry_count": int(payload.get("analysis", {}).get("retry_count", 0) or 0),
+        },
+    }
+    US_WATCHLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = US_WATCHLIST_FILE.with_suffix(f"{US_WATCHLIST_FILE.suffix}.tmp")
+    tmp_path.write_text(json.dumps(normalized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp_path.replace(US_WATCHLIST_FILE)
+    load_watchlist_config.clear()
+    return US_WATCHLIST_FILE
+
+
+@st.cache_data(ttl=30)
+def load_watchlist_report_list() -> list[dict]:
+    if not US_WATCHLIST_REPORT_DIR.exists():
+        return []
+    reports = sorted(US_WATCHLIST_REPORT_DIR.glob("us_watchlist_report_*.html"), reverse=True)
+    rows = []
+    for path in reports[:20]:
+        stat = path.stat()
+        rows.append({
+            "name": path.name,
+            "size": f"{stat.st_size / 1024:.0f} KB",
+            "updated": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M"),
+            "path": str(path),
+        })
+    return rows
+
+
 @st.cache_data(ttl=300)
 def load_pred_pkl(path: str) -> dict | None:
     """Load pred_sh.pkl and compute backtest-style metrics."""
@@ -352,7 +455,8 @@ with st.sidebar:
     st.code(f"QLIB_DATA: {QLIB_DATA_DIR}\n"
             f"SIGNALS:   {SIGNAL_DIR}\n"
             f"MODELS:    {MODEL_DIR}\n"
-            f"REPORTS:   {REPORT_DIR}", language=None)
+            f"REPORTS:   {REPORT_DIR}\n"
+            f"WATCHLIST: {US_WATCHLIST_FILE}", language=None)
 
 
 # Load data
@@ -396,8 +500,8 @@ st.divider()
 # ---------------------------------------------------------------------------
 # Tabs
 # ---------------------------------------------------------------------------
-tab_data, tab_backtest, tab_signals, tab_models, tab_reports = st.tabs(
-    ["Data", "Backtest", "Signals", "Models", "Reports"]
+tab_data, tab_backtest, tab_signals, tab_models, tab_watchlist, tab_reports = st.tabs(
+    ["Data", "Backtest", "Signals", "Models", "Watchlist", "Reports"]
 )
 
 # --- Tab: Data ---
@@ -641,6 +745,120 @@ with tab_models:
     else:
         st.info("No model files found. Run training to generate models.")
         st.caption(f"Expected path: {MODEL_DIR}")
+
+
+# --- Tab: Watchlist ---
+with tab_watchlist:
+    st.subheader("US Watchlist Deep Analysis")
+
+    watchlist = load_watchlist_config()
+    symbols = watchlist.get("symbols", [])
+    analysis_settings = watchlist.get("analysis", {})
+
+    enabled_count = sum(
+        1 for row in symbols
+        if isinstance(row, dict) and row.get("enabled", True) and _normalize_watchlist_symbol(row.get("symbol", ""))
+    )
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Enabled Symbols", enabled_count)
+    m2.metric("Concurrency", int(analysis_settings.get("concurrency", 2) or 2))
+    m3.metric("Timeout", f"{int(analysis_settings.get('timeout_seconds', 3600) or 3600) // 60} min")
+    m4.metric("Retries", int(analysis_settings.get("retry_count", 0) or 0))
+
+    st.caption(f"Config: {US_WATCHLIST_FILE}")
+
+    table_rows = []
+    for row in symbols:
+        if isinstance(row, str):
+            row = {"symbol": row, "name": "", "enabled": True, "notes": ""}
+        if isinstance(row, dict):
+            table_rows.append({
+                "enabled": bool(row.get("enabled", True)),
+                "symbol": _normalize_watchlist_symbol(row.get("symbol", "")),
+                "name": str(row.get("name", "")),
+                "notes": str(row.get("notes", "")),
+            })
+    if not table_rows:
+        table_rows = [{"enabled": True, "symbol": "", "name": "", "notes": ""}]
+
+    with st.form("watchlist_form"):
+        form_enabled = st.checkbox("Enabled", value=bool(watchlist.get("enabled", True)))
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            form_concurrency = st.number_input(
+                "Concurrency",
+                min_value=1,
+                max_value=10,
+                value=int(analysis_settings.get("concurrency", 2) or 2),
+                step=1,
+            )
+        with col_b:
+            form_timeout = st.number_input(
+                "Timeout seconds",
+                min_value=300,
+                max_value=14400,
+                value=int(analysis_settings.get("timeout_seconds", 3600) or 3600),
+                step=300,
+            )
+        with col_c:
+            form_retries = st.number_input(
+                "Retries",
+                min_value=0,
+                max_value=3,
+                value=int(analysis_settings.get("retry_count", 0) or 0),
+                step=1,
+            )
+
+        edited_df = st.data_editor(
+            pd.DataFrame(table_rows),
+            use_container_width=True,
+            hide_index=True,
+            num_rows="dynamic",
+            column_config={
+                "enabled": st.column_config.CheckboxColumn("Enabled"),
+                "symbol": st.column_config.TextColumn("Symbol", width="small"),
+                "name": st.column_config.TextColumn("Name", width="medium"),
+                "notes": st.column_config.TextColumn("Notes", width="large"),
+            },
+        )
+        submitted = st.form_submit_button("Save Watchlist", use_container_width=True)
+
+    if submitted:
+        payload = {
+            "enabled": form_enabled,
+            "symbols": edited_df.to_dict(orient="records"),
+            "analysis": {
+                "concurrency": int(form_concurrency),
+                "timeout_seconds": int(form_timeout),
+                "retry_count": int(form_retries),
+            },
+        }
+        try:
+            saved_path = save_watchlist_config(payload)
+            st.success(f"Saved: {saved_path}")
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Save failed: {exc}")
+
+    st.divider()
+    st.subheader("Watchlist Reports")
+    report_rows = load_watchlist_report_list()
+    if report_rows:
+        st.dataframe(
+            pd.DataFrame(report_rows)[["name", "size", "updated"]],
+            use_container_width=True,
+            hide_index=True,
+        )
+        selected_watch_report = st.selectbox(
+            "Preview watchlist report",
+            [row["name"] for row in report_rows],
+        )
+        selected_path = US_WATCHLIST_REPORT_DIR / selected_watch_report
+        if selected_path.exists():
+            html_content = selected_path.read_text(encoding="utf-8", errors="replace")
+            st.components.v1.html(html_content, height=700, scrolling=True)
+    else:
+        st.info("No watchlist reports generated yet.")
 
 
 # --- Tab: Reports ---

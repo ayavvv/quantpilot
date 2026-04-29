@@ -53,6 +53,28 @@ services:
       - ~/quantpilot_data/qlib_data:/qlib_data:ro
       - ./logs:/app_logs:ro
 
+  # --- 本机前端看板 + 美股关注列表配置 ---
+  observer:
+    build:
+      context: .
+      dockerfile: observer/Dockerfile
+    container_name: quantpilot-observer
+    restart: unless-stopped
+    ports:
+      - "${OBSERVER_PORT:-8501}:8501"
+    environment:
+      - TZ=Asia/Shanghai
+      - DATA_DIR=/data
+      - QLIB_DATA_DIR=/qlib_data
+      - SIGNAL_DIR=/data/signals
+      - MODEL_DIR=/data/models
+      - REPORT_DIR=/data/reports
+      - US_WATCHLIST_FILE=/data/config/us_watchlist.json
+      - US_WATCHLIST_REPORT_DIR=/data/reports/us_watchlist
+    volumes:
+      - quant_data:/data
+      - ~/quantpilot_data/qlib_data:/qlib_data:ro
+
 volumes:
   quant_data:
     driver: local
