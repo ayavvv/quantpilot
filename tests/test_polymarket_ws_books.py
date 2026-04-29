@@ -1,4 +1,4 @@
-from polymarket.models import MarketInfo
+from polymarket.models import BookLevel, MarketInfo, OrderBook
 from polymarket.ws_books import PolymarketBookCache
 
 
@@ -65,6 +65,7 @@ def test_ws_book_cache_applies_snapshot_and_price_changes():
     assert yes_book.best_ask.price == 0.46
     assert no_book.best_ask.price == 0.55
     assert no_book.best_ask.size == 15
+    assert cache.pop_dirty_market_ids() == {"m1"}
 
 
 def test_ws_book_cache_requires_initial_snapshot():
@@ -86,3 +87,34 @@ def test_ws_book_cache_requires_initial_snapshot():
 
     assert books == {}
     assert "m1" in errors
+
+
+def test_ws_book_cache_reconcile_replaces_snapshot_and_marks_dirty_on_top_drift():
+    cache = PolymarketBookCache()
+    cache.set_connected(True)
+    cache.apply_book(
+        {
+            "asset_id": "yes",
+            "market": "m1",
+            "timestamp": "1777442824176",
+            "bids": [{"price": "0.42", "size": "10"}],
+            "asks": [{"price": "0.45", "size": "7"}],
+        }
+    )
+    cache.pop_dirty_market_ids()
+
+    changed = cache.reconcile_order_book(
+        OrderBook(
+            token_id="yes",
+            market_id="m1",
+            timestamp_ms=1777442825000,
+            bids=[BookLevel(price=0.43, size=11)],
+            asks=[BookLevel(price=0.46, size=8)],
+            tick_size=0.01,
+            min_order_size=1,
+            neg_risk=False,
+        )
+    )
+
+    assert changed is True
+    assert cache.pop_dirty_market_ids() == {"m1"}

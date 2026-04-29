@@ -101,6 +101,7 @@ class PolymarketBookCache:
         self._connected = False
         self._last_message_monotonic = 0.0
         self._last_error: str | None = None
+        self._dirty_market_ids: set[str] = set()
 
     def set_connected(self, connected: bool) -> None:
         with self._lock:
@@ -156,7 +157,26 @@ class PolymarketBookCache:
                     monotonic() - self._last_message_monotonic if self._last_message_monotonic else None
                 ),
                 "last_error": self._last_error,
+                "dirty_markets": len(self._dirty_market_ids),
             }
+
+    def mark_market_dirty(self, market_id: str) -> None:
+        if not market_id:
+            return
+        with self._lock:
+            self._dirty_market_ids.add(market_id)
+
+    def pop_dirty_market_ids(self, limit: int | None = None) -> set[str]:
+        with self._lock:
+            if not self._dirty_market_ids:
+                return set()
+            if limit is None or limit <= 0 or limit >= len(self._dirty_market_ids):
+                market_ids = set(self._dirty_market_ids)
+                self._dirty_market_ids.clear()
+                return market_ids
+            market_ids = set(list(self._dirty_market_ids)[:limit])
+            self._dirty_market_ids.difference_update(market_ids)
+            return market_ids
 
     def apply_message_text(self, message: str) -> None:
         payload = json.loads(message)
@@ -224,6 +244,8 @@ class PolymarketBookCache:
             state.snapshot_ready = True
             state.updated_monotonic = monotonic()
             state.recompute_tops()
+            if market_id:
+                self._dirty_market_ids.add(market_id)
 
     def apply_price_change(self, data: dict[str, Any]) -> None:
         timestamp_ms = _parse_int(data.get("timestamp"))
@@ -267,6 +289,8 @@ class PolymarketBookCache:
                         state.best_ask_price, state.best_ask_size = state._best_level(state.asks, reverse=False)
                 state.timestamp_ms = timestamp_ms or state.timestamp_ms
                 state.updated_monotonic = monotonic()
+                if market_id:
+                    self._dirty_market_ids.add(market_id)
 
     def apply_last_trade(self, data: dict[str, Any]) -> None:
         token_id = str(data.get("asset_id") or "")
@@ -280,6 +304,8 @@ class PolymarketBookCache:
             state.last_trade_price = price
             state.timestamp_ms = timestamp_ms or state.timestamp_ms
             state.updated_monotonic = monotonic()
+            if market_id:
+                self._dirty_market_ids.add(market_id)
 
     def apply_best_bid_ask(self, data: dict[str, Any]) -> None:
         token_id = str(data.get("asset_id") or "")
@@ -291,6 +317,39 @@ class PolymarketBookCache:
             state = self._state_for(token_id, market_id)
             state.timestamp_ms = timestamp_ms or state.timestamp_ms
             state.updated_monotonic = monotonic()
+            if market_id:
+                self._dirty_market_ids.add(market_id)
+
+    def reconcile_order_book(self, book: OrderBook) -> bool:
+        """Replace one cached book with an HTTP snapshot and return whether top-of-book changed."""
+        with self._lock:
+            state = self._state_for(book.token_id, book.market_id)
+            before_top = (
+                state.best_bid_price,
+                state.best_bid_size,
+                state.best_ask_price,
+                state.best_ask_size,
+            )
+            state.bids = {level.price: level.size for level in book.bids if level.size > 0}
+            state.asks = {level.price: level.size for level in book.asks if level.size > 0}
+            state.timestamp_ms = book.timestamp_ms
+            state.tick_size = book.tick_size
+            state.min_order_size = book.min_order_size
+            state.neg_risk = book.neg_risk
+            state.last_trade_price = book.last_trade_price
+            state.snapshot_ready = True
+            state.updated_monotonic = monotonic()
+            state.recompute_tops()
+            after_top = (
+                state.best_bid_price,
+                state.best_bid_size,
+                state.best_ask_price,
+                state.best_ask_size,
+            )
+            top_changed = before_top != after_top
+            if top_changed and book.market_id:
+                self._dirty_market_ids.add(book.market_id)
+            return top_changed
 
     def get_market_books(
         self,

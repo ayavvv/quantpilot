@@ -124,12 +124,18 @@ class PolymarketScheduler:
         self.register_jobs()
         logger.info(
             f"starting polymarket scheduler: scan_interval_seconds={self.cfg.scan_interval_seconds} "
+            f"dirty_scan_enabled={self.cfg.dirty_scan_enabled} "
+            f"dirty_scan_interval_seconds={self.cfg.dirty_scan_interval_seconds} "
+            f"ws_reconcile_enabled={self.cfg.ws_reconcile_enabled} "
+            f"ws_reconcile_seconds={self.cfg.ws_reconcile_seconds} "
+            f"book_top_sample_seconds={self.cfg.book_top_sample_seconds} "
             f"catalog_refresh_job_seconds={self.cfg.catalog_refresh_job_seconds} "
             f"book_top_retention_hours={self.cfg.book_top_retention_hours} "
             f"top_trader_mirror={self.cfg.enable_top_trader_mirror} data_dir={self.cfg.root_data_path}"
         )
         self.run_book_top_retention()
         self.run_scan()
+        self.pipeline.start_background_workers()
         try:
             self.scheduler.start()
         finally:

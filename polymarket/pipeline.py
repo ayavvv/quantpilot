@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Lock
-from time import perf_counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from threading import Event, Lock, Thread
+from time import monotonic, perf_counter
 
 from loguru import logger
 
@@ -51,7 +51,14 @@ class PolymarketPipeline:
         self.book_cache = PolymarketBookCache()
         self.book_stream: PolymarketBookStream | None = None
         self._ws_asset_ids: list[str] = []
+        self._scan_lock = Lock()
         self._storage_write_lock = Lock()
+        self._reconcile_lock = Lock()
+        self._dirty_stop = Event()
+        self._dirty_thread: Thread | None = None
+        self._reconcile_stop = Event()
+        self._reconcile_thread: Thread | None = None
+        self._last_book_top_sample_monotonic = 0.0
         self.async_writer: AsyncScanStorageWriter | None = None
         if self.cfg.storage_async_flush_enabled:
             self.async_writer = AsyncScanStorageWriter(
@@ -132,9 +139,14 @@ class PolymarketPipeline:
                 f"total_tokens={stats['total_tokens']} last_error={stats['last_error']}"
             )
 
-    def _fetch_market_books(self, markets: list[MarketInfo]) -> tuple[dict[str, dict[str, OrderBook]], dict[str, Exception]]:
+    def _fetch_market_books(
+        self,
+        markets: list[MarketInfo],
+        wait_ready: bool = True,
+        ensure_markets: list[MarketInfo] | None = None,
+    ) -> tuple[dict[str, dict[str, OrderBook]], dict[str, Exception]]:
         if self._book_source() == "ws":
-            self._ensure_ws_stream(markets, wait_ready=True)
+            self._ensure_ws_stream(ensure_markets or markets, wait_ready=wait_ready)
             connection_stale_seconds = max(
                 self.cfg.ws_heartbeat_seconds * 3,
                 self.cfg.max_book_staleness_ms / 1000.0,
@@ -188,50 +200,66 @@ class PolymarketPipeline:
                     errors[market_id] = exc
         return books_by_market, errors
 
-    def _run_full_set_strategy(self, markets: list[MarketInfo]) -> tuple[int, int, dict[str, float]]:
+    def _run_full_set_strategy(
+        self,
+        markets: list[MarketInfo],
+        *,
+        persist_scan_artifacts: bool = True,
+        log_stage: bool = True,
+        log_skips: bool = True,
+        wait_ready: bool = True,
+        ensure_markets: list[MarketInfo] | None = None,
+    ) -> tuple[int, int, dict[str, float]]:
         opportunities_found = 0
         trades_simulated = 0
         scanned_markets = 0
         stage_timings = {"book_fetch_seconds": 0.0, "scan_compute_seconds": 0.0, "storage_write_seconds": 0.0}
         fetch_started = perf_counter()
-        books_by_market, errors = self._fetch_market_books(markets)
+        books_by_market, errors = self._fetch_market_books(
+            markets,
+            wait_ready=wait_ready,
+            ensure_markets=ensure_markets,
+        )
         stage_timings["book_fetch_seconds"] = perf_counter() - fetch_started
         top_rows: list[dict[str, object]] = []
         rejection_counts: dict[str, int] = {}
         now = datetime.now(timezone.utc)
         for market in markets:
             if market.market_id in errors:
-                logger.warning(f"polymarket pipeline skipped {market.market_id}: {errors[market.market_id]}")
+                if log_skips:
+                    logger.warning(f"polymarket pipeline skipped {market.market_id}: {errors[market.market_id]}")
                 continue
             market_books = books_by_market.get(market.market_id, {})
             yes_book = market_books.get("yes")
             no_book = market_books.get("no")
             if yes_book is None or no_book is None:
-                logger.warning(f"polymarket pipeline skipped {market.market_id}: missing paired books")
+                if log_skips:
+                    logger.warning(f"polymarket pipeline skipped {market.market_id}: missing paired books")
                 continue
-            top_rows.extend(
-                [
-                    {
-                        "ts": now,
-                        "market_id": market.market_id,
-                        "token_id": book.token_id,
-                        "best_bid": book.best_bid.price if book.best_bid else None,
-                        "best_bid_size": book.best_bid.size if book.best_bid else None,
-                        "best_ask": book.best_ask.price if book.best_ask else None,
-                        "best_ask_size": book.best_ask.size if book.best_ask else None,
-                        "last_trade": book.last_trade_price,
-                        "book_timestamp_ms": book.timestamp_ms,
-                    }
-                    for book in (yes_book, no_book)
-                ]
-            )
+            if persist_scan_artifacts:
+                top_rows.extend(
+                    [
+                        {
+                            "ts": now,
+                            "market_id": market.market_id,
+                            "token_id": book.token_id,
+                            "best_bid": book.best_bid.price if book.best_bid else None,
+                            "best_bid_size": book.best_bid.size if book.best_bid else None,
+                            "best_ask": book.best_ask.price if book.best_ask else None,
+                            "best_ask_size": book.best_ask.size if book.best_ask else None,
+                            "last_trade": book.last_trade_price,
+                            "book_timestamp_ms": book.timestamp_ms,
+                        }
+                        for book in (yes_book, no_book)
+                    ]
+                )
             scanned_markets += 1
             try:
                 scan_started = perf_counter()
                 reason = rejection_reason(market, yes_book, no_book, cfg=self.cfg)
                 opportunities = [] if reason is not None else scan_market(market, yes_book, no_book, cfg=self.cfg)
                 stage_timings["scan_compute_seconds"] += perf_counter() - scan_started
-                if reason is not None:
+                if reason is not None and persist_scan_artifacts:
                     rejection_counts[reason] = int(rejection_counts.get(reason, 0)) + 1
                 if opportunities:
                     write_started = perf_counter()
@@ -241,28 +269,32 @@ class PolymarketPipeline:
                         trades_simulated += self.simulator.consume(market, opportunities)
                     stage_timings["storage_write_seconds"] += perf_counter() - write_started
             except Exception as exc:  # pragma: no cover
-                logger.warning(f"polymarket pipeline skipped {market.market_id}: {exc}")
+                if log_skips:
+                    logger.warning(f"polymarket pipeline skipped {market.market_id}: {exc}")
         write_started = perf_counter()
         try:
-            if self.async_writer is not None:
-                self.async_writer.enqueue_book_tops(top_rows)
-                if scanned_markets > 0:
-                    self.async_writer.enqueue_heartbeat(rejection_counts=rejection_counts)
-            else:
-                with self._storage_write_lock:
-                    self.storage.save_book_tops(top_rows)
+            if persist_scan_artifacts:
+                if self.async_writer is not None:
+                    self.async_writer.enqueue_book_tops(top_rows)
                     if scanned_markets > 0:
-                        self.simulator.record_scan_heartbeat(rejection_counts=rejection_counts)
+                        self.async_writer.enqueue_heartbeat(rejection_counts=rejection_counts)
+                else:
+                    with self._storage_write_lock:
+                        self.storage.save_book_tops(top_rows)
+                        if scanned_markets > 0:
+                            self.simulator.record_scan_heartbeat(rejection_counts=rejection_counts)
         except Exception as exc:  # pragma: no cover
             logger.warning(f"polymarket pipeline storage stage degraded: {exc}")
         stage_timings["storage_write_seconds"] += perf_counter() - write_started
+        stage_timings["scanned_markets"] = float(scanned_markets)
         cache_stats = self.book_cache.stats(self._market_token_ids(markets)) if self._book_source() == "ws" else {}
-        logger.info(
-            f"polymarket book fetch stage complete: markets={scanned_markets} "
-            f"source={self._book_source()} duration_seconds={stage_timings['book_fetch_seconds']:.2f} "
-            f"cache_ready_tokens={cache_stats.get('ready_tokens', 0)} "
-            f"cache_total_tokens={cache_stats.get('total_tokens', 0)}"
-        )
+        if log_stage:
+            logger.info(
+                f"polymarket book fetch stage complete: markets={scanned_markets} "
+                f"source={self._book_source()} duration_seconds={stage_timings['book_fetch_seconds']:.2f} "
+                f"cache_ready_tokens={cache_stats.get('ready_tokens', 0)} "
+                f"cache_total_tokens={cache_stats.get('total_tokens', 0)}"
+            )
         return opportunities_found, trades_simulated, stage_timings
 
     def _build_market_map(self, markets: list[MarketInfo]) -> dict[str, MarketInfo]:
@@ -335,27 +367,216 @@ class PolymarketPipeline:
         )
         return len(scores), len(mirror_signals)
 
-    def run_once(self) -> PipelineResult:
-        markets, catalog_load_seconds = self._load_scan_markets()
-        catalog_snapshot_seconds = 0.0
-        opportunities_found, trades_simulated, stage_timings = self._run_full_set_strategy(markets)
-        mirror_traders_tracked = 0
-        mirror_signals_generated = 0
-        if self.cfg.enable_top_trader_mirror:
-            mirror_traders_tracked, mirror_signals_generated = self._run_top_trader_mirror(self._build_market_map(markets))
+    def _should_persist_scan_artifacts(self) -> bool:
+        sample_seconds = max(float(self.cfg.book_top_sample_seconds), 0.0)
+        if sample_seconds <= 0:
+            return True
+        now = monotonic()
+        if self._last_book_top_sample_monotonic <= 0:
+            self._last_book_top_sample_monotonic = now
+            return True
+        if now - self._last_book_top_sample_monotonic >= sample_seconds:
+            self._last_book_top_sample_monotonic = now
+            return True
+        return False
 
-        return PipelineResult(
-            markets_seen=len(markets),
-            opportunities_found=opportunities_found,
-            trades_simulated=trades_simulated,
-            mirror_traders_tracked=mirror_traders_tracked,
-            mirror_signals_generated=mirror_signals_generated,
-            stage_timings={
-                **stage_timings,
+    def run_dirty_once(self) -> PipelineResult:
+        if self._book_source() != "ws" or not self.cfg.dirty_scan_enabled:
+            return PipelineResult(0, 0, 0, stage_timings={"dirty_scan_disabled": 1.0})
+        if not self._scan_lock.acquire(blocking=False):
+            return PipelineResult(0, 0, 0, stage_timings={"scan_lock_busy": 1.0})
+        try:
+            dirty_market_ids = self.book_cache.pop_dirty_market_ids()
+            if not dirty_market_ids:
+                return PipelineResult(0, 0, 0, stage_timings={"dirty_markets": 0.0})
+            markets, catalog_load_seconds = self._load_scan_markets()
+            self._ensure_ws_stream(markets, wait_ready=False)
+            market_map = self._build_market_map(markets)
+            dirty_markets = [market_map[market_id] for market_id in dirty_market_ids if market_id in market_map]
+            if not dirty_markets:
+                return PipelineResult(
+                    0,
+                    0,
+                    0,
+                    stage_timings={
+                        "catalog_load_seconds": catalog_load_seconds,
+                        "dirty_markets": float(len(dirty_market_ids)),
+                    },
+                )
+            opportunities_found, trades_simulated, stage_timings = self._run_full_set_strategy(
+                dirty_markets,
+                persist_scan_artifacts=False,
+                log_stage=False,
+                log_skips=False,
+                wait_ready=False,
+                ensure_markets=markets,
+            )
+            stage_timings["catalog_load_seconds"] = catalog_load_seconds
+            stage_timings["dirty_markets"] = float(len(dirty_market_ids))
+            return PipelineResult(
+                markets_seen=int(stage_timings.get("scanned_markets", len(dirty_markets))),
+                opportunities_found=opportunities_found,
+                trades_simulated=trades_simulated,
+                stage_timings=stage_timings,
+            )
+        finally:
+            self._scan_lock.release()
+
+    def run_reconcile_once(self) -> dict[str, object]:
+        if self._book_source() != "ws" or not self.cfg.ws_reconcile_enabled:
+            return {"enabled": False}
+        if not self._reconcile_lock.acquire(blocking=False):
+            return {"enabled": True, "skipped": True, "reason": "already_running"}
+        started = perf_counter()
+        try:
+            markets, catalog_load_seconds = self._load_scan_markets()
+            self._ensure_ws_stream(markets, wait_ready=False)
+            token_ids = self._market_token_ids(markets)
+            batch_size = max(1, min(self.cfg.book_fetch_batch_size, 500))
+            fetched_tokens = 0
+            top_drifted_tokens = 0
+            for start in range(0, len(token_ids), batch_size):
+                chunk = token_ids[start : start + batch_size]
+                books = self.clob.fetch_books(
+                    chunk,
+                    attempts=1,
+                    timeout_seconds=max(float(self.cfg.ws_reconcile_timeout_seconds), 0.1),
+                )
+                fetched_tokens += len(books)
+                for book in books.values():
+                    if self.book_cache.reconcile_order_book(book):
+                        top_drifted_tokens += 1
+            duration_seconds = perf_counter() - started
+            logger.info(
+                f"polymarket websocket reconcile complete: tokens={fetched_tokens} "
+                f"top_drifted_tokens={top_drifted_tokens} duration_seconds={duration_seconds:.2f} "
+                f"catalog_load_seconds={catalog_load_seconds:.2f}"
+            )
+            return {
+                "enabled": True,
+                "tokens": fetched_tokens,
+                "top_drifted_tokens": top_drifted_tokens,
+                "duration_seconds": duration_seconds,
                 "catalog_load_seconds": catalog_load_seconds,
-                "catalog_snapshot_seconds": catalog_snapshot_seconds,
-            },
+            }
+        except Exception as exc:  # pragma: no cover
+            duration_seconds = perf_counter() - started
+            logger.warning(
+                f"polymarket websocket reconcile failed: duration_seconds={duration_seconds:.2f} error={exc}"
+            )
+            return {"enabled": True, "error": str(exc), "duration_seconds": duration_seconds}
+        finally:
+            self._reconcile_lock.release()
+
+    def start_background_workers(self) -> None:
+        self.start_reconciler()
+        self.start_dirty_scanner()
+
+    def start_dirty_scanner(self) -> None:
+        if self._book_source() != "ws" or not self.cfg.dirty_scan_enabled:
+            return
+        if self._dirty_thread is not None and self._dirty_thread.is_alive():
+            return
+        self._dirty_stop.clear()
+        self._dirty_thread = Thread(target=self._run_dirty_scanner, name="polymarket-dirty-scan", daemon=True)
+        self._dirty_thread.start()
+        logger.info(
+            f"polymarket dirty scanner started: interval_seconds={self.cfg.dirty_scan_interval_seconds}"
         )
+
+    def start_reconciler(self) -> None:
+        if self._book_source() != "ws" or not self.cfg.ws_reconcile_enabled:
+            return
+        if self._reconcile_thread is not None and self._reconcile_thread.is_alive():
+            return
+        self._reconcile_stop.clear()
+        self._reconcile_thread = Thread(target=self._run_reconciler, name="polymarket-ws-reconcile", daemon=True)
+        self._reconcile_thread.start()
+        logger.info(
+            f"polymarket websocket reconciler started: interval_seconds={self.cfg.ws_reconcile_seconds}"
+        )
+
+    def stop_background_workers(self) -> None:
+        self._dirty_stop.set()
+        self._reconcile_stop.set()
+        if self._dirty_thread is not None:
+            self._dirty_thread.join(timeout=2.0)
+        if self._reconcile_thread is not None:
+            self._reconcile_thread.join(timeout=2.0)
+
+    def _run_dirty_scanner(self) -> None:  # pragma: no cover - exercised in production smoke checks
+        interval = max(float(self.cfg.dirty_scan_interval_seconds), 0.01)
+        last_log = monotonic()
+        ticks = 0
+        scanned = 0
+        opportunities = 0
+        trades = 0
+        lock_skips = 0
+        while not self._dirty_stop.wait(interval):
+            ticks += 1
+            started = perf_counter()
+            try:
+                result = self.run_dirty_once()
+            except Exception as exc:
+                logger.warning(f"polymarket dirty scan failed: {exc}")
+                continue
+            duration_seconds = perf_counter() - started
+            stage_timings = result.stage_timings or {}
+            if stage_timings.get("scan_lock_busy"):
+                lock_skips += 1
+            scanned += result.markets_seen
+            opportunities += result.opportunities_found
+            trades += result.trades_simulated
+            if duration_seconds > max(interval * 2, 0.2):
+                logger.warning(
+                    f"polymarket dirty scan slow: markets={result.markets_seen} "
+                    f"duration_seconds={duration_seconds:.3f}"
+                )
+            now = monotonic()
+            if now - last_log >= 60:
+                logger.info(
+                    f"polymarket dirty scanner heartbeat: ticks={ticks} scanned_markets={scanned} "
+                    f"opps={opportunities} trades={trades} lock_skips={lock_skips}"
+                )
+                last_log = now
+                ticks = 0
+                scanned = 0
+                opportunities = 0
+                trades = 0
+                lock_skips = 0
+
+    def _run_reconciler(self) -> None:  # pragma: no cover - exercised in production smoke checks
+        interval = max(float(self.cfg.ws_reconcile_seconds), 1.0)
+        while not self._reconcile_stop.is_set():
+            self.run_reconcile_once()
+            if self._reconcile_stop.wait(interval):
+                break
+
+    def run_once(self) -> PipelineResult:
+        with self._scan_lock:
+            markets, catalog_load_seconds = self._load_scan_markets()
+            catalog_snapshot_seconds = 0.0
+            opportunities_found, trades_simulated, stage_timings = self._run_full_set_strategy(
+                markets,
+                persist_scan_artifacts=self._should_persist_scan_artifacts(),
+            )
+            mirror_traders_tracked = 0
+            mirror_signals_generated = 0
+            if self.cfg.enable_top_trader_mirror:
+                mirror_traders_tracked, mirror_signals_generated = self._run_top_trader_mirror(self._build_market_map(markets))
+
+            return PipelineResult(
+                markets_seen=len(markets),
+                opportunities_found=opportunities_found,
+                trades_simulated=trades_simulated,
+                mirror_traders_tracked=mirror_traders_tracked,
+                mirror_signals_generated=mirror_signals_generated,
+                stage_timings={
+                    **stage_timings,
+                    "catalog_load_seconds": catalog_load_seconds,
+                    "catalog_snapshot_seconds": catalog_snapshot_seconds,
+                },
+            )
 
     def flush_async_writes(self) -> tuple[int, dict[str, int]]:
         if self.async_writer is None:
@@ -370,6 +591,7 @@ class PolymarketPipeline:
         return deleted_rows, deleted_snapshot_files
 
     def close(self) -> None:
+        self.stop_background_workers()
         if self.async_writer is not None:
             self.async_writer.stop()
         if self.book_stream is not None:

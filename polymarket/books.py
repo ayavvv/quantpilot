@@ -33,13 +33,13 @@ class ClobClient:
     def __init__(self, cfg: PolySettings | None = None):
         self.cfg = cfg or settings
 
-    def _get_json(self, path: str) -> dict[str, Any]:
+    def _get_json(self, path: str, timeout_seconds: float | None = None) -> dict[str, Any]:
         url = f"{self.cfg.clob_base_url.rstrip('/')}/{path.lstrip('/')}"
         request = Request(url, headers={"User-Agent": self.cfg.user_agent, "Accept": "application/json"})
-        with urlopen(request, timeout=self.cfg.http_timeout_seconds) as response:
+        with urlopen(request, timeout=timeout_seconds or self.cfg.http_timeout_seconds) as response:
             return json.load(response)
 
-    def _post_json(self, path: str, payload: Any) -> Any:
+    def _post_json(self, path: str, payload: Any, timeout_seconds: float | None = None) -> Any:
         url = f"{self.cfg.clob_base_url.rstrip('/')}/{path.lstrip('/')}"
         body = json.dumps(payload).encode("utf-8")
         request = Request(
@@ -52,7 +52,7 @@ class ClobClient:
             },
             method="POST",
         )
-        with urlopen(request, timeout=self.cfg.http_timeout_seconds) as response:
+        with urlopen(request, timeout=timeout_seconds or self.cfg.http_timeout_seconds) as response:
             return json.load(response)
 
     def _parse_book_payload(self, data: dict[str, Any], token_id: str) -> OrderBook:
@@ -70,29 +70,44 @@ class ClobClient:
             last_trade_price=_parse_optional_float(data.get("last_trade_price")),
         )
 
-    def fetch_book(self, token_id: str) -> OrderBook:
+    def fetch_book(self, token_id: str, attempts: int = 3, timeout_seconds: float | None = None) -> OrderBook:
         last_exc: Exception | None = None
-        for attempt in range(3):
+        max_attempts = max(1, attempts)
+        for attempt in range(max_attempts):
             try:
-                data = self._get_json(f"book?token_id={token_id}")
+                data = (
+                    self._get_json(f"book?token_id={token_id}")
+                    if timeout_seconds is None
+                    else self._get_json(f"book?token_id={token_id}", timeout_seconds=timeout_seconds)
+                )
                 return self._parse_book_payload(data, token_id)
             except Exception as exc:  # pragma: no cover
                 last_exc = exc
-                if attempt == 2:
+                if attempt == max_attempts - 1:
                     raise
                 sleep(0.2 * (attempt + 1))
         if last_exc is not None:
             raise last_exc
         raise RuntimeError(f"failed to fetch book for {token_id}")
 
-    def fetch_books(self, token_ids: list[str]) -> dict[str, OrderBook]:
+    def fetch_books(
+        self,
+        token_ids: list[str],
+        attempts: int = 3,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, OrderBook]:
         if not token_ids:
             return {}
         last_exc: Exception | None = None
         payload = [{"token_id": token_id} for token_id in token_ids]
-        for attempt in range(3):
+        max_attempts = max(1, attempts)
+        for attempt in range(max_attempts):
             try:
-                data = self._post_json("books", payload)
+                data = (
+                    self._post_json("books", payload)
+                    if timeout_seconds is None
+                    else self._post_json("books", payload, timeout_seconds=timeout_seconds)
+                )
                 if not isinstance(data, list):
                     raise RuntimeError("unexpected /books response shape")
                 books: dict[str, OrderBook] = {}
@@ -104,7 +119,7 @@ class ClobClient:
                 return books
             except Exception as exc:  # pragma: no cover
                 last_exc = exc
-                if attempt == 2:
+                if attempt == max_attempts - 1:
                     raise
                 sleep(0.2 * (attempt + 1))
         if last_exc is not None:
