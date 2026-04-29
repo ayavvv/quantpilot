@@ -59,6 +59,8 @@ class PolySettings(BaseSettings):
     ws_reconcile_enabled: bool = Field(default=False)
     ws_reconcile_seconds: float = Field(default=10.0)
     ws_reconcile_timeout_seconds: float = Field(default=3.0)
+    ws_reconcile_batch_size: int = Field(default=50)
+    ws_reconcile_workers: int = Field(default=4)
     dirty_scan_enabled: bool = Field(default=False)
     dirty_scan_interval_seconds: float = Field(default=0.1)
     storage_async_flush_enabled: bool = Field(default=False)

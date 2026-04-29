@@ -54,6 +54,7 @@ class PolymarketPipeline:
         self._scan_lock = Lock()
         self._storage_write_lock = Lock()
         self._reconcile_lock = Lock()
+        self._full_scan_requested = Event()
         self._dirty_stop = Event()
         self._dirty_thread: Thread | None = None
         self._reconcile_stop = Event()
@@ -383,6 +384,8 @@ class PolymarketPipeline:
     def run_dirty_once(self) -> PipelineResult:
         if self._book_source() != "ws" or not self.cfg.dirty_scan_enabled:
             return PipelineResult(0, 0, 0, stage_timings={"dirty_scan_disabled": 1.0})
+        if self._full_scan_requested.is_set():
+            return PipelineResult(0, 0, 0, stage_timings={"full_scan_pending": 1.0})
         if not self._scan_lock.acquire(blocking=False):
             return PipelineResult(0, 0, 0, stage_timings={"scan_lock_busy": 1.0})
         try:
@@ -432,30 +435,47 @@ class PolymarketPipeline:
             markets, catalog_load_seconds = self._load_scan_markets()
             self._ensure_ws_stream(markets, wait_ready=False)
             token_ids = self._market_token_ids(markets)
-            batch_size = max(1, min(self.cfg.book_fetch_batch_size, 500))
+            batch_size = max(1, min(self.cfg.ws_reconcile_batch_size, 500))
+            chunks = [token_ids[start : start + batch_size] for start in range(0, len(token_ids), batch_size)]
+            max_workers = max(1, min(self.cfg.ws_reconcile_workers, len(chunks) or 1))
             fetched_tokens = 0
             top_drifted_tokens = 0
-            for start in range(0, len(token_ids), batch_size):
-                chunk = token_ids[start : start + batch_size]
-                books = self.clob.fetch_books(
-                    chunk,
-                    attempts=1,
-                    timeout_seconds=max(float(self.cfg.ws_reconcile_timeout_seconds), 0.1),
-                )
-                fetched_tokens += len(books)
-                for book in books.values():
-                    if self.book_cache.reconcile_order_book(book):
-                        top_drifted_tokens += 1
+            failed_batches = 0
+            timeout_seconds = max(float(self.cfg.ws_reconcile_timeout_seconds), 0.1)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(
+                        self.clob.fetch_books,
+                        chunk,
+                        attempts=1,
+                        timeout_seconds=timeout_seconds,
+                    ): chunk
+                    for chunk in chunks
+                }
+                for future in as_completed(futures):
+                    try:
+                        books = future.result()
+                    except Exception as exc:  # pragma: no cover
+                        failed_batches += 1
+                        logger.warning(f"polymarket websocket reconcile batch failed: tokens={len(futures[future])} error={exc}")
+                        continue
+                    fetched_tokens += len(books)
+                    for book in books.values():
+                        if self.book_cache.reconcile_order_book(book):
+                            top_drifted_tokens += 1
             duration_seconds = perf_counter() - started
-            logger.info(
+            log = logger.warning if failed_batches else logger.info
+            log(
                 f"polymarket websocket reconcile complete: tokens={fetched_tokens} "
-                f"top_drifted_tokens={top_drifted_tokens} duration_seconds={duration_seconds:.2f} "
+                f"top_drifted_tokens={top_drifted_tokens} failed_batches={failed_batches} "
+                f"duration_seconds={duration_seconds:.2f} "
                 f"catalog_load_seconds={catalog_load_seconds:.2f}"
             )
             return {
                 "enabled": True,
                 "tokens": fetched_tokens,
                 "top_drifted_tokens": top_drifted_tokens,
+                "failed_batches": failed_batches,
                 "duration_seconds": duration_seconds,
                 "catalog_load_seconds": catalog_load_seconds,
             }
@@ -524,6 +544,8 @@ class PolymarketPipeline:
             stage_timings = result.stage_timings or {}
             if stage_timings.get("scan_lock_busy"):
                 lock_skips += 1
+            if stage_timings.get("full_scan_pending"):
+                lock_skips += 1
             scanned += result.markets_seen
             opportunities += result.opportunities_found
             trades += result.trades_simulated
@@ -553,7 +575,9 @@ class PolymarketPipeline:
                 break
 
     def run_once(self) -> PipelineResult:
+        self._full_scan_requested.set()
         with self._scan_lock:
+            self._full_scan_requested.clear()
             markets, catalog_load_seconds = self._load_scan_markets()
             catalog_snapshot_seconds = 0.0
             opportunities_found, trades_simulated, stage_timings = self._run_full_set_strategy(

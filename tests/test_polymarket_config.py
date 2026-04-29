@@ -13,6 +13,8 @@ def test_polymarket_scan_interval_default_is_service_safe():
     assert cfg.ws_reconcile_enabled is False
     assert cfg.ws_reconcile_seconds == 10
     assert cfg.ws_reconcile_timeout_seconds == 3
+    assert cfg.ws_reconcile_batch_size == 50
+    assert cfg.ws_reconcile_workers == 4
     assert cfg.dirty_scan_enabled is False
     assert cfg.dirty_scan_interval_seconds == 0.1
     assert cfg.storage_async_flush_enabled is False
@@ -30,6 +32,8 @@ def test_env_example_documents_service_safe_scan_interval():
     assert "POLY_WS_RECONCILE_ENABLED=false" in content
     assert "POLY_WS_RECONCILE_SECONDS=10" in content
     assert "POLY_WS_RECONCILE_TIMEOUT_SECONDS=3" in content
+    assert "POLY_WS_RECONCILE_BATCH_SIZE=50" in content
+    assert "POLY_WS_RECONCILE_WORKERS=4" in content
     assert "POLY_DIRTY_SCAN_ENABLED=false" in content
     assert "POLY_DIRTY_SCAN_INTERVAL_SECONDS=0.1" in content
     assert "POLY_STORAGE_ASYNC_FLUSH_ENABLED=false" in content

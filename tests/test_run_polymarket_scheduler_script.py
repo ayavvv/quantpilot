@@ -19,6 +19,8 @@ def test_run_polymarket_scheduler_script_stays_poly_scoped():
     assert ': "${POLY_WS_RECONCILE_ENABLED:=false}"' in content
     assert ': "${POLY_WS_RECONCILE_SECONDS:=10}"' in content
     assert ': "${POLY_WS_RECONCILE_TIMEOUT_SECONDS:=3}"' in content
+    assert ': "${POLY_WS_RECONCILE_BATCH_SIZE:=50}"' in content
+    assert ': "${POLY_WS_RECONCILE_WORKERS:=4}"' in content
     assert ': "${POLY_DIRTY_SCAN_ENABLED:=false}"' in content
     assert ': "${POLY_DIRTY_SCAN_INTERVAL_SECONDS:=0.1}"' in content
     assert ': "${POLY_STORAGE_ASYNC_FLUSH_ENABLED:=false}"' in content
@@ -29,6 +31,7 @@ def test_run_polymarket_scheduler_script_stays_poly_scoped():
     assert 'export DATA_DIR POLY_DATA_DIR POLY_PAPER_ONLY POLY_ENABLE_SPLIT_SELL POLY_ENABLE_TOP_TRADER_MIRROR' in content
     assert 'export POLY_BOOK_SOURCE POLY_BOOK_FETCH_USE_BATCH POLY_BOOK_FETCH_BATCH_SIZE POLY_BOOK_FETCH_WORKERS' in content
     assert 'export POLY_WS_RECONCILE_ENABLED POLY_WS_RECONCILE_SECONDS POLY_WS_RECONCILE_TIMEOUT_SECONDS' in content
+    assert 'export POLY_WS_RECONCILE_BATCH_SIZE POLY_WS_RECONCILE_WORKERS' in content
     assert 'export POLY_DIRTY_SCAN_ENABLED POLY_DIRTY_SCAN_INTERVAL_SECONDS' in content
     assert 'export POLY_STORAGE_ASYNC_FLUSH_ENABLED POLY_STORAGE_ASYNC_FLUSH_SECONDS' in content
     assert 'export POLY_BOOK_TOP_SAMPLE_SECONDS' in content

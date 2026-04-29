@@ -378,6 +378,19 @@ def test_pipeline_dirty_scan_scans_only_dirty_markets_without_book_top_writes(tm
     assert calls["heartbeat"] == 0
 
 
+def test_pipeline_dirty_scan_yields_when_full_scan_is_waiting(tmp_path):
+    cfg = PolySettings(_env_file=None, data_dir=str(tmp_path), book_source="ws", dirty_scan_enabled=True)
+    pipeline = PolymarketPipeline(cfg)
+    pipeline.book_cache.mark_market_dirty("m1")
+    pipeline._full_scan_requested.set()
+
+    result = pipeline.run_dirty_once()
+
+    assert result.markets_seen == 0
+    assert result.stage_timings == {"full_scan_pending": 1.0}
+    assert pipeline.book_cache.pop_dirty_market_ids() == {"m1"}
+
+
 def test_pipeline_reconcile_overwrites_ws_cache_and_marks_drift(tmp_path, monkeypatch):
     cfg = PolySettings(_env_file=None, data_dir=str(tmp_path), book_source="ws", ws_reconcile_enabled=True)
     pipeline = PolymarketPipeline(cfg)
