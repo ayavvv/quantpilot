@@ -461,6 +461,9 @@ class PolymarketPipeline:
                         continue
                     fetched_tokens += len(books)
                     for book in books.values():
+                        while self._full_scan_requested.is_set():
+                            if self._reconcile_stop.wait(0.005):
+                                break
                         if self.book_cache.reconcile_order_book(book):
                             top_drifted_tokens += 1
             duration_seconds = perf_counter() - started
@@ -577,30 +580,32 @@ class PolymarketPipeline:
     def run_once(self) -> PipelineResult:
         self._full_scan_requested.set()
         with self._scan_lock:
-            self._full_scan_requested.clear()
-            markets, catalog_load_seconds = self._load_scan_markets()
-            catalog_snapshot_seconds = 0.0
-            opportunities_found, trades_simulated, stage_timings = self._run_full_set_strategy(
-                markets,
-                persist_scan_artifacts=self._should_persist_scan_artifacts(),
-            )
-            mirror_traders_tracked = 0
-            mirror_signals_generated = 0
-            if self.cfg.enable_top_trader_mirror:
-                mirror_traders_tracked, mirror_signals_generated = self._run_top_trader_mirror(self._build_market_map(markets))
+            try:
+                markets, catalog_load_seconds = self._load_scan_markets()
+                catalog_snapshot_seconds = 0.0
+                opportunities_found, trades_simulated, stage_timings = self._run_full_set_strategy(
+                    markets,
+                    persist_scan_artifacts=self._should_persist_scan_artifacts(),
+                )
+                mirror_traders_tracked = 0
+                mirror_signals_generated = 0
+                if self.cfg.enable_top_trader_mirror:
+                    mirror_traders_tracked, mirror_signals_generated = self._run_top_trader_mirror(self._build_market_map(markets))
 
-            return PipelineResult(
-                markets_seen=len(markets),
-                opportunities_found=opportunities_found,
-                trades_simulated=trades_simulated,
-                mirror_traders_tracked=mirror_traders_tracked,
-                mirror_signals_generated=mirror_signals_generated,
-                stage_timings={
-                    **stage_timings,
-                    "catalog_load_seconds": catalog_load_seconds,
-                    "catalog_snapshot_seconds": catalog_snapshot_seconds,
-                },
-            )
+                return PipelineResult(
+                    markets_seen=len(markets),
+                    opportunities_found=opportunities_found,
+                    trades_simulated=trades_simulated,
+                    mirror_traders_tracked=mirror_traders_tracked,
+                    mirror_signals_generated=mirror_signals_generated,
+                    stage_timings={
+                        **stage_timings,
+                        "catalog_load_seconds": catalog_load_seconds,
+                        "catalog_snapshot_seconds": catalog_snapshot_seconds,
+                    },
+                )
+            finally:
+                self._full_scan_requested.clear()
 
     def flush_async_writes(self) -> tuple[int, dict[str, int]]:
         if self.async_writer is None:
