@@ -35,6 +35,7 @@ class PolySettings(BaseSettings):
     enable_split_sell: bool = Field(default=False)
     max_active_markets: int = Field(default=250)
     catalog_page_size: int = Field(default=1000)
+    catalog_fetch_workers: int = Field(default=4)
     catalog_fetch_fee_rates: bool = Field(default=True)
     http_timeout_seconds: int = Field(default=20)
     user_agent: str = Field(default="Mozilla/5.0")

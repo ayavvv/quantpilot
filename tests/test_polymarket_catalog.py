@@ -189,7 +189,7 @@ def test_load_binary_markets_keeps_trying_fee_lookup_per_token(monkeypatch):
 
 
 def test_gamma_client_fetch_markets_paginates_to_configured_limit(monkeypatch):
-    cfg = PolySettings(_env_file=None, max_active_markets=5, catalog_page_size=2)
+    cfg = PolySettings(_env_file=None, max_active_markets=5, catalog_page_size=2, catalog_fetch_workers=1)
     client = GammaClient(cfg)
     calls = []
 
@@ -226,6 +226,23 @@ def test_gamma_client_fetch_markets_stops_on_short_page(monkeypatch):
     rows = client.fetch_markets()
 
     assert [row["id"] for row in rows] == ["m0", "m1", "m2", "m3"]
+
+
+def test_gamma_client_fetch_markets_can_fetch_pages_concurrently(monkeypatch):
+    cfg = PolySettings(_env_file=None, max_active_markets=5, catalog_page_size=2, catalog_fetch_workers=2)
+    client = GammaClient(cfg)
+    calls = []
+
+    def fake_fetch_page(limit, offset=0):
+        calls.append((limit, offset))
+        return [{"id": f"m{idx}"} for idx in range(offset, offset + limit)]
+
+    monkeypatch.setattr(client, "fetch_markets_page", fake_fetch_page)
+
+    rows = client.fetch_markets()
+
+    assert [row["id"] for row in rows] == ["m0", "m1", "m2", "m3", "m4"]
+    assert sorted(calls) == [(1, 4), (2, 0), (2, 2)]
 
 
 def test_load_binary_markets_can_skip_fee_lookup_for_full_catalog(monkeypatch):

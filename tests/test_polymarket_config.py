@@ -10,6 +10,7 @@ def test_polymarket_scan_interval_default_is_service_safe():
     assert cfg.book_fetch_use_batch is True
     assert cfg.book_fetch_batch_size == 500
     assert cfg.catalog_page_size == 1000
+    assert cfg.catalog_fetch_workers == 4
     assert cfg.catalog_fetch_fee_rates is True
     assert cfg.ws_market_url == "wss://ws-subscriptions-clob.polymarket.com/ws/market"
     assert cfg.ws_reconcile_enabled is False
@@ -32,6 +33,7 @@ def test_env_example_documents_service_safe_scan_interval():
     assert "POLY_SCAN_INTERVAL_SECONDS=300" in content
     assert "POLY_BOOK_SOURCE=http" in content
     assert "POLY_CATALOG_PAGE_SIZE=1000" in content
+    assert "POLY_CATALOG_FETCH_WORKERS=4" in content
     assert "POLY_CATALOG_FETCH_FEE_RATES=true" in content
     assert "POLY_WS_MARKET_URL=wss://ws-subscriptions-clob.polymarket.com/ws/market" in content
     assert "POLY_WS_RECONCILE_ENABLED=false" in content

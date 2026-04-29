@@ -1,6 +1,7 @@
 """Market catalog ingestion for Polymarket."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 from time import sleep
 from typing import Any, Iterable
@@ -41,6 +42,11 @@ class GammaClient:
     def fetch_markets(self, limit: int | None = None) -> list[dict[str, Any]]:
         total_limit = self.cfg.max_active_markets if limit is None else limit
         page_size = max(1, min(self.cfg.catalog_page_size, 1000))
+        if total_limit > page_size and self.cfg.catalog_fetch_workers > 1:
+            return self._fetch_markets_concurrent(total_limit=total_limit, page_size=page_size)
+        return self._fetch_markets_sequential(total_limit=total_limit, page_size=page_size)
+
+    def _fetch_markets_sequential(self, *, total_limit: int, page_size: int) -> list[dict[str, Any]]:
         markets: list[dict[str, Any]] = []
         offset = 0
         while total_limit <= 0 or len(markets) < total_limit:
@@ -55,6 +61,35 @@ class GammaClient:
             if len(page) < current_limit:
                 break
         return markets
+
+    def _fetch_markets_concurrent(self, *, total_limit: int, page_size: int) -> list[dict[str, Any]]:
+        requests: list[tuple[int, int]] = []
+        offset = 0
+        while offset < total_limit:
+            current_limit = min(page_size, total_limit - offset)
+            requests.append((offset, current_limit))
+            offset += current_limit
+
+        pages_by_offset: dict[int, list[dict[str, Any]]] = {}
+        max_workers = max(1, min(int(self.cfg.catalog_fetch_workers), len(requests)))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(self.fetch_markets_page, limit=current_limit, offset=offset): (offset, current_limit)
+                for offset, current_limit in requests
+            }
+            for future in as_completed(futures):
+                offset, _current_limit = futures[future]
+                pages_by_offset[offset] = future.result()
+
+        markets: list[dict[str, Any]] = []
+        for offset, current_limit in requests:
+            page = pages_by_offset.get(offset, [])
+            if not page:
+                break
+            markets.extend(page)
+            if len(page) < current_limit:
+                break
+        return markets[:total_limit]
 
     def fetch_fee_rate_bps(self, token_id: str) -> float | None:
         try:
