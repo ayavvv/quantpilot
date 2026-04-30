@@ -416,6 +416,38 @@ class PolyStorage:
             conn.unregister("fill_rows")
         return len(rows)
 
+    def load_latest_fill_times_by_market(self) -> dict[str, datetime]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT market_id, max(filled_at)
+                FROM paper_fills
+                GROUP BY market_id
+                """
+            ).fetchall()
+        latest: dict[str, datetime] = {}
+        for market_id, filled_at in rows:
+            if filled_at is None:
+                continue
+            if filled_at.tzinfo is None:
+                filled_at = filled_at.replace(tzinfo=timezone.utc)
+            latest[str(market_id)] = filled_at
+        return latest
+
+    def load_fill_notional_by_market(self, target_date: str, strategy_type: str = "full_set_arb") -> dict[str, float]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT market_id, sum(abs(qty * price) + abs(fee))
+                FROM paper_fills
+                WHERE CAST(filled_at AS DATE) = CAST(? AS DATE)
+                  AND strategy_type = ?
+                GROUP BY market_id
+                """,
+                [target_date, strategy_type],
+            ).fetchall()
+        return {str(market_id): float(notional or 0.0) for market_id, notional in rows}
+
     def upsert_positions(self, positions: pd.DataFrame) -> None:
         if positions.empty:
             return

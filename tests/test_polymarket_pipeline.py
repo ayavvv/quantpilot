@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
 
 from polymarket.config import PolySettings
-from polymarket.models import BookLevel, MarketInfo, OrderBook
+from polymarket.execution_guards import LocalBookDepletion
+from polymarket.models import BookLevel, MarketInfo, Opportunity, OrderBook
 from polymarket.pipeline import PipelineResult, PolymarketPipeline
 
 
@@ -11,6 +12,55 @@ def test_pipeline_result_supports_mirror_fields():
     assert result.mirror_traders_tracked == 4
     assert result.mirror_signals_generated == 5
     assert result.stage_timings == {"book_fetch_seconds": 1.0}
+
+
+def test_local_book_depletion_subtracts_simulated_ask_liquidity():
+    depletion = LocalBookDepletion(ttl_seconds=60)
+    market = _market()
+    yes_book = OrderBook(
+        token_id="yes",
+        market_id="m1",
+        timestamp_ms=1,
+        bids=[],
+        asks=[BookLevel(price=0.45, size=5), BookLevel(price=0.48, size=10)],
+        tick_size=0.01,
+        min_order_size=1,
+        neg_risk=False,
+    )
+    no_book = OrderBook(
+        token_id="no",
+        market_id="m1",
+        timestamp_ms=1,
+        bids=[],
+        asks=[BookLevel(price=0.45, size=5), BookLevel(price=0.48, size=10)],
+        tick_size=0.01,
+        min_order_size=1,
+        neg_risk=False,
+    )
+    opportunity = Opportunity(
+        market_id="m1",
+        question="Q",
+        direction="buy_both_merge",
+        gross_cost=9.0,
+        fee_cost=0.0,
+        yes_fee_cost=0.0,
+        no_fee_cost=0.0,
+        gas_cost=0.0,
+        slippage_buffer=0.0,
+        net_cost=9.0,
+        net_edge=1.0,
+        capacity=10.0,
+        mergeable_qty=10.0,
+        yes_qty=10.0,
+        no_qty=10.0,
+        yes_price=0.45,
+        no_price=0.45,
+    )
+
+    depletion.record(market, yes_book, no_book, opportunity)
+    adjusted = depletion.apply(yes_book)
+
+    assert adjusted.asks == [BookLevel(price=0.48, size=5.0)]
 
 
 def _market(market_id="m1", yes_token_id="yes", no_token_id="no") -> MarketInfo:
@@ -205,10 +255,14 @@ def test_pipeline_fetch_market_books_can_use_ws_cache(tmp_path, monkeypatch):
     calls = {}
 
     monkeypatch.setattr(pipeline, "_ensure_ws_stream", lambda markets, wait_ready=True: calls.__setitem__("ensured", len(markets)))
+    def fake_get_market_books(markets, connection_stale_seconds, top_only=True):
+        calls["top_only"] = top_only
+        return {"m1": {"yes": yes_book, "no": no_book}}, {}
+
     monkeypatch.setattr(
         pipeline.book_cache,
         "get_market_books",
-        lambda markets, connection_stale_seconds, top_only=True: ({"m1": {"yes": yes_book, "no": no_book}}, {}),
+        fake_get_market_books,
     )
     monkeypatch.setattr(pipeline.clob, "fetch_books", lambda token_ids: (_ for _ in ()).throw(AssertionError("HTTP should not be called")))
     monkeypatch.setattr(pipeline.clob, "fetch_book", lambda token_id: (_ for _ in ()).throw(AssertionError("HTTP should not be called")))
@@ -217,6 +271,7 @@ def test_pipeline_fetch_market_books_can_use_ws_cache(tmp_path, monkeypatch):
 
     assert errors == {}
     assert calls["ensured"] == 1
+    assert calls["top_only"] is False
     assert books_by_market["m1"]["yes"] == yes_book
     assert books_by_market["m1"]["no"] == no_book
 

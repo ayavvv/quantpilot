@@ -25,6 +25,13 @@ def test_polymarket_scan_interval_default_is_service_safe():
     assert cfg.book_top_sample_seconds == 0
     assert cfg.book_top_retention_hours == 72
     assert cfg.book_top_retention_job_seconds == 3600
+    assert cfg.target_notional_per_opp == 25
+    assert cfg.min_depth_edge_per_share == 0
+    assert cfg.market_cooldown_seconds == 60
+    assert cfg.local_book_depletion_ttl_seconds == 900
+    assert cfg.max_market_notional_per_day == 50
+    assert cfg.max_daily_notional == 250
+    assert cfg.max_daily_loss == 25
 
 
 def test_env_example_documents_service_safe_scan_interval():
@@ -48,3 +55,10 @@ def test_env_example_documents_service_safe_scan_interval():
     assert "POLY_BOOK_TOP_SAMPLE_SECONDS=0" in content
     assert "POLY_BOOK_TOP_RETENTION_HOURS=72" in content
     assert "POLY_BOOK_TOP_RETENTION_JOB_SECONDS=3600" in content
+    assert "POLY_TARGET_NOTIONAL_PER_OPP=25" in content
+    assert "POLY_MIN_DEPTH_EDGE_PER_SHARE=0" in content
+    assert "POLY_MARKET_COOLDOWN_SECONDS=60" in content
+    assert "POLY_LOCAL_BOOK_DEPLETION_TTL_SECONDS=900" in content
+    assert "POLY_MAX_MARKET_NOTIONAL_PER_DAY=50" in content
+    assert "POLY_MAX_DAILY_NOTIONAL=250" in content
+    assert "POLY_MAX_DAILY_LOSS=25" in content

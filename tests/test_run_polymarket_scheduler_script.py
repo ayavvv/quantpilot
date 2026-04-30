@@ -32,6 +32,11 @@ def test_run_polymarket_scheduler_script_stays_poly_scoped():
     assert ': "${POLY_BOOK_TOP_SAMPLE_SECONDS:=0}"' in content
     assert ': "${POLY_BOOK_TOP_RETENTION_HOURS:=72}"' in content
     assert ': "${POLY_BOOK_TOP_RETENTION_JOB_SECONDS:=3600}"' in content
+    assert ': "${POLY_TARGET_NOTIONAL_PER_OPP:=25}"' in content
+    assert ': "${POLY_MARKET_COOLDOWN_SECONDS:=60}"' in content
+    assert ': "${POLY_MAX_MARKET_NOTIONAL_PER_DAY:=50}"' in content
+    assert ': "${POLY_MAX_DAILY_NOTIONAL:=250}"' in content
+    assert ': "${POLY_MAX_DAILY_LOSS:=25}"' in content
     assert 'PYTHON_BIN="$PROJECT_DIR/.venv/bin/python"' in content
     assert 'export DATA_DIR POLY_DATA_DIR POLY_PAPER_ONLY POLY_ENABLE_SPLIT_SELL POLY_ENABLE_TOP_TRADER_MIRROR' in content
     assert 'export POLY_MAX_ACTIVE_MARKETS POLY_CATALOG_PAGE_SIZE POLY_CATALOG_FETCH_WORKERS POLY_CATALOG_FETCH_FEE_RATES' in content
@@ -43,6 +48,8 @@ def test_run_polymarket_scheduler_script_stays_poly_scoped():
     assert 'export POLY_STORAGE_ASYNC_FLUSH_ENABLED POLY_STORAGE_ASYNC_FLUSH_SECONDS' in content
     assert 'export POLY_BOOK_TOP_SAMPLE_SECONDS' in content
     assert 'export POLY_BOOK_TOP_RETENTION_HOURS POLY_BOOK_TOP_RETENTION_JOB_SECONDS' in content
+    assert 'export POLY_MIN_NET_EDGE POLY_DEFAULT_GAS_COST POLY_SLIPPAGE_BUFFER POLY_TARGET_NOTIONAL_PER_OPP' in content
+    assert 'export POLY_MAX_MARKET_NOTIONAL_PER_DAY POLY_MAX_DAILY_NOTIONAL POLY_MAX_DAILY_LOSS' in content
     assert '"$PYTHON_BIN" -m polymarket.scheduler' in content
     assert 'mkdir -p "$PROJECT_DIR/logs"' in content
 

@@ -13,6 +13,7 @@ from polymarket.async_storage import AsyncScanStorageWriter
 from polymarket.books import ClobClient
 from polymarket.catalog import load_binary_markets
 from polymarket.config import PolySettings, settings
+from polymarket.execution_guards import LocalBookDepletion
 from polymarket.models import MarketInfo, Opportunity, OrderBook
 from polymarket.paper.simulator import PaperSimulator
 from polymarket.scanner.full_set import rejection_reason, scan_market
@@ -48,6 +49,7 @@ class PolymarketPipeline:
         self.profile_client = PublicProfileClient(self.cfg)
         self.history_client = TraderHistoryClient(self.cfg)
         self.mirror_bookkeeper = MirrorBookkeeper(storage=self.mirror_storage, initial_cash=self.cfg.paper_initial_cash)
+        self.local_book_depletion = LocalBookDepletion(self.cfg.local_book_depletion_ttl_seconds)
         self.book_cache = PolymarketBookCache()
         self.book_stream: PolymarketBookStream | None = None
         self._ws_asset_ids: list[str] = []
@@ -156,7 +158,7 @@ class PolymarketPipeline:
             return self.book_cache.get_market_books(
                 markets,
                 connection_stale_seconds=connection_stale_seconds,
-                top_only=True,
+                top_only=False,
             )
 
         books_by_market: dict[str, dict[str, OrderBook]] = {}
@@ -247,6 +249,8 @@ class PolymarketPipeline:
             if yes_book is None or no_book is None:
                 record_skip("missing_paired_books")
                 continue
+            scan_yes_book = self.local_book_depletion.apply(yes_book)
+            scan_no_book = self.local_book_depletion.apply(no_book)
             if persist_scan_artifacts:
                 top_rows.extend(
                     [
@@ -267,8 +271,8 @@ class PolymarketPipeline:
             scanned_markets += 1
             try:
                 scan_started = perf_counter()
-                reason = rejection_reason(market, yes_book, no_book, cfg=self.cfg)
-                opportunities = [] if reason is not None else scan_market(market, yes_book, no_book, cfg=self.cfg)
+                reason = rejection_reason(market, scan_yes_book, scan_no_book, cfg=self.cfg)
+                opportunities = [] if reason is not None else scan_market(market, scan_yes_book, scan_no_book, cfg=self.cfg)
                 stage_timings["scan_compute_seconds"] += perf_counter() - scan_started
                 if reason is not None and persist_scan_artifacts:
                     rejection_counts[reason] = int(rejection_counts.get(reason, 0)) + 1
@@ -277,7 +281,14 @@ class PolymarketPipeline:
                     with self._storage_write_lock:
                         self.storage.save_book_snapshot(market, yes_book, no_book, persist_depth=True, persist_top=False)
                         opportunities_found += self.storage.save_opportunities(opportunities)
-                        trades_simulated += self.simulator.consume(market, opportunities)
+                        trades = self.simulator.consume(market, opportunities)
+                        trades_simulated += trades
+                        if persist_scan_artifacts:
+                            for key, value in self.simulator.last_rejection_counts.items():
+                                rejection_counts[key] = int(rejection_counts.get(key, 0)) + int(value)
+                        if trades > 0:
+                            for accepted_opportunity in self.simulator.last_accepted_opportunities:
+                                self.local_book_depletion.record(market, scan_yes_book, scan_no_book, accepted_opportunity)
                     stage_timings["storage_write_seconds"] += perf_counter() - write_started
             except Exception as exc:  # pragma: no cover
                 record_skip(f"scan_error:{type(exc).__name__}")

@@ -20,6 +20,53 @@ class PaperSimulator:
         initial_cash = self.cfg.paper_initial_cash if state is None else state["cash"]
         realized_pnl = 0.0 if state is None else state["realized_pnl"]
         self.ledger = PaperLedger(initial_cash=initial_cash, realized_pnl=realized_pnl)
+        self.last_accepted_opportunities: list[Opportunity] = []
+        self.last_rejection_counts: dict[str, int] = {}
+        self._last_fill_by_market = self.storage.load_latest_fill_times_by_market()
+        self._daily_notional_by_market: dict[str, float] = {}
+        self._daily_notional = 0.0
+        self._day_key = ""
+        self._day_start_realized_pnl = self.ledger.state.realized_pnl
+        self._reset_day_if_needed()
+
+    def _reset_day_if_needed(self, now: datetime | None = None) -> None:
+        now = now or datetime.now(timezone.utc)
+        day_key = now.date().isoformat()
+        if day_key == self._day_key:
+            return
+        self._day_key = day_key
+        self._daily_notional_by_market = self.storage.load_fill_notional_by_market(day_key)
+        self._daily_notional = sum(self._daily_notional_by_market.values())
+        self._day_start_realized_pnl = self.ledger.state.realized_pnl
+
+    def _opportunity_notional(self, opportunity: Opportunity) -> float:
+        if opportunity.direction == "buy_both_merge":
+            return max(opportunity.net_cost, 0.0)
+        return max(opportunity.gross_cost, 0.0)
+
+    def _risk_rejection(self, market: MarketInfo, opportunity: Opportunity, now: datetime) -> str | None:
+        self._reset_day_if_needed(now)
+        cooldown = max(float(self.cfg.market_cooldown_seconds), 0.0)
+        last_fill = self._last_fill_by_market.get(market.market_id)
+        if cooldown > 0 and last_fill is not None:
+            if last_fill.tzinfo is None:
+                last_fill = last_fill.replace(tzinfo=timezone.utc)
+            if (now - last_fill).total_seconds() < cooldown:
+                return "market_cooldown"
+
+        daily_pnl = self.ledger.state.realized_pnl - self._day_start_realized_pnl
+        if self.cfg.max_daily_loss > 0 and daily_pnl <= -self.cfg.max_daily_loss:
+            return "daily_loss_limit"
+
+        notional = self._opportunity_notional(opportunity)
+        market_notional = self._daily_notional_by_market.get(market.market_id, 0.0)
+        if self.cfg.max_market_notional_per_day > 0 and market_notional + notional > self.cfg.max_market_notional_per_day:
+            return "market_notional_limit"
+        if self.cfg.max_daily_notional > 0 and self._daily_notional + notional > self.cfg.max_daily_notional:
+            return "daily_notional_limit"
+        if not self.ledger.can_fill(opportunity):
+            return "insufficient_cash"
+        return None
 
     def record_scan_heartbeat(self, strategy_type: str = "full_set_arb", rejection_counts: dict[str, int] | None = None) -> None:
         self.storage.upsert_daily_summary(
@@ -39,6 +86,8 @@ class PaperSimulator:
         )
 
     def consume(self, market: MarketInfo, opportunities: list[Opportunity]) -> int:
+        self.last_accepted_opportunities = []
+        self.last_rejection_counts = {}
         if not opportunities:
             return 0
         accepted = 0
@@ -46,17 +95,29 @@ class PaperSimulator:
         net_edge_sum = 0.0
         max_inventory_used = 0.0
         for opportunity in opportunities:
+            now = datetime.now(timezone.utc)
             opportunity_id = self.ledger.build_opportunity_id(opportunity)
-            fills = self.ledger.apply_opportunity(market, opportunity)
-            if not fills:
+            rejection = self._risk_rejection(market, opportunity, now)
+            if rejection is not None:
+                self.last_rejection_counts[rejection] = int(self.last_rejection_counts.get(rejection, 0)) + 1
                 continue
             if not self.storage.claim_opportunity(opportunity_id):
+                self.last_rejection_counts["duplicate_opportunity"] = int(self.last_rejection_counts.get("duplicate_opportunity", 0)) + 1
+                continue
+            fills = self.ledger.apply_opportunity(market, opportunity)
+            if not fills:
+                self.last_rejection_counts["unfilled_after_claim"] = int(self.last_rejection_counts.get("unfilled_after_claim", 0)) + 1
                 continue
             accepted += 1
             gross_edge_sum += opportunity.mergeable_qty - opportunity.gross_cost
             net_edge_sum += opportunity.net_edge
             max_inventory_used = max(max_inventory_used, opportunity.net_cost if opportunity.direction == "buy_both_merge" else opportunity.gross_cost)
             self.storage.save_fills(fills)
+            notional = self._opportunity_notional(opportunity)
+            self._daily_notional += notional
+            self._daily_notional_by_market[market.market_id] = self._daily_notional_by_market.get(market.market_id, 0.0) + notional
+            self._last_fill_by_market[market.market_id] = now
+            self.last_accepted_opportunities.append(opportunity)
         self.storage.upsert_positions(self.ledger.positions)
         self.storage.save_state(self.ledger.state.cash, self.ledger.state.realized_pnl)
         strategy_type = opportunities[0].strategy_type if opportunities else "full_set_arb"
