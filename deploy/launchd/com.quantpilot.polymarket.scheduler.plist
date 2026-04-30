@@ -11,6 +11,8 @@
     <true/>
     <key>ThrottleInterval</key>
     <integer>10</integer>
+    <key>UserName</key>
+    <string>__USER__</string>
 
     <key>WorkingDirectory</key>
     <string>__PROJECT_DIR__</string>
