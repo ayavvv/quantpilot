@@ -8,6 +8,7 @@ RUN_POLY = REPO_ROOT / "scripts" / "run_polymarket_paper.sh"
 def test_run_polymarket_script_stays_poly_scoped():
     content = RUN_POLY.read_text()
     assert 'POLY_DATA_DIR="$POLY_DATA_DIR" \\' in content
+    assert 'POLY_ENABLE_SPLIT_SELL="${POLY_ENABLE_SPLIT_SELL:-true}" \\' in content
     assert 'from polymarket.pipeline import PolymarketPipeline' in content
     assert 'from polymarket.reporting.daily import generate_daily_report' in content
     assert 'LATEST_REPORT="$POLY_DATA_DIR/reports/daily_summary_latest.json"' in content

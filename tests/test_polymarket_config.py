@@ -32,6 +32,7 @@ def test_polymarket_scan_interval_default_is_service_safe():
     assert cfg.max_market_notional_per_day == 50
     assert cfg.max_daily_notional == 250
     assert cfg.max_daily_loss == 25
+    assert cfg.enable_split_sell is True
 
 
 def test_env_example_documents_service_safe_scan_interval():
@@ -56,6 +57,7 @@ def test_env_example_documents_service_safe_scan_interval():
     assert "POLY_BOOK_TOP_RETENTION_HOURS=72" in content
     assert "POLY_BOOK_TOP_RETENTION_JOB_SECONDS=3600" in content
     assert "POLY_TARGET_NOTIONAL_PER_OPP=25" in content
+    assert "POLY_ENABLE_SPLIT_SELL=true" in content
     assert "POLY_MIN_DEPTH_EDGE_PER_SHARE=0" in content
     assert "POLY_MARKET_COOLDOWN_SECONDS=60" in content
     assert "POLY_LOCAL_BOOK_DEPLETION_TTL_SECONDS=900" in content

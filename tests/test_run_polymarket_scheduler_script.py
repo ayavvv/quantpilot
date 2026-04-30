@@ -9,6 +9,7 @@ def test_run_polymarket_scheduler_script_stays_poly_scoped():
     content = RUN_POLY_SCHEDULER.read_text()
     assert 'load_env_defaults "$PROJECT_DIR/.env"' in content
     assert ': "${POLY_DATA_DIR:=$DATA_DIR/polymarket}"' in content
+    assert ': "${POLY_ENABLE_SPLIT_SELL:=true}"' in content
     assert ': "${POLY_ENABLE_TOP_TRADER_MIRROR:=false}"' in content
     assert ': "${POLY_SCAN_INTERVAL_SECONDS:=300}"' in content
     assert ': "${POLY_CATALOG_REFRESH_JOB_SECONDS:=1800}"' in content

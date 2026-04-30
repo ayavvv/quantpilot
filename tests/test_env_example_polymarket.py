@@ -34,3 +34,4 @@ def test_env_example_documents_polymarket_keys():
 def test_env_example_documents_paper_only_default():
     content = ENV_EXAMPLE.read_text()
     assert 'POLY_PAPER_ONLY=true' in content
+    assert 'POLY_ENABLE_SPLIT_SELL=true' in content

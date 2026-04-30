@@ -271,8 +271,8 @@ class PolymarketPipeline:
             scanned_markets += 1
             try:
                 scan_started = perf_counter()
-                reason = rejection_reason(market, scan_yes_book, scan_no_book, cfg=self.cfg)
-                opportunities = [] if reason is not None else scan_market(market, scan_yes_book, scan_no_book, cfg=self.cfg)
+                opportunities = scan_market(market, scan_yes_book, scan_no_book, cfg=self.cfg)
+                reason = None if opportunities else rejection_reason(market, scan_yes_book, scan_no_book, cfg=self.cfg)
                 stage_timings["scan_compute_seconds"] += perf_counter() - scan_started
                 if reason is not None and persist_scan_artifacts:
                     rejection_counts[reason] = int(rejection_counts.get(reason, 0)) + 1

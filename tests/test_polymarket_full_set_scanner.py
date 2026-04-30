@@ -50,6 +50,20 @@ def _depth_book(token_id: str, asks: list[tuple[float, float]], ts: int = 1000) 
     )
 
 
+def _bid_depth_book(token_id: str, bids: list[tuple[float, float]], ts: int = 1000) -> OrderBook:
+    return OrderBook(
+        token_id=token_id,
+        market_id="m1",
+        timestamp_ms=ts,
+        bids=[BookLevel(price=price, size=size) for price, size in bids],
+        asks=[],
+        tick_size=0.01,
+        min_order_size=1,
+        neg_risk=False,
+        last_trade_price=bids[0][0],
+    )
+
+
 def test_scan_market_finds_buy_both_merge_opportunity():
     cfg = PolySettings(_env_file=None,
         data_dir="/tmp/poly-test", enable_split_sell=False,
@@ -147,3 +161,64 @@ def test_scan_market_equalizes_buy_qty_with_fee():
     assert opportunities[0].mergeable_qty <= opportunities[0].yes_qty
     assert opportunities[0].mergeable_qty <= opportunities[0].no_qty
     assert opportunities[0].yes_qty != pytest.approx(opportunities[0].no_qty)
+
+
+def test_scan_market_finds_split_sell_when_buy_side_is_not_profitable():
+    cfg = PolySettings(_env_file=None,
+        data_dir="/tmp/poly-test",
+        enable_split_sell=True,
+        min_net_edge=0.01,
+        slippage_buffer=0.0,
+        default_gas_cost=0.0,
+        target_notional_per_opp=25,
+    )
+    opportunities = scan_market(_market(), _book("yes", bid=0.53, ask=0.60, size=10), _book("no", bid=0.53, ask=0.60, size=10), cfg)
+
+    assert len(opportunities) == 1
+    assert opportunities[0].direction == "split_sell_both"
+    assert opportunities[0].mergeable_qty == pytest.approx(10.0)
+    assert opportunities[0].gross_cost == pytest.approx(10.0)
+    assert opportunities[0].net_cost == pytest.approx(10.6)
+    assert opportunities[0].net_edge == pytest.approx(0.6)
+
+
+def test_scan_market_finds_split_sell_when_best_asks_are_missing():
+    cfg = PolySettings(_env_file=None,
+        data_dir="/tmp/poly-test",
+        enable_split_sell=True,
+        min_net_edge=0.01,
+        slippage_buffer=0.0,
+        default_gas_cost=0.0,
+    )
+    opportunities = scan_market(_market(), _bid_depth_book("yes", [(0.53, 10)]), _bid_depth_book("no", [(0.53, 10)]), cfg)
+
+    assert len(opportunities) == 1
+    assert opportunities[0].direction == "split_sell_both"
+    assert rejection_reason(_market(), _bid_depth_book("yes", [(0.53, 10)]), _bid_depth_book("no", [(0.53, 10)]), cfg) is None
+
+
+def test_scan_market_uses_bid_depth_for_split_sell_target_notional():
+    cfg = PolySettings(_env_file=None,
+        data_dir="/tmp/poly-test",
+        enable_split_sell=True,
+        min_net_edge=0.01,
+        slippage_buffer=0.0,
+        default_gas_cost=0.0,
+        target_notional_per_opp=25,
+        max_notional_per_opp=250,
+    )
+    opportunities = scan_market(
+        _market(),
+        _bid_depth_book("yes", [(0.53, 5), (0.52, 20)]),
+        _bid_depth_book("no", [(0.53, 5), (0.52, 20)]),
+        cfg,
+    )
+
+    assert len(opportunities) == 1
+    opportunity = opportunities[0]
+    assert opportunity.direction == "split_sell_both"
+    assert opportunity.mergeable_qty == pytest.approx(25.0)
+    assert opportunity.gross_cost == pytest.approx(25.0)
+    assert opportunity.net_cost == pytest.approx(26.1)
+    assert opportunity.net_edge == pytest.approx(1.1)
+    assert opportunity.yes_price == pytest.approx(0.522)

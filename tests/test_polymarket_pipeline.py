@@ -93,6 +93,19 @@ def _fresh_book(token_id: str, market_id: str, ask: float = 0.5) -> OrderBook:
     )
 
 
+def _fresh_bid_only_book(token_id: str, market_id: str, bid: float = 0.53, size: float = 10) -> OrderBook:
+    return OrderBook(
+        token_id=token_id,
+        market_id=market_id,
+        timestamp_ms=int(datetime.now(timezone.utc).timestamp() * 1000),
+        bids=[BookLevel(price=bid, size=size)],
+        asks=[],
+        tick_size=0.01,
+        min_order_size=1,
+        neg_risk=False,
+    )
+
+
 def test_pipeline_reuses_catalog_until_ttl_expires(tmp_path, monkeypatch):
     cfg = PolySettings(_env_file=None, data_dir=str(tmp_path), catalog_refresh_seconds=3600)
     pipeline = PolymarketPipeline(cfg)
@@ -388,6 +401,40 @@ def test_pipeline_full_set_strategy_skips_snapshot_and_simulator_when_no_opportu
     assert calls["depth"] == 0
     assert calls["simulated"] == 0
     assert calls["heartbeat"] == 1
+
+
+def test_pipeline_scans_split_sell_after_buy_side_rejection(tmp_path, monkeypatch):
+    cfg = PolySettings(_env_file=None,
+        data_dir=str(tmp_path),
+        enable_split_sell=True,
+        min_net_edge=0.01,
+        slippage_buffer=0.0,
+        default_gas_cost=0.0,
+        market_cooldown_seconds=0,
+    )
+    pipeline = PolymarketPipeline(cfg)
+    market = _market()
+
+    monkeypatch.setattr(
+        pipeline,
+        "_fetch_market_books",
+        lambda markets, wait_ready=True, ensure_markets=None: (
+            {
+                "m1": {
+                    "yes": _fresh_bid_only_book("yes", "m1", bid=0.53, size=10),
+                    "no": _fresh_bid_only_book("no", "m1", bid=0.53, size=10),
+                }
+            },
+            {},
+        ),
+    )
+
+    opportunities_found, trades_simulated, stage_timings = pipeline._run_full_set_strategy([market])
+
+    assert opportunities_found == 1
+    assert trades_simulated == 1
+    assert stage_timings["scanned_markets"] == 1
+    assert pipeline.simulator.last_accepted_opportunities[0].direction == "split_sell_both"
 
 
 def test_pipeline_book_top_sampling_gates_scan_artifacts(tmp_path):

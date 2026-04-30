@@ -39,7 +39,7 @@ class PolySettings(BaseSettings):
     max_daily_loss: float = Field(default=25.0)
     paper_initial_cash: float = Field(default=1000.0)
     paper_only: bool = Field(default=True)
-    enable_split_sell: bool = Field(default=False)
+    enable_split_sell: bool = Field(default=True)
     max_active_markets: int = Field(default=250)
     catalog_page_size: int = Field(default=1000)
     catalog_fetch_workers: int = Field(default=4)
