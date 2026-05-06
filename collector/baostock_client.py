@@ -200,12 +200,15 @@ class BaostockClient:
 
     # --- Stock list -----------------------------------------------------------
 
-    def get_a_share_list(self) -> List[str]:
+    def get_a_share_basic(self) -> pd.DataFrame:
         """
-        Get all A-share stock codes in SH./SZ. format.
-        Only returns currently listed stocks (status=1).
+        Get currently listed A-share basic metadata in Futu code format.
+
+        Baostock exposes current stock names through query_stock_basic. Downstream
+        strategy code uses this metadata to exclude ST/*ST names before training
+        and signal generation.
         """
-        logger.info("baostock: fetching A-share stock list...")
+        logger.info("baostock: fetching A-share stock basic metadata...")
 
         rs = self._run_query(lambda **kwargs: self._bs.query_stock_basic(**kwargs), code_name="")
         data = []
@@ -213,15 +216,30 @@ class BaostockClient:
             data.append(rs.get_row_data())
         df = pd.DataFrame(data, columns=rs.fields)
 
-        # Filter: type=1 (stock), status=1 (listed)
-        df = df[(df["type"] == "1") & (df["status"] == "1")]
+        if df.empty:
+            return pd.DataFrame(columns=["code", "name", "ipoDate", "outDate", "type", "status"])
 
-        codes = []
-        for bs_code in df["code"].tolist():
-            futu_code = self._to_futu_code(bs_code)
-            if futu_code:
-                codes.append(futu_code)
+        # Filter: type=1 (stock), status=1 (listed), then convert sh/sz code to Futu style.
+        df = df[(df["type"] == "1") & (df["status"] == "1")].copy()
+        df["code"] = df["code"].map(self._to_futu_code)
+        df = df.dropna(subset=["code"])
+        if "code_name" in df.columns:
+            df["name"] = df["code_name"].astype(str)
+        elif "name" not in df.columns:
+            df["name"] = ""
 
+        keep_cols = [col for col in ["code", "name", "ipoDate", "outDate", "type", "status"] if col in df.columns]
+        df = df[keep_cols].drop_duplicates(subset=["code"]).sort_values("code").reset_index(drop=True)
+        logger.info(f"baostock: found {len(df)} listed A-share stock metadata rows")
+        return df
+
+    def get_a_share_list(self) -> List[str]:
+        """
+        Get all A-share stock codes in SH./SZ. format.
+        Only returns currently listed stocks (status=1).
+        """
+        df = self.get_a_share_basic()
+        codes = df["code"].astype(str).tolist() if not df.empty else []
         logger.info(f"baostock: found {len(codes)} A-shares")
         return sorted(codes)
 

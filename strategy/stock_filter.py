@@ -11,8 +11,13 @@ A股股票池过滤器。
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+import unicodedata
+from datetime import datetime
 from pathlib import Path
+from typing import Iterable
 
 import pandas as pd
 
@@ -21,6 +26,104 @@ log = logging.getLogger(__name__)
 DEFAULT_MIN_TURNOVER = 50_000_000  # 5000万
 DEFAULT_MIN_TRADING_DAYS = 252  # ~1年交易日
 LOOKBACK_DAYS = 60  # 成交额计算窗口
+A_SHARE_ST_METADATA = "a_share_stock_basic"
+ST_NAME_PREFIXES = ("*ST", "ST", "S*ST", "*SST", "SST")
+
+
+def is_st_stock_name(name: object) -> bool:
+    """Return True for current A-share ST/*ST display names."""
+    if name is None:
+        return False
+    normalized = unicodedata.normalize("NFKC", str(name)).strip().upper()
+    normalized = normalized.replace(" ", "")
+    return normalized.startswith(ST_NAME_PREFIXES)
+
+
+def a_share_st_filter_enabled() -> bool:
+    return os.environ.get("A_SHARE_EXCLUDE_ST", "true").lower() not in {"0", "false", "no"}
+
+
+def build_a_share_stock_basic_metadata(rows: Iterable[dict], source: str = "baostock") -> dict:
+    """Build compact JSON metadata for current A-share names and ST status."""
+    stocks = []
+    for row in rows:
+        code = str(row.get("code", "")).strip().upper()
+        if not code.startswith(("SH.", "SZ.")):
+            continue
+        name = str(row.get("name", row.get("code_name", ""))).strip()
+        is_st = is_st_stock_name(name)
+        stocks.append(
+            {
+                "code": code,
+                "name": name,
+                "is_st": is_st,
+                "ipoDate": row.get("ipoDate", ""),
+                "outDate": row.get("outDate", ""),
+                "type": row.get("type", ""),
+                "status": row.get("status", ""),
+            }
+        )
+
+    st_codes = sorted(stock["code"] for stock in stocks if stock["is_st"])
+    return {
+        "source": source,
+        "as_of": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "total": len(stocks),
+        "st_count": len(st_codes),
+        "st_codes": st_codes,
+        "stocks": sorted(stocks, key=lambda item: item["code"]),
+    }
+
+
+def load_a_share_st_codes(provider_uri: str | Path) -> set[str]:
+    """Load current ST/*ST A-share codes from Qlib metadata."""
+    if not a_share_st_filter_enabled():
+        return set()
+
+    meta_path = Path(provider_uri).expanduser().resolve() / "metadata" / f"{A_SHARE_ST_METADATA}.json"
+    if not meta_path.exists():
+        log.warning("A-share ST metadata missing: %s", meta_path)
+        return set()
+
+    try:
+        payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        log.warning("Failed to read A-share ST metadata %s: %s", meta_path, exc)
+        return set()
+
+    st_codes = payload.get("st_codes")
+    if isinstance(st_codes, list):
+        return {str(code).strip().upper() for code in st_codes if str(code).strip()}
+
+    stocks = payload.get("stocks")
+    if isinstance(stocks, list):
+        return {
+            str(stock.get("code", "")).strip().upper()
+            for stock in stocks
+            if stock.get("is_st") or is_st_stock_name(stock.get("name"))
+        }
+
+    return set()
+
+
+def filter_st_codes(
+    provider_uri: str | Path,
+    codes: Iterable[str],
+    *,
+    context: str = "A-share universe",
+) -> list[str]:
+    """Remove current ST/*ST names from an A-share instrument list."""
+    code_list = list(codes)
+    st_codes = load_a_share_st_codes(provider_uri)
+    if not st_codes:
+        return code_list
+
+    filtered = [code for code in code_list if str(code).strip().upper() not in st_codes]
+    removed = len(code_list) - len(filtered)
+    if removed:
+        log.info("%s: excluded %d ST/*ST stocks", context, removed)
+        print(f"[INFO] {context}: 排除 ST/*ST {removed} 只")
+    return filtered
 
 
 def filter_stock_universe(
@@ -67,7 +170,7 @@ def filter_stock_universe(
         # --- 1. ST / *ST 检测（最近一条记录的 name）---
         if "name" in df.columns:
             latest_name = str(df.iloc[-1]["name"])
-            if "ST" in latest_name.upper():
+            if is_st_stock_name(latest_name):
                 rejected[code] = f"ST: {latest_name}"
                 continue
 

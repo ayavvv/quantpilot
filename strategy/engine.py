@@ -17,6 +17,7 @@ import pandas as pd
 import yaml
 
 from market_scope import a_share_model_prefixes, code_matches_prefixes
+from strategy.stock_filter import filter_st_codes
 
 try:
     import qlib
@@ -293,7 +294,7 @@ def _all_a_share_instruments(provider_uri: str) -> list[str]:
         code, _, _ = parts[:3]
         if code_matches_prefixes(code, prefixes):
             codes.append(code)
-    return codes
+    return filter_st_codes(provider_uri, codes, context="A-share train universe")
 
 
 def _active_a_share_instruments(provider_uri: str, last_date: str) -> list[str]:
@@ -310,7 +311,7 @@ def _active_a_share_instruments(provider_uri: str, last_date: str) -> list[str]:
         code, _, end_date = parts[:3]
         if code_matches_prefixes(code, prefixes) and end_date >= last_date:
             codes.append(code)
-    return codes
+    return filter_st_codes(provider_uri, codes, context=f"A-share inference universe {last_date}")
 
 
 def _apply_instrument_filter(dataset_cfg: dict[str, Any], instruments: list[str]) -> dict[str, Any]:

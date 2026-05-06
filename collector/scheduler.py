@@ -14,6 +14,10 @@ from collector.futu_client import FutuClient
 from collector.db_engine import DBEngine
 from collector.yf_client import YFinanceClient
 from collector.baostock_client import BaostockClient
+from strategy.stock_filter import (
+    A_SHARE_ST_METADATA as A_SHARE_ST_METADATA_NAME,
+    build_a_share_stock_basic_metadata,
+)
 
 
 class DataCollectorScheduler:
@@ -21,6 +25,7 @@ class DataCollectorScheduler:
 
     A_SHARE_SYNC_STATUS_METADATA = "a_share_sync_status"
     A_SHARE_SYNC_SUMMARY_METADATA = "a_share_sync_summary"
+    A_SHARE_ST_METADATA = A_SHARE_ST_METADATA_NAME
     A_SHARE_PREFIXES = ("SH.", "SZ.")
     DEFAULT_ALLOWED_A_SHARE_FAILURES = 0
     DEFAULT_MIN_A_SHARE_TARGET_HIT_RATIO = 0.995
@@ -823,6 +828,27 @@ class DataCollectorScheduler:
             raise RuntimeError("QLIB_DATA_DIR is required to persist A-share summary metadata")
         self.qlib_writer.save_metadata(self.A_SHARE_SYNC_SUMMARY_METADATA, summary)
 
+    def _save_a_share_stock_basic_metadata(self, stock_basic: pd.DataFrame):
+        """Persist current A-share names and ST/*ST flags for model universe filtering."""
+        self._init_qlib_writer()
+        if not self.qlib_writer:
+            logger.warning("Qlib direct writer unavailable; A-share ST metadata is disabled")
+            return
+        if stock_basic is None or stock_basic.empty:
+            logger.warning("A-share stock basic metadata empty; skipping ST metadata save")
+            return
+
+        metadata = build_a_share_stock_basic_metadata(
+            stock_basic.to_dict("records"),
+            source="baostock.query_stock_basic",
+        )
+        self.qlib_writer.save_metadata(self.A_SHARE_ST_METADATA, metadata)
+        logger.info(
+            "A-share ST metadata updated: total={} st_count={}",
+            metadata.get("total", 0),
+            metadata.get("st_count", 0),
+        )
+
     def _mark_a_share_sync_completed(self, target_date: str, total_codes: int, started_at: datetime):
         """Persist the latest fully completed A-share collection target date."""
         self._init_qlib_writer()
@@ -943,7 +969,9 @@ class DataCollectorScheduler:
                 logger.warning("Skipping Baostock A-share list because A_SHARE_FORCE_FUTU=true")
             else:
                 try:
-                    a_share_codes = self.bs_client.get_a_share_list()
+                    stock_basic = self.bs_client.get_a_share_basic()
+                    a_share_codes = stock_basic["code"].astype(str).tolist() if not stock_basic.empty else []
+                    self._save_a_share_stock_basic_metadata(stock_basic)
                     logger.info(f"Baostock A-share targets: {len(a_share_codes)}")
                 except Exception as e:
                     logger.error(f"Baostock A-share list failed: {e}")

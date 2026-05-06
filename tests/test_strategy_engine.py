@@ -24,6 +24,12 @@ class LaggedDummyModel:
         return pd.Series([0.42], index=idx)
 
 
+class EchoFeatureIndexModel:
+    def predict(self, dataset, segment="infer"):
+        idx = dataset.features.index
+        return pd.Series(range(len(idx)), index=idx, dtype=float)
+
+
 class DummyDataset:
     def prepare(self, *args, **kwargs):
         return pd.DataFrame({"feature": [1.0]})
@@ -188,6 +194,73 @@ def test_predict_next_day_prefers_direct_feature_fetch_for_a_share(tmp_path, mon
     assert captured["field_count"] > 100
     assert result.attrs["infer_date"] == "2026-04-08"
     assert result["code"].tolist() == ["SH.600000"]
+
+
+def test_predict_next_day_excludes_st_from_direct_feature_fetch(tmp_path, monkeypatch):
+    qlib_dir = tmp_path / "qlib"
+    inst_dir = qlib_dir / "instruments"
+    meta_dir = qlib_dir / "metadata"
+    inst_dir.mkdir(parents=True)
+    meta_dir.mkdir()
+    (inst_dir / "all.txt").write_text(
+        "SH.600000\t2006-01-03\t2026-04-08\nSZ.000001\t2006-01-03\t2026-04-08\n",
+        encoding="utf-8",
+    )
+    (meta_dir / "a_share_stock_basic.json").write_text(
+        '{"st_codes":["SH.600000"],"stocks":[{"code":"SH.600000","name":"ST测试","is_st":true}]}',
+        encoding="utf-8",
+    )
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    with open(models_dir / "lightgbm_sh_latest.pkl", "wb") as f:
+        pickle.dump(EchoFeatureIndexModel(), f)
+
+    monkeypatch.setattr(engine.qlib, "init", lambda **kwargs: None)
+    monkeypatch.setattr(
+        engine,
+        "_load_config",
+        lambda path=None: {
+            "task": {
+                "dataset": {
+                    "class": "DatasetH",
+                    "kwargs": {
+                        "handler": {
+                            "class": "Alpha158Fund",
+                            "module_path": "strategy.alpha_hk",
+                            "kwargs": {},
+                        },
+                        "segments": {},
+                    },
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        engine.D,
+        "calendar",
+        lambda start_time, end_time, freq="day": pd.DatetimeIndex(["2026-04-08"]),
+        raising=False,
+    )
+
+    captured = {}
+
+    def fake_features(instruments, fields, start_time, end_time):
+        captured["instruments"] = list(instruments)
+        idx = pd.MultiIndex.from_product(
+            [[pd.Timestamp("2026-04-08")], list(instruments)],
+            names=["datetime", "instrument"],
+        )
+        return pd.DataFrame(1.0, index=idx, columns=fields)
+
+    monkeypatch.setattr(engine.D, "features", fake_features, raising=False)
+    monkeypatch.setattr(engine, "init_instance_by_config", lambda cfg: (_ for _ in ()).throw(AssertionError("fallback should not run")))
+
+    strategy_engine = engine.StrategyEngine(provider_uri=qlib_dir, models_dir=models_dir)
+    result = strategy_engine._predict_next_day_impl(hk_mode=False)
+
+    assert captured["instruments"] == ["SZ.000001"]
+    assert result["code"].tolist() == ["SZ.000001"]
 
 
 def test_predict_next_day_fallback_keeps_a_share_instruments_only(tmp_path, monkeypatch):
