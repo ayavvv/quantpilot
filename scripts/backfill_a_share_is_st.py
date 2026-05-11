@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -134,6 +135,8 @@ def main() -> int:
                     f"rows={written_rows} empty={len(empty_codes)} failed={len(failed_codes)} last={code}",
                     flush=True,
                 )
+            if args.rate_limit > 0:
+                time.sleep(args.rate_limit)
     finally:
         writer.flush()
         client.close()
