@@ -294,7 +294,9 @@ def _all_a_share_instruments(provider_uri: str) -> list[str]:
         code, _, _ = parts[:3]
         if code_matches_prefixes(code, prefixes):
             codes.append(code)
-    return filter_st_codes(provider_uri, codes, context="A-share train universe")
+    # Do not apply today's ST snapshot to the full historical training window.
+    # Live inference and backtests filter ST point-in-time at the decision date.
+    return codes
 
 
 def _active_a_share_instruments(provider_uri: str, last_date: str) -> list[str]:
@@ -311,7 +313,12 @@ def _active_a_share_instruments(provider_uri: str, last_date: str) -> list[str]:
         code, _, end_date = parts[:3]
         if code_matches_prefixes(code, prefixes) and end_date >= last_date:
             codes.append(code)
-    return filter_st_codes(provider_uri, codes, context=f"A-share inference universe {last_date}")
+    return filter_st_codes(
+        provider_uri,
+        codes,
+        context=f"A-share inference universe {last_date}",
+        as_of_date=last_date,
+    )
 
 
 def _apply_instrument_filter(dataset_cfg: dict[str, Any], instruments: list[str]) -> dict[str, Any]:

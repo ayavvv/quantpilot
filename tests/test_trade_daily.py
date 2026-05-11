@@ -182,6 +182,35 @@ def test_extract_signals_respects_tradeable_prefixes(tmp_path, monkeypatch):
     assert df["code"].tolist() == ["SH.600000"]
 
 
+def test_extract_signals_filters_st_names(tmp_path, monkeypatch):
+    pred_path = tmp_path / "pred.pkl"
+    index = pd.MultiIndex.from_tuples(
+        [
+            (pd.Timestamp("2026-04-08"), "SH.600000"),
+            (pd.Timestamp("2026-04-08"), "SH.600001"),
+        ],
+        names=["datetime", "instrument"],
+    )
+    series = pd.Series([0.9, 0.8], index=index)
+    pred_path.write_bytes(pickle.dumps(series))
+
+    qlib_dir = tmp_path / "qlib"
+    meta_dir = qlib_dir / "metadata"
+    meta_dir.mkdir(parents=True)
+    (meta_dir / "a_share_stock_basic.json").write_text(
+        '{"st_codes":["SH.600000"]}',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(trade_daily, "QLIB_DATA_DIR", qlib_dir)
+    monkeypatch.setattr(trade_daily, "A_SHARE_TRADEABLE_PREFIXES", ("SH.",))
+
+    df, signal_date = trade_daily.extract_signals(pred_path)
+
+    assert signal_date == "2026-04-08"
+    assert df["code"].tolist() == ["SH.600001"]
+
+
 def test_latest_a_share_date_uses_model_prefixes_for_freshness(tmp_path, monkeypatch):
     qlib_dir = tmp_path / "qlib"
     inst_dir = qlib_dir / "instruments"

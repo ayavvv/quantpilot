@@ -1,6 +1,6 @@
 # Qlib 全 A 股配置：LightGBM + Alpha158Fund
 # 数据目录：~/.qlib/qlib_data/my_quant_data（经过过滤的 A 股）
-# 过滤规则：剔除 ST、次新股（<1年）、日均成交额 <5000万
+# 过滤规则：ST 在推理/交易/回测候选阶段按日期剔除；不要用当前 ST 名单倒灌过滤整段历史训练集
 
 qlib_init:
   provider_uri: "~/.qlib/qlib_data/my_quant_data"

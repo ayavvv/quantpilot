@@ -24,7 +24,7 @@ from .config import (
     TOP_N,
     TRADEABLE_PREFIXES,
 )
-from .data_loader import load_change_rates, load_close_prices, load_predictions
+from .data_loader import load_change_rates, load_close_prices, load_predictions, load_st_flags
 from .backtest import run_backtest
 from .report import compute_metrics, generate_charts
 
@@ -79,6 +79,34 @@ def main():
     change_df = None
     if args.filter_limit_up:
         change_df = load_change_rates(price_dir, instruments, start_date=start, end_date="2099-12-31")
+    st_df = load_st_flags(price_dir, instruments, start_date=start, end_date="2099-12-31")
+    st_filter_source = "point-in-time"
+    if st_df.empty:
+        from strategy.stock_filter import load_a_share_st_codes
+
+        current_st = load_a_share_st_codes(price_dir)
+        matched_st = sorted(set(instruments) & current_st)
+        if matched_st:
+            st_df = pd.DataFrame(0.0, index=close_df.index, columns=instruments)
+            st_df.loc[:, matched_st] = 1.0
+            st_filter_source = "current snapshot fallback"
+        else:
+            st_filter_source = "unavailable"
+            st_df = None
+    else:
+        covered_ratio = len(st_df.columns) / max(len(instruments), 1)
+        if covered_ratio < 0.9:
+            from strategy.stock_filter import load_a_share_st_codes
+
+            current_st = load_a_share_st_codes(price_dir)
+            matched_st = sorted(set(instruments) & current_st)
+            if matched_st:
+                st_df = pd.DataFrame(0.0, index=close_df.index, columns=instruments)
+                st_df.loc[:, matched_st] = 1.0
+                st_filter_source = "current snapshot fallback"
+            else:
+                st_filter_source = "unavailable"
+                st_df = None
 
     # 2. Run backtest
     print("\nRunning backtest...")
@@ -88,6 +116,7 @@ def main():
         top_n=args.top_n,
         hold_bonus=args.hold_bonus,
         change_df=change_df,
+        st_df=st_df,
         filter_limit_up=args.filter_limit_up,
         stop_loss_pct=args.stop_loss_pct,
         position_ratio=args.position_ratio,
@@ -123,6 +152,7 @@ def main():
             f"Top-{args.top_n}, Hold bonus {args.hold_bonus:.4f}, "
             f"Stop-loss {args.stop_loss_pct:.2%}, Position ratio {args.position_ratio:.0%}, "
             f"Prefixes {allowed_prefixes or 'ALL'}, "
+            f"ST filter {st_filter_source}, "
             f"Limit-up filter {'on' if args.filter_limit_up else 'off'}, "
             f"Slippage {args.slippage:.2%}/side\n"
         )

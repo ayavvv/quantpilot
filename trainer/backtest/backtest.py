@@ -44,6 +44,7 @@ def run_backtest(
     top_n: int = 5,
     hold_bonus: float = 0.05,
     change_df: pd.DataFrame | None = None,
+    st_df: pd.DataFrame | None = None,
     filter_limit_up: bool = True,
     stop_loss_pct: float = -0.08,
     position_ratio: float = 0.95,
@@ -66,6 +67,9 @@ def run_backtest(
     if change_df is not None:
         change_df = change_df.copy()
         change_df.index = pd.to_datetime(change_df.index)
+    if st_df is not None:
+        st_df = st_df.copy()
+        st_df.index = pd.to_datetime(st_df.index)
     price_dates = sorted(close_df.index)
     date_to_idx = {d: i for i, d in enumerate(price_dates)}
     signal_dates = sorted(pd.to_datetime(pred.index.get_level_values("datetime").unique()))
@@ -106,6 +110,12 @@ def run_backtest(
             c2 = close_df.at[t2, code] if t2 in close_df.index else np.nan
             if not (pd.notna(c1) and pd.notna(c2) and c1 > 0):
                 continue
+
+            if st_df is not None and not st_df.empty and code in st_df.columns:
+                st_t = st_df.at[t, code] if t in st_df.index else np.nan
+                st_t1 = st_df.at[t1, code] if t1 in st_df.index else np.nan
+                if (pd.notna(st_t) and st_t >= 0.5) or (pd.notna(st_t1) and st_t1 >= 0.5):
+                    continue
 
             # Limit-up filter: signal day t or buy day t+1 hit limit, skip
             if filter_limit_up and change_df is not None and code.startswith(("SH.", "SZ.")):

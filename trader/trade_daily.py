@@ -36,6 +36,7 @@ import numpy as np
 import pandas as pd
 
 from market_scope import a_share_model_prefixes, a_share_tradeable_prefixes, code_matches_prefixes
+from strategy.stock_filter import filter_st_codes
 
 from futu import (
     OpenSecTradeContext,
@@ -327,9 +328,16 @@ def extract_signals(pred_path: Path, signal_date: str | None = None) -> tuple[pd
         "score": day_pred.values,
     })
     df = df[df["code"].map(lambda code: code_matches_prefixes(code, A_SHARE_TRADEABLE_PREFIXES))].copy()
+    date_str = target.strftime("%Y-%m-%d")
+    allowed_codes = filter_st_codes(
+        QLIB_DATA_DIR,
+        df["code"].tolist(),
+        context=f"trade signal universe {date_str}",
+        as_of_date=date_str,
+    )
+    df = df[df["code"].isin(allowed_codes)].copy()
     df = df.sort_values("score", ascending=False).reset_index(drop=True)
 
-    date_str = target.strftime("%Y-%m-%d")
     log.info(f"信号: {date_str}, A股 {len(df)} 只, "
              f"Top-3 score: {df['score'].head(3).tolist()}")
     return df, date_str

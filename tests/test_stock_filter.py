@@ -6,6 +6,7 @@ from strategy.stock_filter import (
     filter_st_codes,
     is_st_stock_name,
 )
+from converter.incremental import QlibDirectWriter
 
 
 def test_is_st_stock_name_matches_st_prefixes():
@@ -48,3 +49,28 @@ def test_filter_st_codes_uses_qlib_metadata(tmp_path):
     )
 
     assert filter_st_codes(tmp_path, ["SH.600000", "SZ.000001"], context="test") == ["SZ.000001"]
+
+
+def test_filter_st_codes_prefers_point_in_time_flags(tmp_path):
+    writer = QlibDirectWriter(tmp_path)
+    writer.write_feature_records(
+        "SH.600000",
+        [{"date": "2026-04-08", "is_st": 1.0}],
+        ["is_st"],
+    )
+    writer.write_feature_records(
+        "SZ.000001",
+        [{"date": "2026-04-08", "is_st": 0.0}],
+        ["is_st"],
+    )
+    writer.flush()
+
+    assert (
+        filter_st_codes(
+            tmp_path,
+            ["SH.600000", "SZ.000001"],
+            context="test",
+            as_of_date="2026-04-08",
+        )
+        == ["SZ.000001"]
+    )

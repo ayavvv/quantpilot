@@ -45,3 +45,11 @@ def load_change_rates(data_dir: Path, instruments: list[str],
     from converter.incremental import QlibBinReader
     reader = QlibBinReader(data_dir)
     return reader.read_field_matrix(instruments, "change_rate", start_date, end_date)
+
+
+def load_st_flags(data_dir: Path, instruments: list[str],
+                  start_date: str, end_date: str) -> pd.DataFrame:
+    """Build point-in-time ST flag matrix (date x code) from Qlib bin data."""
+    from converter.incremental import QlibBinReader
+    reader = QlibBinReader(data_dir)
+    return reader.read_field_matrix(instruments, "is_st", start_date, end_date)

@@ -340,7 +340,7 @@ class BaostockClient:
                 rs = self._run_query(
                     lambda *query_args, **query_kwargs: self._bs.query_history_k_data_plus(*query_args, **query_kwargs),
                     bs_code,
-                    "date,code,open,high,low,close,volume,amount,turn,pctChg",
+                    "date,code,open,high,low,close,volume,amount,turn,pctChg,isST",
                     start_date=start_date,
                     end_date=end_date,
                     frequency="d",
@@ -424,8 +424,8 @@ class BaostockClient:
         """
         Convert baostock daily DataFrame to Futu-compatible dict list.
 
-        baostock columns: date, code, open, high, low, close, volume, amount, turn, pctChg
-        Futu columns:     code, time_key, open, close, high, low, volume, turnover, pe_ratio, turnover_rate, change_rate
+        baostock columns: date, code, open, high, low, close, volume, amount, turn, pctChg, isST
+        Futu columns:     code, time_key, open, close, high, low, volume, turnover, pe_ratio, turnover_rate, change_rate, is_st
         """
         records = []
         for _, row in df.iterrows():
@@ -442,6 +442,7 @@ class BaostockClient:
                     "pe_ratio": 0.0,
                     "turnover_rate": float(row["turn"]) if row["turn"] else 0.0,
                     "change_rate": float(row["pctChg"]) if row["pctChg"] else 0.0,
+                    "is_st": float(row["isST"]) if "isST" in row and row["isST"] else 0.0,
                 })
             except (ValueError, TypeError):
                 continue

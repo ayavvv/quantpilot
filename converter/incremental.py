@@ -36,6 +36,7 @@ except ImportError:
 DUMP_FIELDS = [
     "open", "close", "high", "low", "volume", "amount",
     "factor", "vwap", "pe_ratio", "turnover_rate", "change_rate",
+    "is_st",
 ]
 DAILY_FMT = "%Y-%m-%d"
 FREQ = "day"
@@ -47,6 +48,7 @@ COLUMN_ALIAS = {
     "turn_over": "amount",
     "turn": "turnover_rate",
     "pctChg": "change_rate",
+    "isST": "is_st",
 }
 
 

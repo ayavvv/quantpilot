@@ -168,6 +168,7 @@ def test_get_history_kline_relogs_when_session_expires():
         "pe_ratio": 0.0,
         "turnover_rate": 1.2,
         "change_rate": 3.5,
+        "is_st": 0.0,
     }]
     assert relogins == ["login", "login"]
     assert client._bs.kline_calls == [

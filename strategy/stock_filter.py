@@ -106,15 +106,70 @@ def load_a_share_st_codes(provider_uri: str | Path) -> set[str]:
     return set()
 
 
+def load_a_share_st_codes_for_date(
+    provider_uri: str | Path,
+    codes: Iterable[str],
+    as_of_date: str,
+) -> set[str] | None:
+    """Load ST flags from the point-in-time Qlib ``is_st`` feature.
+
+    Returns None when the historical field is not available or too sparse,
+    allowing callers to fall back to the current stock-basic metadata.
+    """
+    if not a_share_st_filter_enabled():
+        return set()
+
+    code_list = list(codes)
+    if not code_list:
+        return set()
+
+    try:
+        from converter.incremental import QlibBinReader
+
+        reader = QlibBinReader(provider_uri)
+        st_df = reader.read_field_matrix(
+            code_list,
+            "is_st",
+            start_date=as_of_date,
+            end_date=as_of_date,
+        )
+    except Exception as exc:
+        log.warning("Failed to read historical A-share ST flags for %s: %s", as_of_date, exc)
+        return None
+
+    if st_df.empty or as_of_date not in st_df.index:
+        return None
+
+    # Treat very sparse historical coverage as unavailable. This avoids mixing a
+    # partially backfilled is_st feature with an otherwise current-ST fallback.
+    if len(st_df.columns) < max(1, int(len(code_list) * 0.9)):
+        return None
+
+    row = st_df.loc[as_of_date].fillna(0)
+    return {str(code) for code, value in row.items() if float(value) >= 0.5}
+
+
 def filter_st_codes(
     provider_uri: str | Path,
     codes: Iterable[str],
     *,
     context: str = "A-share universe",
+    as_of_date: str | None = None,
 ) -> list[str]:
-    """Remove current ST/*ST names from an A-share instrument list."""
+    """Remove ST/*ST names from an A-share instrument list.
+
+    When ``as_of_date`` is provided, prefer the historical ``is_st`` feature so
+    filtering is point-in-time. If that feature is unavailable, fall back to the
+    current metadata snapshot.
+    """
     code_list = list(codes)
-    st_codes = load_a_share_st_codes(provider_uri)
+    st_codes = (
+        load_a_share_st_codes_for_date(provider_uri, code_list, as_of_date)
+        if as_of_date
+        else None
+    )
+    if st_codes is None:
+        st_codes = load_a_share_st_codes(provider_uri)
     if not st_codes:
         return code_list
 
