@@ -152,6 +152,30 @@ def test_build_market_summary_reports_vendor_empty_and_error_rows():
     assert any("major-money errors for 1 symbol" in note for note in summary["coverage_notes"])
 
 
+def test_build_market_summary_uses_ok_row_dates_before_snapshot_fallback():
+    summary = build_market_summary(
+        pd.DataFrame(
+            [
+                {
+                    "code": "HK.00700",
+                    "latest_main_in_flow": 60_000_000,
+                    "capital_flow_latest_date": "2026-05-29",
+                    "capital_flow_status": "ok",
+                },
+                {
+                    "code": "HK.EMPTY",
+                    "capital_flow_status": "empty",
+                },
+            ]
+        ),
+        market="HK",
+        source="futu",
+        snapshot_date="2026-06-01",
+    )
+
+    assert summary["flow_date"] == "2026-05-29"
+
+
 def test_digest_rows_writes_flat_summary_shape(tmp_path):
     summary = build_market_summary(
         pd.DataFrame(

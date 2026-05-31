@@ -455,13 +455,17 @@ def build_market_summary(
 
     ok_mask = rows["status"].fillna("").astype(str).str.lower().eq("ok")
     ok_rows = rows[ok_mask].copy()
+    ok_count = int(len(ok_rows))
+    if "flow_date" in rows.columns:
+        flow_date = _latest_date(ok_rows["flow_date"]) if ok_count else _latest_date(rows["flow_date"])
+    else:
+        flow_date = ""
     numeric_flow = pd.to_numeric(ok_rows["main_flow"], errors="coerce")
     entry_rows = ok_rows[ok_rows["flow_label"] == "major_entry"]
     exit_rows = ok_rows[ok_rows["flow_label"] == "major_exit"]
     watch_entry_rows = ok_rows[ok_rows["flow_label"] == "watch_entry"]
     watch_exit_rows = ok_rows[ok_rows["flow_label"] == "watch_exit"]
 
-    ok_count = int(len(ok_rows))
     available = ok_count > 0
     message = "ok" if available else f"Loaded {len(rows)} row(s), but none had usable major-money flow."
     source_status = source_status or {}
@@ -502,7 +506,7 @@ def build_market_summary(
         "currency": market_currency(normalized_market),
         "available": available,
         "message": message,
-        "flow_date": _latest_date(rows["flow_date"]) if "flow_date" in rows.columns else "",
+        "flow_date": flow_date,
         "total_rows": int(len(rows)),
         "ok_rows": ok_count,
         "empty_rows": empty_count,
