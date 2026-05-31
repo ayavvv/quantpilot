@@ -1,6 +1,10 @@
 import pandas as pd
 
-from strategy.futu_capital_flow_overlay import build_capital_flow_overlay, summarize_capital_flow
+from strategy.futu_capital_flow_overlay import (
+    archive_capital_flow_outputs,
+    build_capital_flow_overlay,
+    summarize_capital_flow,
+)
 
 
 def test_summarize_capital_flow_builds_recent_flow_features():
@@ -73,3 +77,15 @@ def test_build_capital_flow_overlay_classifies_confirm_watch_and_risk():
     assert labels["SZ.000001"] == "risk_flag_main_outflow"
     assert labels["SZ.000002"] == "capital_flow_watch"
     assert labels["SH.600001"] == "model_only_no_capital_flow"
+
+
+def test_archive_capital_flow_outputs_writes_dated_files(tmp_path):
+    flow = pd.DataFrame([{"code": "SH.600000", "latest_main_in_flow": 1.0}])
+    overlay = pd.DataFrame([{"code": "SH.600000", "signal_date": "2026-05-29", "capital_flow_label": "watch"}])
+
+    paths = archive_capital_flow_outputs(flow, overlay, tmp_path, archive_date="2026-05-29")
+
+    assert paths["flow"].name == "20260529_flow.csv"
+    assert paths["overlay"].name == "20260529_overlay.csv"
+    assert paths["flow"].exists()
+    assert paths["overlay"].exists()

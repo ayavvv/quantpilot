@@ -43,6 +43,13 @@ LOCAL_A_SHARE_RESCUE_SOCKET_TIMEOUT="${LOCAL_A_SHARE_RESCUE_SOCKET_TIMEOUT:-20}"
 PYTHON_BIN="${PYTHON_BIN:-$PROJECT_DIR/.venv/bin/python}"
 PYTHONPATH="${PROJECT_DIR}${PYTHONPATH:+:$PYTHONPATH}"
 SKIP_NAS_SYNC="false"
+ENABLE_A_SHARE_CAPITAL_FLOW_OVERLAY="${ENABLE_A_SHARE_CAPITAL_FLOW_OVERLAY:-true}"
+A_SHARE_CAPITAL_FLOW_TOP_N="${A_SHARE_CAPITAL_FLOW_TOP_N:-30}"
+A_SHARE_CAPITAL_FLOW_DAYS="${A_SHARE_CAPITAL_FLOW_DAYS:-30}"
+A_SHARE_CAPITAL_FLOW_HOST="${A_SHARE_CAPITAL_FLOW_HOST:-${FUTU_HOST:-127.0.0.1}}"
+A_SHARE_CAPITAL_FLOW_PORT="${A_SHARE_CAPITAL_FLOW_PORT:-${FUTU_PORT:-11111}}"
+A_SHARE_CAPITAL_FLOW_ARCHIVE_DIR="${A_SHARE_CAPITAL_FLOW_ARCHIVE_DIR:-$DATA_DIR/capital_flow/futu}"
+A_SHARE_CAPITAL_FLOW_CONNECT_TIMEOUT="${A_SHARE_CAPITAL_FLOW_CONNECT_TIMEOUT:-8}"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
@@ -204,6 +211,31 @@ if [ "$INFERENCE_RC" -ne 0 ]; then
     exit "$INFERENCE_RC"
 fi
 log "  Inference complete"
+
+# Step 2b: Persist Futu capital-flow overlay for forward validation.
+if [ "$ENABLE_A_SHARE_CAPITAL_FLOW_OVERLAY" = "true" ]; then
+    log "Step 2b: Building Futu capital-flow overlay..."
+    if PYTHONPATH="$PYTHONPATH" \
+        "$PYTHON_BIN" -m scripts.build_futu_capital_flow_overlay \
+            --signal-csv "$DATA_DIR/signals/signal_latest.csv" \
+            --fetch-latest \
+            --host "$A_SHARE_CAPITAL_FLOW_HOST" \
+            --port "$A_SHARE_CAPITAL_FLOW_PORT" \
+            --days "$A_SHARE_CAPITAL_FLOW_DAYS" \
+            --include-distribution \
+            --connect-timeout "$A_SHARE_CAPITAL_FLOW_CONNECT_TIMEOUT" \
+            --signal-top-n "$A_SHARE_CAPITAL_FLOW_TOP_N" \
+            --archive \
+            --archive-dir "$A_SHARE_CAPITAL_FLOW_ARCHIVE_DIR" \
+            --output "$DATA_DIR/output/futu_capital_flow_signal_overlay_latest.csv" \
+            --flow-output "$DATA_DIR/output/futu_capital_flow_latest.csv"; then
+        log "  Futu capital-flow overlay complete"
+    else
+        log "  WARNING: Futu capital-flow overlay failed; continuing daily pipeline"
+    fi
+else
+    log "Step 2b: Skipped Futu capital-flow overlay"
+fi
 
 # Step 3: Run reporter natively so Mail.app fallback is available on macOS host
 log "Step 3: Running reporter..."

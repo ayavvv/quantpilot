@@ -258,6 +258,33 @@ def fetch_capital_flow_summaries(
     return pd.DataFrame(summaries)
 
 
+def _archive_date_from_overlay(overlay: pd.DataFrame, fallback: str) -> str:
+    if not overlay.empty and "signal_date" in overlay.columns:
+        value = overlay["signal_date"].dropna()
+        if not value.empty:
+            return str(value.iloc[0])[:10]
+    return fallback[:10]
+
+
+def archive_capital_flow_outputs(
+    capital_flow_df: pd.DataFrame,
+    overlay: pd.DataFrame,
+    archive_dir: str | Path,
+    *,
+    archive_date: str,
+) -> dict[str, Path]:
+    """Write date-stamped Futu capital-flow artifacts for forward validation."""
+
+    date_tag = archive_date.replace("-", "")
+    output_dir = Path(archive_dir).expanduser()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    flow_path = output_dir / f"{date_tag}_flow.csv"
+    overlay_path = output_dir / f"{date_tag}_overlay.csv"
+    capital_flow_df.to_csv(flow_path, index=False)
+    overlay.to_csv(overlay_path, index=False)
+    return {"flow": flow_path, "overlay": overlay_path}
+
+
 def _default_start(days: int) -> str:
     return (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
@@ -283,6 +310,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--min-positive-5d", type=int, default=3)
     parser.add_argument("--output", default="~/quantpilot_data/output/futu_capital_flow_signal_overlay_latest.csv")
     parser.add_argument("--flow-output", default="~/quantpilot_data/output/futu_capital_flow_latest.csv")
+    parser.add_argument("--archive", action="store_true", help="Write date-stamped flow and overlay CSVs.")
+    parser.add_argument("--archive-dir", default="~/quantpilot_data/capital_flow/futu")
+    parser.add_argument("--archive-date", default="", help="Date tag for archive files; defaults to signal_date.")
     return parser.parse_args(argv)
 
 
@@ -334,6 +364,16 @@ def main(argv: list[str] | None = None) -> int:
     output = Path(args.output).expanduser()
     output.parent.mkdir(parents=True, exist_ok=True)
     overlay.to_csv(output, index=False)
+    if args.archive:
+        archive_date = args.archive_date or _archive_date_from_overlay(overlay, args.end)
+        paths = archive_capital_flow_outputs(
+            capital_flow_df,
+            overlay,
+            args.archive_dir,
+            archive_date=archive_date,
+        )
+        print(f"Wrote archive flow: {paths['flow']}")
+        print(f"Wrote archive overlay: {paths['overlay']}")
     print(overlay.head(min(len(overlay), 30)).to_string(index=False))
     print(f"Wrote overlay: {output}")
     return 0
