@@ -453,7 +453,17 @@ def scan_yahoo_chart_proxy_records(
         done_tickers.add(ticker)
         batch_count += 1
         if batch_count % max(batch_flush, 1) == 0:
-            _write_flow_files(pd.DataFrame(records), universe, output_dir=output_dir, date=date)
+            partial = pd.DataFrame(records)
+            paths = _write_flow_files(partial, universe, output_dir=output_dir, date=date)
+            statuses = partial.get("capital_flow_status", pd.Series(dtype=str)).fillna("").astype(str)
+            print(
+                "US_OTC yahoo_chart progress: "
+                f"rows={len(partial)}/{len(universe)} "
+                f"ok={int((statuses == 'ok').sum())} "
+                f"empty={int((statuses == 'empty').sum())} "
+                f"latest={paths['latest']}",
+                flush=True,
+            )
         if request_delay > 0:
             time_module.sleep(request_delay)
 
