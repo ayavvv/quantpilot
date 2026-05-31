@@ -36,6 +36,22 @@ NAS_COLLECTOR_CONTAINER = os.environ.get("NAS_COLLECTOR_CONTAINER", "quantpilot-
 TARGET_DATE_LOOKBACK_DAYS = int(os.environ.get("TARGET_DATE_LOOKBACK_DAYS", "31"))
 DISK_WARN_THRESHOLD = float(os.environ.get("DISK_USAGE_WARN_THRESHOLD", "0.80"))
 DISK_ERROR_THRESHOLD = float(os.environ.get("DISK_USAGE_ERROR_THRESHOLD", "0.90"))
+HEALTHCHECK_CAPITAL_FLOW_ENABLED = os.environ.get("HEALTHCHECK_CAPITAL_FLOW_ENABLED", "true").lower() == "true"
+CAPITAL_FLOW_OVERLAY_PATH = Path(
+    os.environ.get("CAPITAL_FLOW_OVERLAY_CSV", str(DATA_DIR / "output" / "futu_capital_flow_signal_overlay_latest.csv"))
+)
+PRETRADE_CAPITAL_FLOW_OVERLAY_PATH = Path(
+    os.environ.get(
+        "PRETRADE_CAPITAL_FLOW_OVERLAY_CSV",
+        str(DATA_DIR / "output" / "pretrade_futu_capital_flow_signal_overlay_latest.csv"),
+    )
+)
+CAPITAL_FLOW_ARCHIVE_DIR = Path(
+    os.environ.get("A_SHARE_CAPITAL_FLOW_ARCHIVE_DIR", str(DATA_DIR / "capital_flow" / "futu"))
+)
+CAPITAL_FLOW_GATE_PATH = Path(
+    os.environ.get("CAPITAL_FLOW_GATE_JSON", str(DATA_DIR / "output" / "futu_capital_flow_eval_latest" / "gate.json"))
+)
 
 LEVEL_ORDER = {"ok": 0, "warn": 1, "error": 2}
 
@@ -179,6 +195,166 @@ def analyze_daily_logs(today: str) -> dict[str, Any]:
     }
 
 
+def _latest_date(values: Any) -> str:
+    try:
+        series = values.dropna().astype(str).str[:10]
+    except AttributeError:
+        return ""
+    cleaned = sorted(value for value in series.unique().tolist() if value and value.lower() != "nan")
+    return cleaned[-1] if cleaned else ""
+
+
+def _read_capital_flow_overlay_status(path: Path) -> dict[str, Any]:
+    status: dict[str, Any] = {
+        "path": str(path),
+        "exists": path.exists(),
+        "ok": False,
+        "row_count": 0,
+        "signal_date": "",
+        "capital_flow_latest_date": "",
+        "labels": {},
+        "error": "",
+    }
+    if not path.exists():
+        return status
+    try:
+        import pandas as pd
+
+        df = pd.read_csv(path)
+    except Exception as exc:
+        status["error"] = str(exc)
+        return status
+
+    status["row_count"] = int(len(df))
+    status["ok"] = not df.empty and "capital_flow_label" in df.columns
+    if "signal_date" in df.columns:
+        status["signal_date"] = _latest_date(df["signal_date"])
+    if "capital_flow_latest_date" in df.columns:
+        status["capital_flow_latest_date"] = _latest_date(df["capital_flow_latest_date"])
+    if "capital_flow_label" in df.columns:
+        status["labels"] = {
+            str(label): int(count)
+            for label, count in df["capital_flow_label"].fillna("unknown").astype(str).value_counts().items()
+        }
+    return status
+
+
+def _latest_archive_overlay_status(archive_dir: Path) -> dict[str, Any]:
+    status: dict[str, Any] = {
+        "path": str(archive_dir),
+        "exists": archive_dir.exists(),
+        "latest_file": "",
+        "latest_archive_date": "",
+        "overlay": {},
+    }
+    if not archive_dir.exists():
+        return status
+    paths = sorted(archive_dir.glob("*_overlay.csv"))
+    if not paths:
+        return status
+    latest = paths[-1]
+    status["latest_file"] = str(latest)
+    status["latest_archive_date"] = latest.name.split("_", 1)[0]
+    status["overlay"] = _read_capital_flow_overlay_status(latest)
+    return status
+
+
+def _read_capital_flow_gate_status(path: Path) -> dict[str, Any]:
+    status: dict[str, Any] = {
+        "path": str(path),
+        "exists": path.exists(),
+        "ok": False,
+        "overall_action": "",
+        "message": "",
+        "criteria": {},
+        "error": "",
+    }
+    if not path.exists():
+        return status
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        status["error"] = str(exc)
+        return status
+    status["ok"] = True
+    status["overall_action"] = str(payload.get("overall_action", ""))
+    status["message"] = str(payload.get("message", ""))
+    criteria = payload.get("criteria", {})
+    status["criteria"] = criteria if isinstance(criteria, dict) else {}
+    return status
+
+
+def analyze_capital_flow_artifacts(phase: str, reference_date: str = "") -> dict[str, Any]:
+    status: dict[str, Any] = {
+        "enabled": HEALTHCHECK_CAPITAL_FLOW_ENABLED,
+        "reference_date": reference_date,
+        "daily_overlay": {},
+        "pretrade_overlay": {},
+        "archive": {},
+        "gate": {},
+        "issues": [],
+    }
+    if not HEALTHCHECK_CAPITAL_FLOW_ENABLED:
+        return status
+
+    issues: list[str] = []
+    if phase == "nightly":
+        daily_overlay = _read_capital_flow_overlay_status(CAPITAL_FLOW_OVERLAY_PATH)
+        archive = _latest_archive_overlay_status(CAPITAL_FLOW_ARCHIVE_DIR)
+        gate = _read_capital_flow_gate_status(CAPITAL_FLOW_GATE_PATH)
+        status.update({"daily_overlay": daily_overlay, "archive": archive, "gate": gate})
+
+        if not daily_overlay["exists"]:
+            issues.append(f"Futu capital-flow latest overlay missing: {daily_overlay['path']}")
+        elif not daily_overlay["ok"]:
+            issues.append(
+                "Futu capital-flow latest overlay unreadable or empty: "
+                f"path={daily_overlay['path']} error={daily_overlay.get('error') or 'empty/missing labels'}"
+            )
+        elif reference_date and daily_overlay.get("signal_date") and daily_overlay["signal_date"] < reference_date:
+            issues.append(
+                "Futu capital-flow latest overlay stale: "
+                f"signal_date={daily_overlay['signal_date']} reference={reference_date}"
+            )
+
+        if not archive["exists"] or not archive.get("latest_file"):
+            issues.append(f"Futu capital-flow archive missing: {archive['path']}")
+        elif reference_date and archive.get("latest_archive_date") and archive["latest_archive_date"] < reference_date.replace("-", ""):
+            issues.append(
+                "Futu capital-flow archive stale: "
+                f"latest_archive={archive['latest_archive_date']} reference={reference_date}"
+            )
+
+        if not gate["exists"]:
+            issues.append(f"Futu capital-flow promotion gate missing: {gate['path']}")
+        elif not gate["ok"]:
+            issues.append(
+                "Futu capital-flow promotion gate unreadable: "
+                f"path={gate['path']} error={gate.get('error') or 'unknown'}"
+            )
+        elif gate.get("overall_action") in {"review_filter", "review_boost"}:
+            issues.append(f"Futu capital-flow gate requests manual review: {gate.get('overall_action')}")
+
+    elif phase == "trade":
+        pretrade_overlay = _read_capital_flow_overlay_status(PRETRADE_CAPITAL_FLOW_OVERLAY_PATH)
+        status["pretrade_overlay"] = pretrade_overlay
+        if not pretrade_overlay["exists"]:
+            issues.append(f"Pre-trade Futu capital-flow overlay missing: {pretrade_overlay['path']}")
+        elif not pretrade_overlay["ok"]:
+            issues.append(
+                "Pre-trade Futu capital-flow overlay unreadable or empty: "
+                f"path={pretrade_overlay['path']} error={pretrade_overlay.get('error') or 'empty/missing labels'}"
+            )
+        elif reference_date and pretrade_overlay.get("signal_date") and pretrade_overlay["signal_date"] < reference_date:
+            issues.append(
+                "Pre-trade Futu capital-flow overlay stale: "
+                f"signal_date={pretrade_overlay['signal_date']} reference={reference_date}"
+            )
+
+    status["issues"] = issues
+    return status
+
+
 def build_snapshot(
     phase: str,
     now: datetime | None = None,
@@ -204,6 +380,10 @@ def build_snapshot(
         "retry_watcher_running": process_running(["run_daily_when_ready.sh"]),
         "pretrade_watchdog_running": process_running(["pretrade_watchdog.py"]),
     }
+    capital_flow = analyze_capital_flow_artifacts(
+        phase,
+        reference_date=target_a_share_date or expected_signal_date or signal_date or local_latest,
+    )
 
     overall = "ok"
     issues: list[str] = []
@@ -329,6 +509,10 @@ def build_snapshot(
             overall = _bump_level(overall, "warn")
             issues.append(f"Trading log has {trade['order_failures']} failed order(s)")
 
+    for issue in capital_flow.get("issues", []):
+        overall = _bump_level(overall, "warn")
+        issues.append(issue)
+
     if not issues:
         issues.append("All monitored checks passed")
 
@@ -356,6 +540,7 @@ def build_snapshot(
         "processes": processes,
         "nightly": nightly_logs,
         "trade": trade,
+        "capital_flow": capital_flow,
     }
 
 
@@ -377,6 +562,10 @@ def render_snapshot_html(snapshot: dict[str, Any]) -> str:
     local = snapshot["local"]
     nas = snapshot["nas"]
     trade = snapshot["trade"]
+    capital_flow = snapshot.get("capital_flow", {})
+    gate = capital_flow.get("gate", {}) if isinstance(capital_flow, dict) else {}
+    daily_overlay = capital_flow.get("daily_overlay", {}) if isinstance(capital_flow, dict) else {}
+    pretrade_overlay = capital_flow.get("pretrade_overlay", {}) if isinstance(capital_flow, dict) else {}
     disk = local.get(
         "disk",
         {"path": str(DATA_DIR), "used_ratio": 0.0},
@@ -405,6 +594,12 @@ def render_snapshot_html(snapshot: dict[str, Any]) -> str:
       latest_query_error={nas.get('latest_query_error') or 'N/A'}</p>
       <h2>Trade Log</h2>
       <p>starts={trade['starts']} done={trade['done']} fills={trade['order_fills']} failures={trade['order_failures']} errors={trade['errors']}</p>
+      <h2>Capital Flow</h2>
+      <p>enabled={capital_flow.get('enabled', False)}<br>
+      reference_date={capital_flow.get('reference_date') or 'N/A'}<br>
+      daily_overlay_date={daily_overlay.get('signal_date') or 'N/A'} rows={daily_overlay.get('row_count', 0)}<br>
+      pretrade_overlay_date={pretrade_overlay.get('signal_date') or 'N/A'} rows={pretrade_overlay.get('row_count', 0)}<br>
+      gate_action={gate.get('overall_action') or 'N/A'}</p>
     </body>
     </html>
     """
