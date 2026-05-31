@@ -51,6 +51,11 @@ def test_scan_market_writes_latest_status(tmp_path):
     assert payload["attempted_count"] == 2
     assert payload["ok_count"] == 1
     assert payload["error_count"] == 1
+    assert payload["source_exchange_types"] == {"US_NASDAQ": 1, "US_NYSE": 1}
+    assert payload["selected_exchange_types"] == {"US_NASDAQ": 1, "US_NYSE": 1}
+    assert payload["excluded_exchange_types"] == {}
+    assert payload["status_by_exchange_type"] == {"US_NASDAQ": {"ok": 1}, "US_NYSE": {"error": 1}}
+    assert payload["unsupported_exchange_types"] == {}
 
 
 def test_scan_market_writes_failed_status_before_raise(tmp_path):

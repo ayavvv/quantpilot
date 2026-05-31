@@ -57,6 +57,49 @@ def _split_csv(value: str) -> set[str]:
     return {item.strip().upper() for item in value.split(",") if item.strip()}
 
 
+def _exchange_type_counts(df: pd.DataFrame) -> dict[str, int]:
+    if "exchange_type" not in df.columns:
+        return {}
+    values = df["exchange_type"].fillna("").astype(str).str.strip()
+    counts = values[values != ""].value_counts().sort_index()
+    return {str(exchange): int(count) for exchange, count in counts.items()}
+
+
+def _exchange_type_delta(source: dict[str, int], selected: dict[str, int]) -> dict[str, int]:
+    delta: dict[str, int] = {}
+    for exchange, source_count in source.items():
+        missing = int(source_count) - int(selected.get(exchange, 0))
+        if missing > 0:
+            delta[exchange] = missing
+    return delta
+
+
+def _status_counts_by_exchange_type(df: pd.DataFrame) -> dict[str, dict[str, int]]:
+    if "exchange_type" not in df.columns or "capital_flow_status" not in df.columns:
+        return {}
+    result: dict[str, dict[str, int]] = {}
+    work = df[["exchange_type", "capital_flow_status"]].copy()
+    work["exchange_type"] = work["exchange_type"].fillna("").astype(str).str.strip()
+    work["capital_flow_status"] = work["capital_flow_status"].fillna("").astype(str).str.strip()
+    work = work[(work["exchange_type"] != "") & (work["capital_flow_status"] != "")]
+    if work.empty:
+        return {}
+    grouped = work.groupby(["exchange_type", "capital_flow_status"]).size()
+    for (exchange, status), count in grouped.items():
+        result.setdefault(str(exchange), {})[str(status)] = int(count)
+    return result
+
+
+def _unsupported_exchange_types(df: pd.DataFrame) -> dict[str, int]:
+    if "exchange_type" not in df.columns or "capital_flow_error" not in df.columns:
+        return {}
+    work = df.copy()
+    work["exchange_type"] = work["exchange_type"].fillna("").astype(str).str.strip()
+    errors = work["capital_flow_error"].fillna("").astype(str).str.lower()
+    unsupported = work[(work["exchange_type"] != "") & errors.str.contains("do not support otc market data", regex=False)]
+    return _exchange_type_counts(unsupported)
+
+
 def _codes_by_market(value: str) -> dict[str, list[str]]:
     grouped: dict[str, list[str]] = {}
     for item in value.split(","):
@@ -86,6 +129,7 @@ def fetch_futu_universe(
     df["market"] = market
     if "delisting" in df.columns:
         df = df[~df["delisting"].fillna(False).astype(bool)].copy()
+    source_exchange_types = _exchange_type_counts(df)
     if "exchange_type" in df.columns:
         exchange = df["exchange_type"].fillna("").astype(str).str.upper()
         if include_exchange_types:
@@ -95,7 +139,14 @@ def fetch_futu_universe(
             df = df[~exchange.isin(exclude_exchange_types)].copy()
     if "code" not in df.columns:
         raise RuntimeError(f"Futu stock basic info missing code column for {market}")
-    return df.reset_index(drop=True)
+    result = df.reset_index(drop=True)
+    selected_exchange_types = _exchange_type_counts(result)
+    result.attrs["source_exchange_types"] = source_exchange_types
+    result.attrs["selected_exchange_types"] = selected_exchange_types
+    result.attrs["excluded_exchange_types"] = _exchange_type_delta(source_exchange_types, selected_exchange_types)
+    result.attrs["include_exchange_types"] = sorted(include_exchange_types or [])
+    result.attrs["exclude_exchange_types"] = sorted(exclude_exchange_types or [])
+    return result
 
 
 def _load_resume(path: Path, overwrite: bool) -> tuple[pd.DataFrame, set[str]]:
@@ -151,6 +202,8 @@ def scan_market(
     overwrite: bool,
     pause_seconds: float,
     min_ok_ratio: float,
+    include_exchange_types: set[str] | None = None,
+    exclude_exchange_types: set[str] | None = None,
 ) -> dict[str, Any]:
     started_at = datetime.now().astimezone().isoformat(timespec="seconds")
     date_tag = _date_tag(end)
@@ -217,6 +270,12 @@ def scan_market(
     _write_outputs(result, output_path, latest_path)
     universe_path = output_dir / f"{market}_{date_tag}_universe.csv"
     universe.to_csv(universe_path, index=False)
+    source_exchange_types = universe.attrs.get("source_exchange_types") or _exchange_type_counts(universe)
+    selected_exchange_types = universe.attrs.get("selected_exchange_types") or _exchange_type_counts(work)
+    excluded_exchange_types = universe.attrs.get("excluded_exchange_types") or _exchange_type_delta(
+        source_exchange_types,
+        selected_exchange_types,
+    )
 
     status_payload = {
         "status": status_value,
@@ -238,6 +297,13 @@ def scan_market(
         "empty_count": empty_count,
         "ok_ratio": ok_ratio,
         "min_ok_ratio": min_ok_ratio,
+        "source_exchange_types": source_exchange_types,
+        "selected_exchange_types": selected_exchange_types,
+        "excluded_exchange_types": excluded_exchange_types,
+        "status_by_exchange_type": _status_counts_by_exchange_type(result),
+        "unsupported_exchange_types": _unsupported_exchange_types(result),
+        "include_exchange_types": sorted(include_exchange_types or universe.attrs.get("include_exchange_types") or []),
+        "exclude_exchange_types": sorted(exclude_exchange_types or universe.attrs.get("exclude_exchange_types") or []),
         "output": str(output_path),
         "latest": str(latest_path),
         "universe": str(universe_path),
@@ -342,6 +408,8 @@ def main(argv: list[str] | None = None) -> int:
                 overwrite=args.overwrite,
                 pause_seconds=args.pause_seconds,
                 min_ok_ratio=args.min_ok_ratio,
+                include_exchange_types=include_exchange_types,
+                exclude_exchange_types=exclude_exchange_types,
             )
             print(
                 "{market}: universe={universe_count} selected={selected_count} ok={ok_count}/{attempted_count} "

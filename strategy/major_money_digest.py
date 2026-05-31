@@ -237,6 +237,87 @@ def _exchange_type_counts(df: pd.DataFrame) -> dict[str, int]:
     return {str(exchange): int(count) for exchange, count in counts.items()}
 
 
+def _status_counts_by_exchange_type(df: pd.DataFrame) -> dict[str, dict[str, int]]:
+    if "exchange_type" not in df.columns or "status" not in df.columns:
+        return {}
+    work = df[["exchange_type", "status"]].copy()
+    work["exchange_type"] = work["exchange_type"].fillna("").astype(str).str.strip()
+    work["status"] = work["status"].fillna("").astype(str).str.strip()
+    work = work[(work["exchange_type"] != "") & (work["status"] != "")]
+    if work.empty:
+        return {}
+    result: dict[str, dict[str, int]] = {}
+    grouped = work.groupby(["exchange_type", "status"]).size()
+    for (exchange, status), count in grouped.items():
+        result.setdefault(str(exchange), {})[str(status)] = int(count)
+    return result
+
+
+def _int_counts(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, int] = {}
+    for key, count in value.items():
+        name = str(key).strip()
+        if not name:
+            continue
+        try:
+            result[name] = int(count)
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
+def _nested_int_counts(value: Any) -> dict[str, dict[str, int]]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, dict[str, int]] = {}
+    for key, counts in value.items():
+        name = str(key).strip()
+        if not name:
+            continue
+        parsed = _int_counts(counts)
+        if parsed:
+            result[name] = parsed
+    return result
+
+
+def _exchange_type_delta(source: dict[str, int], selected: dict[str, int]) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for exchange, source_count in source.items():
+        missing = int(source_count) - int(selected.get(exchange, 0))
+        if missing > 0:
+            result[exchange] = missing
+    return result
+
+
+def _coverage_notes(
+    *,
+    market: str,
+    source: str,
+    excluded_exchange_types: dict[str, int],
+    unsupported_exchange_types: dict[str, int],
+    exchange_types: dict[str, int],
+) -> list[str]:
+    notes: list[str] = []
+    if excluded_exchange_types:
+        formatted = ", ".join(f"{key}={value}" for key, value in sorted(excluded_exchange_types.items()))
+        notes.append(f"Excluded exchange types: {formatted}.")
+        if normalize_market(market) == "US" and "US_PINK" in excluded_exchange_types:
+            notes.append("US_PINK/OTC is excluded because Futu capital-flow API does not support OTC/Pink market data.")
+    if unsupported_exchange_types:
+        formatted = ", ".join(f"{key}={value}" for key, value in sorted(unsupported_exchange_types.items()))
+        notes.append(f"Vendor unsupported exchange types: {formatted}.")
+    if (
+        normalize_market(market) == "US"
+        and source == "futu"
+        and "US_PINK" not in exchange_types
+        and "US_PINK" not in excluded_exchange_types
+    ):
+        notes.append("US_PINK/OTC is not included in this Futu capital-flow artifact.")
+    return notes
+
+
 def unavailable_market_summary(market: str, *, reason: str) -> dict[str, Any]:
     normalized_market = normalize_market(market)
     return {
@@ -251,6 +332,14 @@ def unavailable_market_summary(market: str, *, reason: str) -> dict[str, Any]:
         "error_rows": 0,
         "missing_rows": 0,
         "exchange_types": {},
+        "source_exchange_types": {},
+        "selected_exchange_types": {},
+        "excluded_exchange_types": {},
+        "status_by_exchange_type": {},
+        "unsupported_exchange_types": {},
+        "include_exchange_types": [],
+        "exclude_exchange_types": [],
+        "coverage_notes": [],
         "entry_count": 0,
         "entry_amount": 0.0,
         "exit_count": 0,
@@ -272,6 +361,7 @@ def build_market_summary(
     top_n: int = 10,
     thresholds: FlowThresholds | None = None,
     snapshot_date: str = "",
+    source_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_market = normalize_market(market)
     thresholds = thresholds or thresholds_for_market(normalized_market)
@@ -292,6 +382,27 @@ def build_market_summary(
     ok_count = int(len(ok_rows))
     available = ok_count > 0
     message = "ok" if available else f"Loaded {len(rows)} row(s), but none had usable major-money flow."
+    source_status = source_status or {}
+    exchange_types = _exchange_type_counts(rows)
+    source_exchange_types = _int_counts(source_status.get("source_exchange_types")) or _int_counts(
+        source_status.get("universe_exchange_types")
+    )
+    if not source_exchange_types:
+        source_exchange_types = exchange_types
+    selected_exchange_types = _int_counts(source_status.get("selected_exchange_types")) or exchange_types
+    excluded_exchange_types = _int_counts(source_status.get("excluded_exchange_types")) or _exchange_type_delta(
+        source_exchange_types,
+        selected_exchange_types,
+    )
+    status_by_exchange_type = _nested_int_counts(source_status.get("status_by_exchange_type")) or _status_counts_by_exchange_type(rows)
+    unsupported_exchange_types = _int_counts(source_status.get("unsupported_exchange_types"))
+    coverage_notes = _coverage_notes(
+        market=normalized_market,
+        source=source,
+        excluded_exchange_types=excluded_exchange_types,
+        unsupported_exchange_types=unsupported_exchange_types,
+        exchange_types=exchange_types,
+    )
 
     return {
         "market": normalized_market,
@@ -304,7 +415,15 @@ def build_market_summary(
         "ok_rows": ok_count,
         "error_rows": int((~ok_mask).sum()),
         "missing_rows": int(ok_rows["main_flow"].isna().sum()),
-        "exchange_types": _exchange_type_counts(rows),
+        "exchange_types": exchange_types,
+        "source_exchange_types": source_exchange_types,
+        "selected_exchange_types": selected_exchange_types,
+        "excluded_exchange_types": excluded_exchange_types,
+        "status_by_exchange_type": status_by_exchange_type,
+        "unsupported_exchange_types": unsupported_exchange_types,
+        "include_exchange_types": list(source_status.get("include_exchange_types") or []),
+        "exclude_exchange_types": list(source_status.get("exclude_exchange_types") or []),
+        "coverage_notes": coverage_notes,
         "entry_count": int(len(entry_rows)),
         "entry_amount": float(pd.to_numeric(entry_rows["main_flow"], errors="coerce").dropna().sum()),
         "exit_count": int(len(exit_rows)),
@@ -373,6 +492,22 @@ def digest_rows(digest: dict[str, Any]) -> pd.DataFrame:
                 "total_rows": market.get("total_rows", 0),
                 "ok_rows": market.get("ok_rows", 0),
                 "exchange_types": json.dumps(market.get("exchange_types") or {}, ensure_ascii=False, sort_keys=True),
+                "source_exchange_types": json.dumps(
+                    market.get("source_exchange_types") or {},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                "excluded_exchange_types": json.dumps(
+                    market.get("excluded_exchange_types") or {},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                "status_by_exchange_type": json.dumps(
+                    market.get("status_by_exchange_type") or {},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                "coverage_notes": " ".join(str(item) for item in market.get("coverage_notes") or []),
                 "entry_count": market.get("entry_count", 0),
                 "entry_amount": market.get("entry_amount", 0.0),
                 "exit_count": market.get("exit_count", 0),

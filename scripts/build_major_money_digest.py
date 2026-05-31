@@ -47,6 +47,23 @@ def _snapshot_date(path: Path) -> str:
     return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d")
 
 
+def _status_for_source(path: Path, market: str) -> dict:
+    candidates = [
+        path.with_name(f"{market}_latest_status.json"),
+        path.with_name(path.name.replace("_flow.csv", "_status.json")),
+    ]
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return {}
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build market-wide major-money digest JSON/CSV.")
     parser.add_argument(
@@ -90,6 +107,7 @@ def main(argv: list[str] | None = None) -> int:
                 source=source,
                 top_n=args.top_n,
                 snapshot_date=_snapshot_date(path),
+                source_status=_status_for_source(path, market),
             )
         )
 

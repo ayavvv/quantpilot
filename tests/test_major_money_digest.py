@@ -64,6 +64,37 @@ def test_build_digest_keeps_missing_expected_markets_visible():
     assert digest["amount_by_currency"]["USD"]["entry_amount"] == 30_000_000
 
 
+def test_build_market_summary_carries_source_coverage_metadata():
+    summary = build_market_summary(
+        pd.DataFrame(
+            [
+                {
+                    "code": "US.AAPL",
+                    "latest_main_in_flow": 30_000_000,
+                    "capital_flow_latest_date": "2026-05-29",
+                    "exchange_type": "US_NASDAQ",
+                    "capital_flow_status": "ok",
+                }
+            ]
+        ),
+        market="US",
+        source="futu",
+        source_status={
+            "source_exchange_types": {"US_NASDAQ": 1, "US_PINK": 2},
+            "selected_exchange_types": {"US_NASDAQ": 1},
+            "excluded_exchange_types": {"US_PINK": 2},
+            "status_by_exchange_type": {"US_NASDAQ": {"ok": 1}},
+            "exclude_exchange_types": ["US_PINK"],
+        },
+    )
+
+    assert summary["source_exchange_types"] == {"US_NASDAQ": 1, "US_PINK": 2}
+    assert summary["excluded_exchange_types"] == {"US_PINK": 2}
+    assert summary["status_by_exchange_type"] == {"US_NASDAQ": {"ok": 1}}
+    assert summary["exclude_exchange_types"] == ["US_PINK"]
+    assert any("US_PINK/OTC is excluded" in note for note in summary["coverage_notes"])
+
+
 def test_digest_rows_writes_flat_summary_shape(tmp_path):
     summary = build_market_summary(
         pd.DataFrame(
@@ -88,3 +119,4 @@ def test_digest_rows_writes_flat_summary_shape(tmp_path):
     assert rows.iloc[0]["market"] == "HK"
     assert rows.iloc[0]["entry_count"] == 1
     assert rows.iloc[0]["exchange_types"] == '{"HK_MAIN": 1}'
+    assert rows.iloc[0]["excluded_exchange_types"] == "{}"

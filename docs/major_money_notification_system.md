@@ -49,6 +49,8 @@ Artifacts:
     `~/quantpilot_data/capital_flow/futu_market/`.
   - Writes `{MARKET}_latest_status.json` with scan status, attempted count,
     ok/error/empty counts, coverage ratio, and output paths.
+  - Status files also include source/selected/excluded exchange-type counts and
+    per-exchange OK/error/empty counts.
   - Use `--max-codes` for smoke tests; omit it only when ready for long full
     scans.
 - `scripts/run_market_capital_flow.sh`
@@ -58,6 +60,9 @@ Artifacts:
   - Defaults to excluding `US_PINK,N/A`, so the scheduled US job covers
     exchange-listed NYSE/NASDAQ/AMEX names unless
     `FUTU_MARKET_FLOW_EXCLUDE_EXCHANGE_TYPES` is overridden.
+  - A 2026-05-31 `US_PINK` probe returned `Do not support OTC market data` for
+    sampled symbols, so OTC/Pink is treated as a vendor unsupported venue rather
+    than silently counted as zero flow.
 - `reporter/send_report.py`
   - Adds a "Market-Wide Major Money" section to the daily email.
   - Shows market coverage, entry count/amount, exit count/amount, net amount,

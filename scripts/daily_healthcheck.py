@@ -387,6 +387,11 @@ def _read_market_scan_status(path: Path) -> dict[str, Any]:
         "error_count": 0,
         "empty_count": 0,
         "ok_ratio": 0.0,
+        "source_exchange_types": {},
+        "selected_exchange_types": {},
+        "excluded_exchange_types": {},
+        "unsupported_exchange_types": {},
+        "status_by_exchange_type": {},
         "finished_at": "",
         "finished_date": "",
         "mtime_date": _file_mtime_date(path),
@@ -413,6 +418,23 @@ def _read_market_scan_status(path: Path) -> dict[str, Any]:
             "error_count": int(payload.get("error_count") or 0),
             "empty_count": int(payload.get("empty_count") or 0),
             "ok_ratio": float(payload.get("ok_ratio") or 0.0),
+            "source_exchange_types": (
+                payload.get("source_exchange_types") if isinstance(payload.get("source_exchange_types"), dict) else {}
+            ),
+            "selected_exchange_types": (
+                payload.get("selected_exchange_types") if isinstance(payload.get("selected_exchange_types"), dict) else {}
+            ),
+            "excluded_exchange_types": (
+                payload.get("excluded_exchange_types") if isinstance(payload.get("excluded_exchange_types"), dict) else {}
+            ),
+            "unsupported_exchange_types": (
+                payload.get("unsupported_exchange_types")
+                if isinstance(payload.get("unsupported_exchange_types"), dict)
+                else {}
+            ),
+            "status_by_exchange_type": (
+                payload.get("status_by_exchange_type") if isinstance(payload.get("status_by_exchange_type"), dict) else {}
+            ),
             "finished_at": str(payload.get("finished_at") or ""),
             "finished_date": str(payload.get("finished_at") or "")[:10],
             "message": str(payload.get("message") or ""),

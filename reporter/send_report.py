@@ -119,12 +119,13 @@ tr:nth-child(even) { background-color: #f8f9fa; }
 {% if major_money_available %}
 <p class="muted">{{ major_money_message }}</p>
 <table>
-<tr><th>Market</th><th>Source</th><th>Coverage</th><th>Entry</th><th>Entry Amount</th><th>Exit</th><th>Exit Amount</th><th>Net</th></tr>
+<tr><th>Market</th><th>Source</th><th>Coverage</th><th>Notes</th><th>Entry</th><th>Entry Amount</th><th>Exit</th><th>Exit Amount</th><th>Net</th></tr>
 {% for row in major_money_markets %}
 <tr class="{{ row.row_class }}">
     <td>{{ row.market }}</td>
     <td>{{ row.source }}</td>
     <td>{{ row.coverage }}</td>
+    <td>{{ row.coverage_note }}</td>
     <td>{{ row.entry_count }}</td>
     <td>{{ row.entry_amount }}</td>
     <td>{{ row.exit_count }}</td>
@@ -351,6 +352,14 @@ def _format_exchange_types(exchange_types) -> str:
     return ", ".join(parts)
 
 
+def _format_coverage_notes(notes) -> str:
+    if isinstance(notes, str):
+        return notes
+    if not isinstance(notes, list):
+        return ""
+    return " ".join(str(item).strip() for item in notes if str(item).strip())
+
+
 def check_major_money_digest_status(
     digest_json: Path | None = None,
     top_n: int = 8,
@@ -409,6 +418,7 @@ def check_major_money_digest_status(
                 "market": market.get("market", "N/A"),
                 "source": market.get("source") or "missing",
                 "coverage": coverage,
+                "coverage_note": _format_coverage_notes(market.get("coverage_notes")),
                 "entry_count": _safe_int(market.get("entry_count"), 0),
                 "entry_amount": _format_money_with_currency(market.get("entry_amount"), currency),
                 "exit_count": _safe_int(market.get("exit_count"), 0),
