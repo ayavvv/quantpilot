@@ -201,6 +201,8 @@ FUTU_MARKET_FLOW_CODES=HK.00700,US.AAPL,US.NVDA \
 FUTU_MARKET_FLOW_MAX_CODES=0 \
 FUTU_MARKET_FLOW_PAUSE_SECONDS=0 \
 FUTU_MARKET_FLOW_RATE_LIMIT_DELAY=0.1 \
+FUTU_MARKET_FLOW_RATE_LIMIT_RETRY_ATTEMPTS=2 \
+FUTU_MARKET_FLOW_RATE_LIMIT_RETRY_SECONDS=31 \
 FUTU_MARKET_FLOW_OUTPUT_DIR=/tmp/quantpilot_futu_market_flow_smoke \
 MAJOR_MONEY_DIGEST_JSON=/tmp/major_money_digest_smoke.json \
 MAJOR_MONEY_DIGEST_CSV=/tmp/major_money_digest_smoke.csv \
@@ -232,4 +234,7 @@ Recommended host cron entries, Asia/Shanghai:
 
 Full Futu market scans should run as separate off-hours jobs, not inside the
 main A-share pipeline, until runtime and rate limits are measured on this
-account.
+account. Keep the effective request interval at about one request per second or
+slower; when Futu still returns its 30-requests-per-30-seconds limit error, the
+scanner sleeps `FUTU_MARKET_FLOW_RATE_LIMIT_RETRY_SECONDS` and retries the same
+symbol before counting it as an error.

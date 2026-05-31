@@ -10,6 +10,8 @@ def test_run_market_capital_flow_wraps_futu_scanner_and_digest():
 
     assert 'FUTU_MARKET_FLOW_MARKETS="${FUTU_MARKET_FLOW_MARKETS:-HK,US}"' in content
     assert 'FUTU_MARKET_FLOW_MIN_OK_RATIO="${FUTU_MARKET_FLOW_MIN_OK_RATIO:-0}"' in content
+    assert 'FUTU_MARKET_FLOW_RATE_LIMIT_RETRY_ATTEMPTS="${FUTU_MARKET_FLOW_RATE_LIMIT_RETRY_ATTEMPTS:-2}"' in content
+    assert 'FUTU_MARKET_FLOW_RATE_LIMIT_RETRY_SECONDS="${FUTU_MARKET_FLOW_RATE_LIMIT_RETRY_SECONDS:-31}"' in content
     assert 'FUTU_MARKET_FLOW_EXCLUDE_EXCHANGE_TYPES="${FUTU_MARKET_FLOW_EXCLUDE_EXCHANGE_TYPES:-US_PINK,N/A}"' in content
     assert 'FUTU_MARKET_FLOW_EXCLUDE_SECURITY_CLASSES="${FUTU_MARKET_FLOW_EXCLUDE_SECURITY_CLASSES:-preferred,note_debt,unit,warrant_right,delisted_label,future_listing}"' in content
     assert 'FUTU_MARKET_FLOW_OVERWRITE="${FUTU_MARKET_FLOW_OVERWRITE:-false}"' in content
@@ -22,6 +24,8 @@ def test_run_market_capital_flow_wraps_futu_scanner_and_digest():
     assert 'market_list_contains "$FUTU_MARKET_FLOW_MARKETS" "US"' in content
     assert '[ -z "${POLYGON_API_KEY:-}" ] && [ -z "${POLYGON_API_KEY_FILE:-}" ]' in content
     assert 'POLYGON_API_KEY or POLYGON_API_KEY_FILE is not set' in content
+    assert '--rate-limit-retry-attempts "$FUTU_MARKET_FLOW_RATE_LIMIT_RETRY_ATTEMPTS"' in content
+    assert '--rate-limit-retry-seconds "$FUTU_MARKET_FLOW_RATE_LIMIT_RETRY_SECONDS"' in content
     assert '--exclude-security-classes "$FUTU_MARKET_FLOW_EXCLUDE_SECURITY_CLASSES"' in content
     assert 'SCAN_ARGS+=(--overwrite)' in content
     assert 'US_OTC_PROXY_FLOW_AVAILABLE=true' in content

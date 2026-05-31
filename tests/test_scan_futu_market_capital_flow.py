@@ -3,6 +3,7 @@ import json
 import pandas as pd
 import pytest
 
+import scripts.scan_futu_market_capital_flow as scanner
 from scripts.scan_futu_market_capital_flow import (
     _effective_pause_seconds,
     classify_security_class,
@@ -17,6 +18,22 @@ class FakeFutuClient:
             raise RuntimeError("no permission")
         return [
             {"code": code, "date": "2026-05-29", "main_in_flow": 10.0, "super_in_flow": 6.0, "big_in_flow": 4.0}
+        ]
+
+    def get_capital_distribution(self, code):
+        return {}
+
+
+class FakeRateLimitClient:
+    def __init__(self):
+        self.calls = 0
+
+    def get_capital_flow(self, code, period_type="DAY", start=None, end=None):
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("Get Capital Flow is too frequent, request failed, no more than 30 times every 30 seconds.")
+        return [
+            {"code": code, "date": "2026-05-29", "main_in_flow": 11.0, "super_in_flow": 7.0, "big_in_flow": 4.0}
         ]
 
     def get_capital_distribution(self, code):
@@ -163,6 +180,46 @@ def test_scan_market_refreshes_instead_of_resuming_old_schema(tmp_path):
     assert payload["scanner_schema_version"] == 2
     assert payload["previous_scanner_schema_version"] == 0
     assert payload["resume_mode"] == "schema_upgrade_refresh"
+
+
+def test_scan_market_retries_futu_rate_limit_before_recording_result(tmp_path, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(scanner.time, "sleep", sleeps.append)
+    client = FakeRateLimitClient()
+    universe = pd.DataFrame(
+        [
+            {"code": "US.AAPL", "name": "Apple", "exchange_type": "US_NASDAQ"},
+        ]
+    )
+
+    stats = scan_market(
+        client,
+        universe,
+        market="US",
+        output_dir=tmp_path,
+        start="2026-05-01",
+        end="2026-05-31",
+        period="DAY",
+        include_distribution=False,
+        max_codes=0,
+        batch_flush=50,
+        overwrite=True,
+        pause_seconds=0,
+        min_ok_ratio=0.0,
+        rate_limit_retry_attempts=1,
+        rate_limit_retry_seconds=31.0,
+    )
+
+    payload = json.loads((tmp_path / "US_latest_status.json").read_text(encoding="utf-8"))
+    output = pd.read_csv(tmp_path / "US_latest_flow.csv")
+    assert client.calls == 2
+    assert sleeps == [31.0]
+    assert stats["ok_count"] == 1
+    assert payload["ok_count"] == 1
+    assert payload["error_count"] == 0
+    assert payload["rate_limit_retry_attempts"] == 1
+    assert payload["rate_limit_retry_seconds"] == 31.0
+    assert output["capital_flow_status"].tolist() == ["ok"]
 
 
 def test_scan_market_writes_failed_status_before_raise(tmp_path):
