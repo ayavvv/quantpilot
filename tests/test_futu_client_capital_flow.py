@@ -1,5 +1,6 @@
 import pandas as pd
 
+from collector import futu_client as futu_mod
 from collector.futu_client import FutuClient
 
 
@@ -53,6 +54,71 @@ class _CapitalDistributionCtx:
 class _ErrorCtx:
     def get_capital_flow(self, code, period_type=None, start=None, end=None):
         return -1, "permission denied"
+
+
+def test_futu_client_uses_configured_rsa_key(monkeypatch, tmp_path):
+    calls = []
+
+    class FakeSysConfig:
+        @staticmethod
+        def enable_proto_encrypt(enabled):
+            calls.append(("enable", enabled))
+
+        @staticmethod
+        def set_init_rsa_file(path):
+            calls.append(("rsa", path))
+
+    key_path = tmp_path / "futu_rsa.pem"
+    key_path.write_text("test-key")
+    monkeypatch.setattr(futu_mod, "SysConfig", FakeSysConfig)
+    monkeypatch.setenv("FUTU_RSA_KEY", str(key_path))
+
+    FutuClient("127.0.0.1", 11111)
+
+    assert calls == [("enable", True), ("rsa", str(key_path))]
+
+
+def test_futu_client_disables_encryption_when_rsa_key_missing(monkeypatch):
+    calls = []
+
+    class FakeSysConfig:
+        @staticmethod
+        def enable_proto_encrypt(enabled):
+            calls.append(("enable", enabled))
+
+        @staticmethod
+        def set_init_rsa_file(path):
+            calls.append(("rsa", path))
+
+    monkeypatch.setattr(futu_mod, "SysConfig", FakeSysConfig)
+    monkeypatch.setenv("FUTU_RSA_KEY", "/missing/futu_rsa.pem")
+
+    FutuClient("127.0.0.1", 11111)
+
+    assert calls == [("enable", False)]
+
+
+def test_futu_client_uses_project_rsa_key_when_env_absent(monkeypatch, tmp_path):
+    calls = []
+
+    class FakeSysConfig:
+        @staticmethod
+        def enable_proto_encrypt(enabled):
+            calls.append(("enable", enabled))
+
+        @staticmethod
+        def set_init_rsa_file(path):
+            calls.append(("rsa", path))
+
+    key_path = tmp_path / "project_rsa.pem"
+    key_path.write_text("test-key")
+    monkeypatch.setattr(futu_mod, "SysConfig", FakeSysConfig)
+    monkeypatch.setattr(futu_mod, "PROJECT_RSA_KEY", str(key_path))
+    monkeypatch.delenv("FUTU_RSA_KEY", raising=False)
+
+    FutuClient("127.0.0.1", 11111)
+
+    assert calls == [("enable", True), ("rsa", str(key_path))]
 
 
 def test_get_capital_flow_normalizes_major_flow_fields():

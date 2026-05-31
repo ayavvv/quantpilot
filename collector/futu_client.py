@@ -1,21 +1,45 @@
 """Futu API client - with pagination, retry, and rate limiting."""
+import os
 import time
+from pathlib import Path
 from typing import Optional, List, Dict, Any
 import pandas as pd
 from futu import OpenQuoteContext, RET_OK, RET_ERROR, TrdEnv, Plate, SysConfig
 from loguru import logger
 
 
+PROJECT_RSA_KEY = str(Path(__file__).resolve().parents[1] / "keys" / "futu_rsa_1024.pem")
+DEFAULT_RSA_KEY = "/app/keys/futu_rsa_1024.pem"
+
+
+def _resolve_rsa_key(rsa_key: str | None = None) -> tuple[Path | None, str]:
+    env_key = os.environ.get("FUTU_RSA_KEY")
+    if rsa_key:
+        candidates = [rsa_key]
+    elif env_key:
+        candidates = [env_key]
+    else:
+        candidates = [PROJECT_RSA_KEY, DEFAULT_RSA_KEY]
+
+    last_candidate = candidates[-1]
+    for candidate in candidates:
+        path = Path(candidate).expanduser()
+        if path.exists():
+            return path, str(path)
+    return None, str(Path(last_candidate).expanduser())
+
+
 class FutuClient:
     """Futu OpenD client wrapper."""
 
-    def __init__(self, host: str, port: int):
+    def __init__(self, host: str, port: int, rsa_key: str | None = None):
         """
         Initialize client.
 
         Args:
             host: Futu OpenD host address
             port: Futu OpenD port
+            rsa_key: Optional API encryption private-key path
         """
         self.host = host
         self.port = port
@@ -25,9 +49,13 @@ class FutuClient:
         self.rate_limit_delay = 0.6  # seconds
         self.connect_timeout = 30  # seconds
 
-        # Enable protocol encryption for cross-network connections
-        SysConfig.enable_proto_encrypt(True)
-        SysConfig.set_init_rsa_file("/app/keys/futu_rsa_1024.pem")
+        key_path, attempted_key = _resolve_rsa_key(rsa_key)
+        if key_path is not None:
+            SysConfig.enable_proto_encrypt(True)
+            SysConfig.set_init_rsa_file(str(key_path))
+        else:
+            SysConfig.enable_proto_encrypt(False)
+            logger.warning("FUTU_RSA_KEY not found; connecting to OpenD without protocol encryption: {}", attempted_key)
 
     def connect(self) -> bool:
         """
