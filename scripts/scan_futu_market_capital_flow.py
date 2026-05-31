@@ -296,6 +296,214 @@ def _needs_schema_upgrade_refresh(output_path: Path, status_path: Path) -> bool:
     return _csv_row_count(output_path) >= attempted_count
 
 
+def _finalize_market_artifact(
+    result: pd.DataFrame,
+    universe: pd.DataFrame,
+    work: pd.DataFrame,
+    *,
+    market: str,
+    output_dir: Path,
+    start: str,
+    end: str,
+    period: str,
+    include_distribution: bool,
+    max_codes: int,
+    min_ok_ratio: float,
+    overwrite: bool,
+    schema_upgrade_refresh: bool,
+    existing_schema_version: int,
+    started_at: str,
+    rate_limit_retry_attempts: int,
+    rate_limit_retry_seconds: float,
+    transient_retry_attempts: int,
+    transient_retry_seconds: float,
+    include_exchange_types: set[str] | None,
+    exclude_exchange_types: set[str] | None,
+) -> dict[str, Any]:
+    date_tag = _date_tag(end)
+    output_path = output_dir / f"{market}_{date_tag}_flow.csv"
+    latest_path = output_dir / f"{market}_latest_flow.csv"
+    statuses = result.get("capital_flow_status", pd.Series(dtype=str)).fillna("").astype(str)
+    ok_count = int((statuses == "ok").sum())
+    error_count = int((statuses == "error").sum())
+    empty_count = int((statuses == "empty").sum())
+    attempted = len(result)
+    ok_ratio = ok_count / attempted if attempted else 0.0
+    status_value = "ok"
+    status_message = "ok"
+    if not attempted:
+        status_value = "empty"
+        status_message = "No symbols were scanned."
+    elif ok_ratio < min_ok_ratio:
+        status_value = "failed"
+        status_message = f"ok_ratio too low: {ok_ratio:.1%} < {min_ok_ratio:.1%}"
+
+    finished_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    _write_outputs(result, output_path, latest_path)
+    universe_path = output_dir / f"{market}_{date_tag}_universe.csv"
+    universe.to_csv(universe_path, index=False)
+    latest_universe_path = output_dir / f"{market}_latest_universe.csv"
+    universe.to_csv(latest_universe_path, index=False)
+    source_universe_path = ""
+    latest_source_universe_path = ""
+    source_universe = universe.attrs.get("source_universe")
+    if isinstance(source_universe, pd.DataFrame) and not source_universe.empty:
+        source_universe_path_obj = output_dir / f"{market}_{date_tag}_source_universe.csv"
+        latest_source_universe_path_obj = output_dir / f"{market}_latest_source_universe.csv"
+        source_universe.to_csv(source_universe_path_obj, index=False)
+        source_universe.to_csv(latest_source_universe_path_obj, index=False)
+        source_universe_path = str(source_universe_path_obj)
+        latest_source_universe_path = str(latest_source_universe_path_obj)
+    source_exchange_types = universe.attrs.get("source_exchange_types") or _exchange_type_counts(universe)
+    selected_exchange_types = universe.attrs.get("selected_exchange_types") or _exchange_type_counts(work)
+    excluded_exchange_types = universe.attrs.get("excluded_exchange_types") or _exchange_type_delta(
+        source_exchange_types,
+        selected_exchange_types,
+    )
+    source_security_classes = universe.attrs.get("source_security_classes") or _security_class_counts(work)
+    selected_security_classes = universe.attrs.get("selected_security_classes") or _security_class_counts(work)
+    excluded_security_classes = universe.attrs.get("excluded_security_classes") or _exchange_type_delta(
+        source_security_classes,
+        selected_security_classes,
+    )
+
+    status_payload = {
+        "scanner_schema_version": STATUS_SCHEMA_VERSION,
+        "status": status_value,
+        "message": status_message,
+        "market": market,
+        "period": period,
+        "start": start,
+        "end": end,
+        "date_tag": date_tag,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "resume_mode": "overwrite" if overwrite else ("schema_upgrade_refresh" if schema_upgrade_refresh else "resume"),
+        "previous_scanner_schema_version": existing_schema_version,
+        "include_distribution": include_distribution,
+        "max_codes": max_codes,
+        "rate_limit_retry_attempts": rate_limit_retry_attempts,
+        "rate_limit_retry_seconds": rate_limit_retry_seconds,
+        "transient_retry_attempts": transient_retry_attempts,
+        "transient_retry_seconds": transient_retry_seconds,
+        "universe_count": int(len(universe)),
+        "selected_count": int(len(work)),
+        "attempted_count": int(attempted),
+        "ok_count": ok_count,
+        "error_count": error_count,
+        "empty_count": empty_count,
+        "ok_ratio": ok_ratio,
+        "min_ok_ratio": min_ok_ratio,
+        "source_exchange_types": source_exchange_types,
+        "selected_exchange_types": selected_exchange_types,
+        "excluded_exchange_types": excluded_exchange_types,
+        "source_security_classes": source_security_classes,
+        "selected_security_classes": selected_security_classes,
+        "excluded_security_classes": excluded_security_classes,
+        "status_by_exchange_type": _status_counts_by_exchange_type(result),
+        "status_by_security_class": _status_counts_by_security_class(result),
+        "unsupported_exchange_types": _unsupported_exchange_types(result),
+        "include_exchange_types": sorted(include_exchange_types or universe.attrs.get("include_exchange_types") or []),
+        "exclude_exchange_types": sorted(exclude_exchange_types or universe.attrs.get("exclude_exchange_types") or []),
+        "exclude_security_classes": sorted(universe.attrs.get("exclude_security_classes") or []),
+        "output": str(output_path),
+        "latest": str(latest_path),
+        "universe": str(universe_path),
+        "latest_universe": str(latest_universe_path),
+        "source_universe": source_universe_path,
+        "latest_source_universe": latest_source_universe_path,
+    }
+
+    status_paths = _write_status(status_payload, output_dir, market, date_tag)
+    if attempted and ok_ratio < min_ok_ratio:
+        raise RuntimeError(f"{market} Futu capital-flow ok_ratio too low: {ok_ratio:.1%} < {min_ok_ratio:.1%}")
+
+    return {
+        "market": market,
+        "universe_count": len(universe),
+        "selected_count": len(work),
+        "attempted_count": attempted,
+        "ok_count": ok_count,
+        "output": str(output_path),
+        "latest": str(latest_path),
+        "universe": str(universe_path),
+        "status": str(status_paths["status"]),
+        "latest_status": str(status_paths["latest_status"]),
+    }
+
+
+def _upgrade_complete_market_artifact(
+    output_path: Path,
+    *,
+    universe: pd.DataFrame,
+    work: pd.DataFrame,
+    market: str,
+    output_dir: Path,
+    start: str,
+    end: str,
+    period: str,
+    include_distribution: bool,
+    max_codes: int,
+    min_ok_ratio: float,
+    overwrite: bool,
+    existing_schema_version: int,
+    started_at: str,
+    rate_limit_retry_attempts: int,
+    rate_limit_retry_seconds: float,
+    transient_retry_attempts: int,
+    transient_retry_seconds: float,
+    include_exchange_types: set[str] | None,
+    exclude_exchange_types: set[str] | None,
+) -> dict[str, Any] | None:
+    if not output_path.exists() or "code" not in work.columns:
+        return None
+    existing = pd.read_csv(output_path)
+    if existing.empty or "code" not in existing.columns:
+        return None
+    existing = existing.drop_duplicates("code", keep="first").copy()
+    desired = work.drop_duplicates("code", keep="first").copy()
+    desired_codes = desired["code"].fillna("").astype(str).tolist()
+    existing_codes = set(existing["code"].fillna("").astype(str).tolist())
+    if not desired_codes or not set(desired_codes).issubset(existing_codes):
+        return None
+
+    result = existing[existing["code"].isin(desired_codes)].copy()
+    result["_order"] = result["code"].map({code: idx for idx, code in enumerate(desired_codes)})
+    result = result.sort_values("_order", kind="stable").drop(columns=["_order"])
+    metadata = desired[["code"] + [col for col in ["name", "exchange_type", "security_class"] if col in desired.columns]]
+    result = result.drop(columns=[col for col in ["name", "exchange_type", "security_class"] if col in result.columns])
+    result = metadata.merge(result, on="code", how="left")
+    result["market"] = market
+    if "scan_date" not in result.columns:
+        result["scan_date"] = datetime.now().strftime("%Y-%m-%d")
+    if "source" not in result.columns:
+        result["source"] = "futu"
+
+    return _finalize_market_artifact(
+        result,
+        universe,
+        work,
+        market=market,
+        output_dir=output_dir,
+        start=start,
+        end=end,
+        period=period,
+        include_distribution=include_distribution,
+        max_codes=max_codes,
+        min_ok_ratio=min_ok_ratio,
+        overwrite=overwrite,
+        schema_upgrade_refresh=True,
+        existing_schema_version=existing_schema_version,
+        started_at=started_at,
+        rate_limit_retry_attempts=rate_limit_retry_attempts,
+        rate_limit_retry_seconds=rate_limit_retry_seconds,
+        transient_retry_attempts=transient_retry_attempts,
+        transient_retry_seconds=transient_retry_seconds,
+        include_exchange_types=include_exchange_types,
+        exclude_exchange_types=exclude_exchange_types,
+    )
+
+
 def _is_rate_limit_error(exc: Exception) -> bool:
     text = str(exc).lower()
     return "too frequent" in text or "no more than" in text or "rate limit" in text
@@ -403,8 +611,6 @@ def scan_market(
     status_path = output_dir / f"{market}_{date_tag}_status.json"
     existing_schema_version = _status_schema_version(status_path)
     schema_upgrade_refresh = _needs_schema_upgrade_refresh(output_path, status_path)
-    existing, done_codes = _load_resume(output_path, overwrite=overwrite or schema_upgrade_refresh)
-    records = existing.to_dict("records") if not existing.empty else []
 
     work = universe.copy()
     if "security_class" not in work.columns:
@@ -412,6 +618,33 @@ def scan_market(
     if max_codes > 0:
         work = work.head(max_codes).copy()
     total = len(work)
+    if schema_upgrade_refresh and not overwrite:
+        upgraded = _upgrade_complete_market_artifact(
+            output_path,
+            universe=universe,
+            work=work,
+            market=market,
+            output_dir=output_dir,
+            start=start,
+            end=end,
+            period=period,
+            include_distribution=include_distribution,
+            max_codes=max_codes,
+            min_ok_ratio=min_ok_ratio,
+            overwrite=overwrite,
+            existing_schema_version=existing_schema_version,
+            started_at=started_at,
+            rate_limit_retry_attempts=rate_limit_retry_attempts,
+            rate_limit_retry_seconds=rate_limit_retry_seconds,
+            transient_retry_attempts=transient_retry_attempts,
+            transient_retry_seconds=transient_retry_seconds,
+            include_exchange_types=include_exchange_types,
+            exclude_exchange_types=exclude_exchange_types,
+        )
+        if upgraded is not None:
+            return upgraded
+    existing, done_codes = _load_resume(output_path, overwrite=overwrite or schema_upgrade_refresh)
+    records = existing.to_dict("records") if not existing.empty else []
 
     for idx, row in work.iterrows():
         code = str(row.get("code", "")).strip()
@@ -457,114 +690,29 @@ def scan_market(
         if pause_seconds > 0:
             time.sleep(pause_seconds)
 
-    result = pd.DataFrame(records)
-    statuses = result.get("capital_flow_status", pd.Series(dtype=str)).fillna("").astype(str)
-    ok_count = int((statuses == "ok").sum())
-    error_count = int((statuses == "error").sum())
-    empty_count = int((statuses == "empty").sum())
-    attempted = len(result)
-    ok_ratio = ok_count / attempted if attempted else 0.0
-    status_value = "ok"
-    status_message = "ok"
-    if not attempted:
-        status_value = "empty"
-        status_message = "No symbols were scanned."
-    elif ok_ratio < min_ok_ratio:
-        status_value = "failed"
-        status_message = f"ok_ratio too low: {ok_ratio:.1%} < {min_ok_ratio:.1%}"
-
-    finished_at = datetime.now().astimezone().isoformat(timespec="seconds")
-    _write_outputs(result, output_path, latest_path)
-    universe_path = output_dir / f"{market}_{date_tag}_universe.csv"
-    universe.to_csv(universe_path, index=False)
-    latest_universe_path = output_dir / f"{market}_latest_universe.csv"
-    universe.to_csv(latest_universe_path, index=False)
-    source_universe_path = ""
-    latest_source_universe_path = ""
-    source_universe = universe.attrs.get("source_universe")
-    if isinstance(source_universe, pd.DataFrame) and not source_universe.empty:
-        source_universe_path_obj = output_dir / f"{market}_{date_tag}_source_universe.csv"
-        latest_source_universe_path_obj = output_dir / f"{market}_latest_source_universe.csv"
-        source_universe.to_csv(source_universe_path_obj, index=False)
-        source_universe.to_csv(latest_source_universe_path_obj, index=False)
-        source_universe_path = str(source_universe_path_obj)
-        latest_source_universe_path = str(latest_source_universe_path_obj)
-    source_exchange_types = universe.attrs.get("source_exchange_types") or _exchange_type_counts(universe)
-    selected_exchange_types = universe.attrs.get("selected_exchange_types") or _exchange_type_counts(work)
-    excluded_exchange_types = universe.attrs.get("excluded_exchange_types") or _exchange_type_delta(
-        source_exchange_types,
-        selected_exchange_types,
+    return _finalize_market_artifact(
+        pd.DataFrame(records),
+        universe,
+        work,
+        market=market,
+        output_dir=output_dir,
+        start=start,
+        end=end,
+        period=period,
+        include_distribution=include_distribution,
+        max_codes=max_codes,
+        min_ok_ratio=min_ok_ratio,
+        overwrite=overwrite,
+        schema_upgrade_refresh=schema_upgrade_refresh,
+        existing_schema_version=existing_schema_version,
+        started_at=started_at,
+        rate_limit_retry_attempts=rate_limit_retry_attempts,
+        rate_limit_retry_seconds=rate_limit_retry_seconds,
+        transient_retry_attempts=transient_retry_attempts,
+        transient_retry_seconds=transient_retry_seconds,
+        include_exchange_types=include_exchange_types,
+        exclude_exchange_types=exclude_exchange_types,
     )
-    source_security_classes = universe.attrs.get("source_security_classes") or _security_class_counts(work)
-    selected_security_classes = universe.attrs.get("selected_security_classes") or _security_class_counts(work)
-    excluded_security_classes = universe.attrs.get("excluded_security_classes") or _exchange_type_delta(
-        source_security_classes,
-        selected_security_classes,
-    )
-
-    status_payload = {
-        "scanner_schema_version": STATUS_SCHEMA_VERSION,
-        "status": status_value,
-        "message": status_message,
-        "market": market,
-        "period": period,
-        "start": start,
-        "end": end,
-        "date_tag": date_tag,
-        "started_at": started_at,
-        "finished_at": finished_at,
-        "resume_mode": "overwrite" if overwrite else ("schema_upgrade_refresh" if schema_upgrade_refresh else "resume"),
-        "previous_scanner_schema_version": existing_schema_version,
-        "include_distribution": include_distribution,
-        "max_codes": max_codes,
-        "rate_limit_retry_attempts": rate_limit_retry_attempts,
-        "rate_limit_retry_seconds": rate_limit_retry_seconds,
-        "transient_retry_attempts": transient_retry_attempts,
-        "transient_retry_seconds": transient_retry_seconds,
-        "universe_count": int(len(universe)),
-        "selected_count": int(total),
-        "attempted_count": int(attempted),
-        "ok_count": ok_count,
-        "error_count": error_count,
-        "empty_count": empty_count,
-        "ok_ratio": ok_ratio,
-        "min_ok_ratio": min_ok_ratio,
-        "source_exchange_types": source_exchange_types,
-        "selected_exchange_types": selected_exchange_types,
-        "excluded_exchange_types": excluded_exchange_types,
-        "source_security_classes": source_security_classes,
-        "selected_security_classes": selected_security_classes,
-        "excluded_security_classes": excluded_security_classes,
-        "status_by_exchange_type": _status_counts_by_exchange_type(result),
-        "status_by_security_class": _status_counts_by_security_class(result),
-        "unsupported_exchange_types": _unsupported_exchange_types(result),
-        "include_exchange_types": sorted(include_exchange_types or universe.attrs.get("include_exchange_types") or []),
-        "exclude_exchange_types": sorted(exclude_exchange_types or universe.attrs.get("exclude_exchange_types") or []),
-        "exclude_security_classes": sorted(universe.attrs.get("exclude_security_classes") or []),
-        "output": str(output_path),
-        "latest": str(latest_path),
-        "universe": str(universe_path),
-        "latest_universe": str(latest_universe_path),
-        "source_universe": source_universe_path,
-        "latest_source_universe": latest_source_universe_path,
-    }
-
-    status_paths = _write_status(status_payload, output_dir, market, date_tag)
-    if attempted and ok_ratio < min_ok_ratio:
-        raise RuntimeError(f"{market} Futu capital-flow ok_ratio too low: {ok_ratio:.1%} < {min_ok_ratio:.1%}")
-
-    return {
-        "market": market,
-        "universe_count": len(universe),
-        "selected_count": total,
-        "attempted_count": attempted,
-        "ok_count": ok_count,
-        "output": str(output_path),
-        "latest": str(latest_path),
-        "universe": str(universe_path),
-        "status": str(status_paths["status"]),
-        "latest_status": str(status_paths["latest_status"]),
-    }
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

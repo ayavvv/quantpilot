@@ -56,6 +56,14 @@ class FakeTransientFutuClient:
         return {}
 
 
+class FailIfCalledClient:
+    def get_capital_flow(self, code, period_type="DAY", start=None, end=None):
+        raise AssertionError("capital-flow API should not be called")
+
+    def get_capital_distribution(self, code):
+        raise AssertionError("distribution API should not be called")
+
+
 class FakeUniverseClient:
     def __init__(self, rows):
         self.ctx = self
@@ -196,6 +204,57 @@ def test_scan_market_refreshes_instead_of_resuming_old_schema(tmp_path):
     assert payload["scanner_schema_version"] == 2
     assert payload["previous_scanner_schema_version"] == 0
     assert payload["resume_mode"] == "schema_upgrade_refresh"
+
+
+def test_scan_market_upgrades_complete_old_schema_artifact_without_refetch(tmp_path):
+    old_flow = tmp_path / "US_20260531_flow.csv"
+    old_flow.write_text(
+        "market,code,name,exchange_type,capital_flow_status,capital_flow_count,latest_main_in_flow\n"
+        "US,US.AAPL,Old Apple,US_NASDAQ,ok,1,100\n"
+        "US,US.MSFT,Old Microsoft,US_NASDAQ,empty,0,\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "US_20260531_status.json").write_text(
+        '{"status":"ok","market":"US","scanner_schema_version":0,"attempted_count":2,"ok_count":1}',
+        encoding="utf-8",
+    )
+    universe = pd.DataFrame(
+        [
+            {"code": "US.AAPL", "name": "Apple", "exchange_type": "US_NASDAQ", "security_class": "common_or_unknown"},
+            {"code": "US.MSFT", "name": "Microsoft", "exchange_type": "US_NASDAQ", "security_class": "common_or_unknown"},
+        ]
+    )
+    universe.attrs["source_exchange_types"] = {"US_NASDAQ": 2, "US_PINK": 1}
+    universe.attrs["selected_exchange_types"] = {"US_NASDAQ": 2}
+    universe.attrs["excluded_exchange_types"] = {"US_PINK": 1}
+    universe.attrs["source_security_classes"] = {"common_or_unknown": 2}
+    universe.attrs["selected_security_classes"] = {"common_or_unknown": 2}
+    universe.attrs["excluded_security_classes"] = {}
+
+    scan_market(
+        FailIfCalledClient(),
+        universe,
+        market="US",
+        output_dir=tmp_path,
+        start="2026-05-01",
+        end="2026-05-31",
+        period="DAY",
+        include_distribution=False,
+        max_codes=0,
+        batch_flush=50,
+        overwrite=False,
+        pause_seconds=0,
+        min_ok_ratio=0.0,
+    )
+
+    output = pd.read_csv(old_flow)
+    payload = json.loads((tmp_path / "US_20260531_status.json").read_text(encoding="utf-8"))
+    assert output["code"].tolist() == ["US.AAPL", "US.MSFT"]
+    assert output["name"].tolist() == ["Apple", "Microsoft"]
+    assert output["security_class"].tolist() == ["common_or_unknown", "common_or_unknown"]
+    assert payload["scanner_schema_version"] == 2
+    assert payload["resume_mode"] == "schema_upgrade_refresh"
+    assert payload["source_exchange_types"] == {"US_NASDAQ": 2, "US_PINK": 1}
 
 
 def test_scan_market_resumes_partial_output_without_status(tmp_path):
