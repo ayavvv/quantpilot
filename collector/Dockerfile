@@ -6,5 +6,6 @@ COPY collector/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY collector/ ./collector/
 COPY converter/ ./converter/
+COPY strategy/ ./strategy/
 COPY scripts/ ./scripts/
 CMD ["python", "-m", "collector.main"]
