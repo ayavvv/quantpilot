@@ -373,6 +373,7 @@ def check_major_money_digest_status(
             "major_money_date": "N/A",
             "major_money_message": f"No market-wide major-money digest found at {target}.",
             "major_money_summary": "",
+            "major_money_subject_summary": "",
             "major_money_markets": [],
             "major_money_top_entries": [],
             "major_money_top_exits": [],
@@ -386,6 +387,7 @@ def check_major_money_digest_status(
             "major_money_date": "N/A",
             "major_money_message": f"Could not read market-wide major-money digest: {exc}",
             "major_money_summary": "",
+            "major_money_subject_summary": "",
             "major_money_markets": [],
             "major_money_top_entries": [],
             "major_money_top_exits": [],
@@ -398,6 +400,7 @@ def check_major_money_digest_status(
             "major_money_date": "N/A",
             "major_money_message": "Market-wide major-money digest is empty.",
             "major_money_summary": "",
+            "major_money_subject_summary": "",
             "major_money_markets": [],
             "major_money_top_entries": [],
             "major_money_top_exits": [],
@@ -481,6 +484,12 @@ def check_major_money_digest_status(
                 f"net {_format_money(bucket.get('net_amount'))}"
             )
     amount_summary = "; ".join(amount_parts) if amount_parts else "N/A"
+    subject_parts = [
+        f"MM {_safe_int(digest.get('entry_count'), 0)} in/{_safe_int(digest.get('exit_count'), 0)} out",
+        f"{available_count}/{market_count} src",
+    ]
+    if missing_markets:
+        subject_parts.append(f"missing {','.join(missing_markets)}")
     return {
         "major_money_available": available_count > 0,
         "major_money_date": digest.get("flow_date") or "N/A",
@@ -494,10 +503,20 @@ def check_major_money_digest_status(
             f"major exits: {_safe_int(digest.get('exit_count'), 0)}. "
             f"Amounts by currency: {amount_summary}."
         ),
+        "major_money_subject_summary": "; ".join(subject_parts),
         "major_money_markets": market_rows,
         "major_money_top_entries": entry_rows,
         "major_money_top_exits": exit_rows,
     }
+
+
+def build_report_subject(today: str, major_money_info: dict | None = None) -> str:
+    subject = f"QuantPilot Daily Report - {today}"
+    if major_money_info and major_money_info.get("major_money_available"):
+        summary = str(major_money_info.get("major_money_subject_summary") or "").strip()
+        if summary:
+            subject = f"{subject} | {summary}"
+    return subject
 
 
 def check_capital_flow_status(
@@ -1085,7 +1104,7 @@ def main():
         **capital_flow_gate_info,
     )
 
-    subject = f"QuantPilot Daily Report - {today}"
+    subject = build_report_subject(today, major_money_info)
     if not send_email(html, subject):
         raise SystemExit(1)
     print("Report generation complete")

@@ -226,6 +226,7 @@ def test_check_major_money_digest_status_summarises_markets(tmp_path):
         "Major entries: 1; major exits: 1. "
         "Amounts by currency: CNY: entry 80.0m, exit 70.0m, net 10.0m."
     )
+    assert status["major_money_subject_summary"] == "MM 1 in/1 out; 1/3 src; missing HK"
     assert status["major_money_top_entries"][0]["code"] == "SH.600000"
     assert status["major_money_top_exits"][0]["main_flow"] == "-70.0m CNY"
 
@@ -284,7 +285,26 @@ def test_check_major_money_digest_status_missing_file_degrades(tmp_path):
 
     assert status["major_money_available"] is False
     assert status["major_money_markets"] == []
+    assert status["major_money_subject_summary"] == ""
     assert "No market-wide major-money digest found" in status["major_money_message"]
+
+
+def test_build_report_subject_includes_major_money_summary():
+    subject = send_report.build_report_subject(
+        "2026-05-31",
+        {
+            "major_money_available": True,
+            "major_money_subject_summary": "MM 368 in/783 out; 3/4 src; missing US_OTC",
+        },
+    )
+
+    assert subject == "QuantPilot Daily Report - 2026-05-31 | MM 368 in/783 out; 3/4 src; missing US_OTC"
+
+
+def test_build_report_subject_degrades_without_major_money_summary():
+    assert send_report.build_report_subject("2026-05-31", {"major_money_available": False}) == (
+        "QuantPilot Daily Report - 2026-05-31"
+    )
 
 
 def test_send_email_prefers_mailapp_when_configured(monkeypatch, tmp_path):
