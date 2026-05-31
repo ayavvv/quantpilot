@@ -276,3 +276,46 @@ def test_check_trade_status_prefers_fill_summary(tmp_path):
     )
 
     assert status == "Today: 1 order(s) filled (simulation)."
+
+
+def test_check_capital_flow_status_summarises_overlay(tmp_path):
+    overlay = tmp_path / "futu_capital_flow_signal_overlay_latest.csv"
+    overlay.write_text(
+        "\n".join(
+            [
+                "code,signal_date,model_rank,capital_flow_label,capital_flow_latest_date,latest_main_in_flow,main_5d_sum",
+                "SH.600000,2026-05-29,2,capital_flow_confirm,2026-05-29,125000000,345000000",
+                "SZ.000001,2026-05-29,1,risk_flag_main_outflow,2026-05-29,-50000000,-120000000",
+                "SH.600519,2026-05-29,3,fund_flow_watch,2026-05-29,3000000,5000000",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    status = send_report.check_capital_flow_status(overlay_csv=overlay, top_n=2)
+
+    assert status["capital_flow_available"] is True
+    assert status["capital_flow_date"] == "2026-05-29"
+    assert status["capital_flow_message"] == (
+        "Loaded 3 model candidate(s); capital flow is advisory and not an auto-trade rule."
+    )
+    assert {row["label"]: row["count"] for row in status["capital_flow_counts"]} == {
+        "capital_flow_confirm": 1,
+        "risk_flag_main_outflow": 1,
+        "fund_flow_watch": 1,
+    }
+    assert [row["code"] for row in status["capital_flow_top"]] == ["SZ.000001", "SH.600000"]
+    assert status["capital_flow_top"][0]["latest_main"] == "-50.0m"
+    assert status["capital_flow_top"][0]["row_class"] == "flow-risk"
+    assert status["capital_flow_top"][1]["latest_main"] == "125.0m"
+    assert status["capital_flow_top"][1]["row_class"] == "flow-confirm"
+
+
+def test_check_capital_flow_status_missing_file_degrades(tmp_path):
+    status = send_report.check_capital_flow_status(overlay_csv=tmp_path / "missing.csv")
+
+    assert status["capital_flow_available"] is False
+    assert status["capital_flow_date"] == "N/A"
+    assert status["capital_flow_counts"] == []
+    assert status["capital_flow_top"] == []
+    assert "No Futu capital-flow overlay found" in status["capital_flow_message"]

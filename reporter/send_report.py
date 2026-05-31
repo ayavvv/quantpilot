@@ -24,6 +24,12 @@ from jinja2 import Template
 SIGNAL_DIR = Path(os.environ.get("SIGNAL_DIR", "/data/signals"))
 REPORT_DIR = Path(os.environ.get("REPORT_DIR", "/data/reports"))
 REPORTER_ENV_PATH = Path(os.environ.get("REPORTER_ENV_FILE", Path(__file__).with_name(".env")))
+CAPITAL_FLOW_OVERLAY_CSV = Path(
+    os.environ.get(
+        "CAPITAL_FLOW_OVERLAY_CSV",
+        str(SIGNAL_DIR.parent / "output" / "futu_capital_flow_signal_overlay_latest.csv"),
+    )
+)
 TRADE_START_TIME = time(14, 50)
 
 REPORT_TEMPLATE = """
@@ -44,6 +50,10 @@ tr:nth-child(even) { background-color: #f8f9fa; }
 .ok { color: #28a745; }
 .warn { color: #ffc107; }
 .error { color: #dc3545; }
+.muted { color: #666; }
+.flow-confirm { background-color: #e6f4ea !important; }
+.flow-risk { background-color: #fdecea !important; }
+.flow-watch { background-color: #fff8e1 !important; }
 </style>
 </head>
 <body>
@@ -82,7 +92,33 @@ tr:nth-child(even) { background-color: #f8f9fa; }
 <p class="warn">No signal data today</p>
 {% endif %}
 
-<h2>3. Trading Status</h2>
+<h2>3. Futu Capital Flow ({{ capital_flow_date }})</h2>
+{% if capital_flow_available %}
+<p class="muted">{{ capital_flow_message }}</p>
+<table>
+<tr><th>Label</th><th>Count</th></tr>
+{% for row in capital_flow_counts %}
+<tr class="{{ row.row_class }}"><td>{{ row.label }}</td><td>{{ row.count }}</td></tr>
+{% endfor %}
+</table>
+<p><strong>Top Model Candidates:</strong></p>
+<table>
+<tr><th>Rank</th><th>Code</th><th>Label</th><th>Latest Main</th><th>5D Main</th></tr>
+{% for row in capital_flow_top %}
+<tr class="{{ row.row_class }}">
+    <td>{{ row.rank }}</td>
+    <td>{{ row.code }}</td>
+    <td>{{ row.label }}</td>
+    <td>{{ row.latest_main }}</td>
+    <td>{{ row.main_5d }}</td>
+</tr>
+{% endfor %}
+</table>
+{% else %}
+<p class="warn">{{ capital_flow_message }}</p>
+{% endif %}
+
+<h2>4. Trading Status</h2>
 <p>{{ trade_status }}</p>
 
 <hr>
@@ -164,6 +200,123 @@ def check_signal_status():
         "signal_count": len(df),
         "signal_date": signal_date,
         "top10": top10,
+    }
+
+
+def _format_money(value) -> str:
+    if value is None or pd.isna(value):
+        return "N/A"
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return "N/A"
+
+    abs_amount = abs(amount)
+    if abs_amount >= 1_000_000_000:
+        return f"{amount / 1_000_000_000:.2f}bn"
+    if abs_amount >= 1_000_000:
+        return f"{amount / 1_000_000:.1f}m"
+    if abs_amount >= 1_000:
+        return f"{amount / 1_000:.1f}k"
+    return f"{amount:.0f}"
+
+
+def _flow_row_class(label: str) -> str:
+    normalized = label.lower()
+    if "risk" in normalized or "outflow" in normalized:
+        return "flow-risk"
+    if "confirm" in normalized:
+        return "flow-confirm"
+    if "watch" in normalized:
+        return "flow-watch"
+    return ""
+
+
+def _safe_int(value, fallback: int) -> int:
+    try:
+        if pd.isna(value):
+            return fallback
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def check_capital_flow_status(
+    overlay_csv: Path | None = None,
+    top_n: int = 10,
+):
+    """Summarise Futu capital-flow overlay for the daily report."""
+    target = overlay_csv or Path(os.environ.get("CAPITAL_FLOW_OVERLAY_CSV", str(CAPITAL_FLOW_OVERLAY_CSV)))
+    if not target.exists():
+        return {
+            "capital_flow_available": False,
+            "capital_flow_date": "N/A",
+            "capital_flow_message": f"No Futu capital-flow overlay found at {target}.",
+            "capital_flow_counts": [],
+            "capital_flow_top": [],
+        }
+
+    try:
+        df = pd.read_csv(target)
+    except Exception as exc:
+        return {
+            "capital_flow_available": False,
+            "capital_flow_date": "N/A",
+            "capital_flow_message": f"Could not read Futu capital-flow overlay: {exc}",
+            "capital_flow_counts": [],
+            "capital_flow_top": [],
+        }
+
+    if df.empty or "capital_flow_label" not in df.columns:
+        return {
+            "capital_flow_available": False,
+            "capital_flow_date": "N/A",
+            "capital_flow_message": "Futu capital-flow overlay is empty or missing labels.",
+            "capital_flow_counts": [],
+            "capital_flow_top": [],
+        }
+
+    date_col = "capital_flow_latest_date" if "capital_flow_latest_date" in df.columns else "signal_date"
+    if date_col in df.columns:
+        dates = sorted(str(value) for value in df[date_col].dropna().unique())
+        flow_date = dates[-1] if dates else "N/A"
+    else:
+        flow_date = "N/A"
+
+    labels = df["capital_flow_label"].fillna("unknown").astype(str)
+    counts = [
+        {
+            "label": label,
+            "count": int(count),
+            "row_class": _flow_row_class(label),
+        }
+        for label, count in labels.value_counts().items()
+    ]
+
+    ranked = df.copy()
+    if "model_rank" in ranked.columns:
+        ranked = ranked.sort_values("model_rank", kind="stable")
+
+    top_rows = []
+    for idx, (_, row) in enumerate(ranked.head(top_n).iterrows(), start=1):
+        label = str(row.get("capital_flow_label", "unknown"))
+        top_rows.append(
+            {
+                "rank": _safe_int(row.get("model_rank"), idx),
+                "code": row.get("code", "N/A"),
+                "label": label,
+                "latest_main": _format_money(row.get("latest_main_in_flow")),
+                "main_5d": _format_money(row.get("main_5d_sum")),
+                "row_class": _flow_row_class(label),
+            }
+        )
+
+    return {
+        "capital_flow_available": True,
+        "capital_flow_date": flow_date,
+        "capital_flow_message": f"Loaded {len(df)} model candidate(s); capital flow is advisory and not an auto-trade rule.",
+        "capital_flow_counts": counts,
+        "capital_flow_top": top_rows,
     }
 
 
@@ -541,6 +694,7 @@ def main():
 
     data_info = check_data_status()
     signal_info = check_signal_status()
+    capital_flow_info = check_capital_flow_status()
 
     trade_log_env = os.environ.get("TRADE_LOG", "").strip()
     trade_log = Path(trade_log_env) if trade_log_env else Path.home() / "quantpilot/logs/trade.log"
@@ -553,6 +707,7 @@ def main():
         trade_status=trade_status,
         **data_info,
         **signal_info,
+        **capital_flow_info,
     )
 
     subject = f"QuantPilot Daily Report - {today}"
