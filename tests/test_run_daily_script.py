@@ -94,6 +94,8 @@ def test_run_daily_builds_market_wide_major_money_digest():
     assert 'US_OTC_PROXY_FLOW_REQUEST_DELAY="${US_OTC_PROXY_FLOW_REQUEST_DELAY:-0.2}"' in content
     assert 'US_OTC_PROXY_FLOW_MAX_RETRIES="${US_OTC_PROXY_FLOW_MAX_RETRIES:-2}"' in content
     assert 'US_OTC_PROXY_FLOW_TIMEOUT="${US_OTC_PROXY_FLOW_TIMEOUT:-15}"' in content
+    assert 'US_OTC_PROXY_FLOW_BATCH_FLUSH="${US_OTC_PROXY_FLOW_BATCH_FLUSH:-100}"' in content
+    assert 'US_OTC_PROXY_FLOW_OVERWRITE="${US_OTC_PROXY_FLOW_OVERWRITE:-false}"' in content
     assert 'US_OTC_PROXY_FLOW_AVAILABLE=false' in content
     assert '"$PYTHON_BIN" -m scripts.refresh_eastmoney_fund_flow_rank' in content
     assert '"$PYTHON_BIN" -m scripts.scan_us_otc_proxy_flow' in content
@@ -101,6 +103,8 @@ def test_run_daily_builds_market_wide_major_money_digest():
     assert '--request-delay "$US_OTC_PROXY_FLOW_REQUEST_DELAY"' in content
     assert '--max-retries "$US_OTC_PROXY_FLOW_MAX_RETRIES"' in content
     assert '--timeout "$US_OTC_PROXY_FLOW_TIMEOUT"' in content
+    assert '--batch-flush "$US_OTC_PROXY_FLOW_BATCH_FLUSH"' in content
+    assert 'US_OTC_PROXY_ARGS+=(--overwrite)' in content
     assert 'US_OTC_PROXY_ARGS+=(--date "$US_OTC_PROXY_FLOW_DATE")' in content
     assert 'US_OTC_PROXY_FLOW_AVAILABLE=true' in content
     assert '--output "$EASTMONEY_FUND_FLOW_RANK_OUTPUT"' in content

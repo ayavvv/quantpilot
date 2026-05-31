@@ -80,7 +80,8 @@ Artifacts:
     evening does not request a Sunday aggregate.
   - `provider=polygon` requires `POLYGON_API_KEY` or `POLYGON_API_KEY_FILE`;
     `provider=yahoo_chart` requires no key but is slower because it queries
-    symbols one by one.
+    symbols one by one. The Yahoo fallback writes partial CSV batches and
+    resumes dated output unless `US_OTC_PROXY_FLOW_OVERWRITE=true`.
   - Auto digest rebuilds only include `US_OTC` after the current proxy scan
     succeeds, avoiding stale proxy artifacts after API/key failures.
 - `scripts/run_market_capital_flow.sh`

@@ -171,6 +171,53 @@ def test_main_supports_yahoo_chart_without_api_key(monkeypatch, tmp_path):
     assert payload["ok_count"] == 1
 
 
+def test_yahoo_chart_scan_resumes_existing_dated_output(monkeypatch, tmp_path):
+    universe = pd.DataFrame(
+        [
+            {"code": "US.AABB", "ticker": "AABB", "name": "Asia Broadband", "exchange_type": "US_PINK"},
+            {"code": "US.AACAY", "ticker": "AACAY", "name": "AAC", "exchange_type": "US_PINK"},
+        ]
+    )
+    existing = scanner.build_proxy_records(
+        universe.head(1),
+        [{"T": "AABB", "o": 0.01, "c": 0.02, "h": 0.02, "l": 0.01, "v": 1_000_000}],
+        date="2026-05-29",
+        provider="yahoo_chart",
+    )
+    scanner.write_outputs(
+        existing,
+        output_dir=tmp_path,
+        date="2026-05-29",
+        provider="yahoo_chart",
+        universe=universe,
+        min_dollar_volume=0.0,
+    )
+    calls = []
+
+    def fake_fetch(ticker, **kwargs):
+        calls.append(ticker)
+        return {"T": ticker, "o": 10.0, "c": 9.0, "h": 10.5, "l": 8.5, "v": 10_000}, ""
+
+    monkeypatch.setattr(scanner, "_fetch_yahoo_chart_daily_bar_with_retries", fake_fetch)
+
+    rows = scanner.scan_yahoo_chart_proxy_records(
+        universe,
+        output_dir=tmp_path,
+        date="2026-05-29",
+        min_dollar_volume=0.0,
+        request_delay=0.0,
+        max_retries=0,
+        timeout=1.0,
+        batch_flush=1,
+        overwrite=False,
+    )
+
+    output = pd.read_csv(tmp_path / "US_OTC_latest_flow.csv")
+    assert calls == ["AACAY"]
+    assert rows["code"].tolist() == ["US.AABB", "US.AACAY"]
+    assert output["code"].tolist() == ["US.AABB", "US.AACAY"]
+
+
 def test_latest_completed_us_session_date_skips_weekend_before_monday_close():
     now = datetime(2026, 6, 1, 7, 0, tzinfo=ZoneInfo("America/New_York"))
 

@@ -63,6 +63,8 @@ US_OTC_PROXY_FLOW_DATE="${US_OTC_PROXY_FLOW_DATE:-}"
 US_OTC_PROXY_FLOW_REQUEST_DELAY="${US_OTC_PROXY_FLOW_REQUEST_DELAY:-0.2}"
 US_OTC_PROXY_FLOW_MAX_RETRIES="${US_OTC_PROXY_FLOW_MAX_RETRIES:-2}"
 US_OTC_PROXY_FLOW_TIMEOUT="${US_OTC_PROXY_FLOW_TIMEOUT:-15}"
+US_OTC_PROXY_FLOW_BATCH_FLUSH="${US_OTC_PROXY_FLOW_BATCH_FLUSH:-100}"
+US_OTC_PROXY_FLOW_OVERWRITE="${US_OTC_PROXY_FLOW_OVERWRITE:-false}"
 LOCK_DIR="${LOCK_DIR:-$PROJECT_DIR/logs/market_capital_flow_${FUTU_MARKET_FLOW_MARKETS//,/}.lock}"
 
 log() {
@@ -136,12 +138,16 @@ if [ "$ENABLE_US_OTC_PROXY_FLOW" = "true" ] && market_list_contains "$FUTU_MARKE
             --request-delay "$US_OTC_PROXY_FLOW_REQUEST_DELAY"
             --max-retries "$US_OTC_PROXY_FLOW_MAX_RETRIES"
             --timeout "$US_OTC_PROXY_FLOW_TIMEOUT"
+            --batch-flush "$US_OTC_PROXY_FLOW_BATCH_FLUSH"
         )
         if [ -n "$US_OTC_PROXY_FLOW_DATE" ]; then
             US_OTC_PROXY_ARGS+=(--date "$US_OTC_PROXY_FLOW_DATE")
         fi
         if [ "$US_OTC_PROXY_FLOW_MAX_CODES" != "0" ]; then
             US_OTC_PROXY_ARGS+=(--max-codes "$US_OTC_PROXY_FLOW_MAX_CODES")
+        fi
+        if [ "$US_OTC_PROXY_FLOW_OVERWRITE" = "true" ]; then
+            US_OTC_PROXY_ARGS+=(--overwrite)
         fi
         if PYTHONPATH="$PYTHONPATH" "$PYTHON_BIN" -m scripts.scan_us_otc_proxy_flow "${US_OTC_PROXY_ARGS[@]}"; then
             US_OTC_PROXY_FLOW_AVAILABLE=true

@@ -23,6 +23,8 @@ def test_run_market_capital_flow_wraps_futu_scanner_and_digest():
     assert 'US_OTC_PROXY_FLOW_REQUEST_DELAY="${US_OTC_PROXY_FLOW_REQUEST_DELAY:-0.2}"' in content
     assert 'US_OTC_PROXY_FLOW_MAX_RETRIES="${US_OTC_PROXY_FLOW_MAX_RETRIES:-2}"' in content
     assert 'US_OTC_PROXY_FLOW_TIMEOUT="${US_OTC_PROXY_FLOW_TIMEOUT:-15}"' in content
+    assert 'US_OTC_PROXY_FLOW_BATCH_FLUSH="${US_OTC_PROXY_FLOW_BATCH_FLUSH:-100}"' in content
+    assert 'US_OTC_PROXY_FLOW_OVERWRITE="${US_OTC_PROXY_FLOW_OVERWRITE:-false}"' in content
     assert 'mkdir "$LOCK_DIR"' in content
     assert '"$PYTHON_BIN" -m scripts.scan_futu_market_capital_flow "${SCAN_ARGS[@]}"' in content
     assert 'US_OTC_PROXY_FLOW_AVAILABLE=false' in content
@@ -40,6 +42,8 @@ def test_run_market_capital_flow_wraps_futu_scanner_and_digest():
     assert '--request-delay "$US_OTC_PROXY_FLOW_REQUEST_DELAY"' in content
     assert '--max-retries "$US_OTC_PROXY_FLOW_MAX_RETRIES"' in content
     assert '--timeout "$US_OTC_PROXY_FLOW_TIMEOUT"' in content
+    assert '--batch-flush "$US_OTC_PROXY_FLOW_BATCH_FLUSH"' in content
+    assert 'US_OTC_PROXY_ARGS+=(--overwrite)' in content
     assert 'MAJOR_MONEY_DIGEST_SOURCES="${MAJOR_MONEY_DIGEST_SOURCES:-auto}"' in content
     assert 'MAJOR_MONEY_SOURCE_ARGS+=(--source "$market:$latest_flow:futu")' in content
     assert 'if [ "$US_OTC_PROXY_FLOW_AVAILABLE" = "true" ] && [ -f "$otc_latest_flow" ]; then' in content

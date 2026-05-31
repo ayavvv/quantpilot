@@ -248,6 +248,30 @@ def fetch_yahoo_chart_daily(
     return aggregates, errors
 
 
+def _fetch_yahoo_chart_daily_bar_with_retries(
+    ticker: str,
+    *,
+    date: str,
+    max_retries: int,
+    timeout: float,
+) -> tuple[dict[str, Any] | None, str]:
+    attempts = max(int(max_retries), 0) + 1
+    for attempt in range(attempts):
+        try:
+            return fetch_yahoo_chart_daily_bar(ticker, date=date, timeout=timeout), ""
+        except HTTPError as exc:
+            message = f"Yahoo chart HTTP {exc.code}"
+            if exc.code == 404 or attempt >= attempts - 1:
+                return None, message
+            time_module.sleep(min(2 ** attempt, 8))
+        except (URLError, TimeoutError, RuntimeError, json.JSONDecodeError) as exc:
+            message = f"Yahoo chart fetch failed: {exc}"
+            if attempt >= attempts - 1:
+                return None, message
+            time_module.sleep(min(2 ** attempt, 8))
+    return None, "Yahoo chart fetch failed."
+
+
 def _num(row: dict[str, Any], key: str) -> float | None:
     value = row.get(key)
     if value is None:
@@ -356,6 +380,88 @@ def _write_status(status: dict[str, Any], output_dir: Path, date_tag: str) -> di
     return {"status": dated_path, "latest_status": latest_path}
 
 
+def _flow_paths(output_dir: Path, date: str) -> dict[str, Path]:
+    date_tag = _date_tag(date)
+    return {
+        "output": output_dir / f"US_OTC_{date_tag}_flow.csv",
+        "latest": output_dir / "US_OTC_latest_flow.csv",
+        "universe": output_dir / f"US_OTC_{date_tag}_universe.csv",
+        "latest_universe": output_dir / "US_OTC_latest_universe.csv",
+    }
+
+
+def _write_flow_files(rows: pd.DataFrame, universe: pd.DataFrame, *, output_dir: Path, date: str) -> dict[str, Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    paths = _flow_paths(output_dir, date)
+    rows.to_csv(paths["output"], index=False)
+    rows.to_csv(paths["latest"], index=False)
+    universe.to_csv(paths["universe"], index=False)
+    universe.to_csv(paths["latest_universe"], index=False)
+    return paths
+
+
+def _load_resume(path: Path, *, overwrite: bool) -> tuple[pd.DataFrame, set[str]]:
+    if overwrite or not path.exists():
+        return pd.DataFrame(), set()
+    existing = pd.read_csv(path)
+    if "ticker" in existing.columns:
+        tickers = set(existing["ticker"].dropna().astype(str).str.upper().tolist())
+    elif "code" in existing.columns:
+        tickers = {_ticker_from_code(code) for code in existing["code"].dropna().astype(str).tolist()}
+    else:
+        tickers = set()
+    return existing, {ticker for ticker in tickers if ticker}
+
+
+def scan_yahoo_chart_proxy_records(
+    universe: pd.DataFrame,
+    *,
+    output_dir: Path,
+    date: str,
+    min_dollar_volume: float,
+    request_delay: float,
+    max_retries: int,
+    timeout: float,
+    batch_flush: int,
+    overwrite: bool,
+) -> pd.DataFrame:
+    paths = _flow_paths(output_dir, date)
+    existing, done_tickers = _load_resume(paths["output"], overwrite=overwrite)
+    records = existing.to_dict("records") if not existing.empty else []
+    batch_count = 0
+    provider = "yahoo_chart"
+
+    for _, item in universe.iterrows():
+        ticker = str(item.get("ticker") or _ticker_from_code(item.get("code"))).upper()
+        if not ticker or ticker in done_tickers:
+            continue
+        aggregate, error = _fetch_yahoo_chart_daily_bar_with_retries(
+            ticker,
+            date=date,
+            max_retries=max_retries,
+            timeout=timeout,
+        )
+        row = build_proxy_records(
+            pd.DataFrame([item]),
+            [aggregate] if aggregate else [],
+            date=date,
+            provider=provider,
+            min_dollar_volume=min_dollar_volume,
+            aggregate_errors={ticker: error} if error else {},
+        )
+        records.extend(row.to_dict("records"))
+        done_tickers.add(ticker)
+        batch_count += 1
+        if batch_count % max(batch_flush, 1) == 0:
+            _write_flow_files(pd.DataFrame(records), universe, output_dir=output_dir, date=date)
+        if request_delay > 0:
+            time_module.sleep(request_delay)
+
+    result = pd.DataFrame(records)
+    _write_flow_files(result, universe, output_dir=output_dir, date=date)
+    return result
+
+
 def write_failure_status(
     *,
     output_dir: Path,
@@ -408,15 +514,7 @@ def write_outputs(
     min_dollar_volume: float,
 ) -> dict[str, Any]:
     date_tag = _date_tag(date)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"US_OTC_{date_tag}_flow.csv"
-    latest_path = output_dir / "US_OTC_latest_flow.csv"
-    universe_path = output_dir / f"US_OTC_{date_tag}_universe.csv"
-    latest_universe_path = output_dir / "US_OTC_latest_universe.csv"
-    rows.to_csv(output_path, index=False)
-    rows.to_csv(latest_path, index=False)
-    universe.to_csv(universe_path, index=False)
-    universe.to_csv(latest_universe_path, index=False)
+    paths = _write_flow_files(rows, universe, output_dir=output_dir, date=date)
 
     statuses = rows.get("capital_flow_status", pd.Series(dtype=str)).fillna("").astype(str)
     ok_count = int((statuses == "ok").sum())
@@ -445,10 +543,10 @@ def write_outputs(
         "source_exchange_types": _exchange_type_counts(universe),
         "selected_exchange_types": _exchange_type_counts(universe),
         "excluded_exchange_types": {},
-        "output": str(output_path),
-        "latest": str(latest_path),
-        "universe": str(universe_path),
-        "latest_universe": str(latest_universe_path),
+        "output": str(paths["output"]),
+        "latest": str(paths["latest"]),
+        "universe": str(paths["universe"]),
+        "latest_universe": str(paths["latest_universe"]),
     }
     status_paths = _write_status(status_payload, output_dir, date_tag)
     status_payload.update({key: str(path) for key, path in status_paths.items()})
@@ -494,6 +592,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="HTTP timeout in seconds for provider requests.",
     )
     parser.add_argument(
+        "--batch-flush",
+        type=int,
+        default=int(os.environ.get("US_OTC_PROXY_FLOW_BATCH_FLUSH", "100")),
+        help="Rows between partial CSV flushes for per-symbol provider scans.",
+    )
+    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
         "--output-dir",
         default=os.environ.get(
             "US_OTC_PROXY_FLOW_OUTPUT_DIR",
@@ -520,13 +625,24 @@ def main(argv: list[str] | None = None) -> int:
         if provider == "polygon":
             api_key = resolve_api_key(args.api_key, args.api_key_file)
             aggregates = fetch_polygon_grouped_daily(api_key=api_key, date=args.date, include_otc=True)
-        else:
-            aggregates, aggregate_errors = fetch_yahoo_chart_daily(
+            rows = build_proxy_records(
                 universe,
+                aggregates,
                 date=args.date,
+                provider=provider,
+                min_dollar_volume=args.min_dollar_volume,
+            )
+        else:
+            rows = scan_yahoo_chart_proxy_records(
+                universe,
+                output_dir=Path(args.output_dir).expanduser(),
+                date=args.date,
+                min_dollar_volume=args.min_dollar_volume,
                 request_delay=args.request_delay,
                 max_retries=args.max_retries,
                 timeout=args.timeout,
+                batch_flush=args.batch_flush,
+                overwrite=args.overwrite,
             )
     except Exception as exc:
         write_failure_status(
@@ -538,14 +654,6 @@ def main(argv: list[str] | None = None) -> int:
             min_dollar_volume=args.min_dollar_volume,
         )
         raise
-    rows = build_proxy_records(
-        universe,
-        aggregates,
-        date=args.date,
-        provider=provider,
-        min_dollar_volume=args.min_dollar_volume,
-        aggregate_errors=aggregate_errors,
-    )
     status = write_outputs(
         rows,
         output_dir=Path(args.output_dir).expanduser(),
