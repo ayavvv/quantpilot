@@ -34,6 +34,7 @@ MARKET_MAP = {
 }
 DEFAULT_MIN_REQUEST_INTERVAL_SECONDS = 1.05
 DEFAULT_EXCLUDE_SECURITY_CLASSES = "preferred,note_debt,unit,warrant_right,delisted_label,future_listing"
+STATUS_SCHEMA_VERSION = 2
 
 
 def _default_start(days: int) -> str:
@@ -392,6 +393,7 @@ def scan_market(
     )
 
     status_payload = {
+        "scanner_schema_version": STATUS_SCHEMA_VERSION,
         "status": status_value,
         "message": status_message,
         "market": market,

@@ -110,6 +110,7 @@ def test_scan_market_writes_latest_status(tmp_path):
     assert latest_status.exists()
     payload = json.loads(latest_status.read_text(encoding="utf-8"))
     assert payload["status"] == "ok"
+    assert payload["scanner_schema_version"] == 2
     assert payload["attempted_count"] == 2
     assert payload["ok_count"] == 1
     assert payload["error_count"] == 1

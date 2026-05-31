@@ -67,6 +67,13 @@ def _float_value(value: Any, default: float) -> float:
         return default
 
 
+def _int_value(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _active_cron_lines(crontab_text: str) -> list[str]:
     lines: list[str] = []
     for raw_line in crontab_text.splitlines():
@@ -280,6 +287,74 @@ def check_digest_archive(archive_dir_value: str, *, digest: dict[str, Any]) -> d
     }
 
 
+def check_market_scans(
+    env: dict[str, str],
+    *,
+    data_dir: Path,
+    expected_markets: list[str],
+    min_schema_version: int = 2,
+) -> dict[str, Any]:
+    output_dir = Path(
+        env.get("FUTU_MARKET_FLOW_OUTPUT_DIR", str(data_dir / "capital_flow" / "futu_market"))
+    ).expanduser()
+    markets = [market for market in ["HK", "US"] if market in expected_markets]
+    statuses: dict[str, dict[str, Any]] = {}
+    issues: list[str] = []
+
+    for market in markets:
+        status_path = output_dir / f"{market}_latest_status.json"
+        payload, error = _read_json(status_path)
+        status_value = str(payload.get("status") or "") if payload else ""
+        ok_count = _int_value(payload.get("ok_count") if payload else 0, 0)
+        attempted_count = _int_value(payload.get("attempted_count") if payload else 0, 0)
+        schema_version = _int_value(payload.get("scanner_schema_version") if payload else 0, 0)
+        status = {
+            "path": str(status_path),
+            "exists": status_path.exists(),
+            "ok": bool(payload) and not error and status_value == "ok" and ok_count > 0,
+            "status": status_value,
+            "attempted_count": attempted_count,
+            "ok_count": ok_count,
+            "scanner_schema_version": schema_version,
+            "selected_security_classes": (
+                payload.get("selected_security_classes")
+                if isinstance(payload.get("selected_security_classes"), dict)
+                else {}
+            )
+            if payload
+            else {},
+            "excluded_security_classes": (
+                payload.get("excluded_security_classes")
+                if isinstance(payload.get("excluded_security_classes"), dict)
+                else {}
+            )
+            if payload
+            else {},
+            "error": error,
+        }
+        statuses[market] = status
+        if error:
+            issues.append(f"Futu market-wide capital-flow status unreadable for {market}: {error}")
+        elif not status["ok"]:
+            issues.append(
+                "Futu market-wide capital-flow scan not healthy: "
+                f"market={market} status={status_value or 'N/A'} ok={ok_count}/{attempted_count}"
+            )
+        elif schema_version < min_schema_version:
+            issues.append(
+                "Futu market-wide capital-flow scan needs refresh with current scanner: "
+                f"market={market} schema={schema_version} min={min_schema_version}"
+            )
+
+    return {
+        "ok": not issues,
+        "output_dir": str(output_dir),
+        "min_schema_version": min_schema_version,
+        "markets": statuses,
+        "issues": issues,
+    }
+
+
 def check_us_otc_proxy(env: dict[str, str], *, data_dir: Path, expected_markets: list[str]) -> dict[str, Any]:
     output_dir = Path(env.get("US_OTC_PROXY_FLOW_OUTPUT_DIR", str(data_dir / "capital_flow" / "us_otc_proxy"))).expanduser()
     universe_path = Path(
@@ -360,6 +435,7 @@ def build_readiness_snapshot(
     email_env = {**reporter_env, **merged_env}
     expected_markets = _split_csv(merged_env.get("MAJOR_MONEY_EXPECTED_MARKETS", "A,HK,US,US_OTC"))
     max_non_ok_ratio = _float_value(merged_env.get("HEALTHCHECK_MAJOR_MONEY_MAX_NON_OK_RATIO"), 0.05)
+    min_scan_schema_version = _int_value(merged_env.get("HEALTHCHECK_MARKET_FLOW_MIN_SCHEMA_VERSION"), 2)
     digest_path = Path(
         merged_env.get("MAJOR_MONEY_DIGEST_JSON", str(data_dir / "output" / "major_money_digest_latest.json"))
     ).expanduser()
@@ -375,6 +451,12 @@ def build_readiness_snapshot(
     checks = {
         "cron": check_cron(crontab_text or "", project_dir=project_dir),
         "email": check_email_config(email_env, reporter_env_path=reporter_env_path),
+        "market_scans": check_market_scans(
+            merged_env,
+            data_dir=data_dir,
+            expected_markets=expected_markets,
+            min_schema_version=min_scan_schema_version,
+        ),
         "digest": digest_check,
         "digest_archive": check_digest_archive(digest_archive_dir_value, digest=digest_check),
         "us_otc_proxy": check_us_otc_proxy(merged_env, data_dir=data_dir, expected_markets=expected_markets),

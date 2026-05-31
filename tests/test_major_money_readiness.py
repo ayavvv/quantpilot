@@ -53,6 +53,26 @@ def _write_digest(path: Path, *, us_otc_available: bool, archive_dir: Path | Non
         )
 
 
+def _write_market_scan_status(data_dir: Path, market: str, *, scanner_schema_version: int = 2):
+    output_dir = data_dir / "capital_flow" / "futu_market"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / f"{market}_latest_status.json").write_text(
+        json.dumps(
+            {
+                "scanner_schema_version": scanner_schema_version,
+                "status": "ok",
+                "market": market,
+                "attempted_count": 1,
+                "ok_count": 1,
+                "ok_ratio": 1.0,
+                "selected_security_classes": {"common_or_unknown": 1},
+                "excluded_security_classes": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def _cron(project_dir: Path) -> str:
     return "\n".join(
         [
@@ -81,6 +101,8 @@ def test_build_readiness_snapshot_accepts_ready_system(tmp_path):
     )
     _write_reporter_env(reporter_env)
     _write_digest(digest, us_otc_available=True, archive_dir=archive_dir)
+    _write_market_scan_status(data_dir, "HK")
+    _write_market_scan_status(data_dir, "US")
 
     snapshot = readiness.build_readiness_snapshot(
         project_dir=project_dir,
@@ -122,6 +144,8 @@ def test_build_readiness_snapshot_accepts_polygon_key_file(tmp_path):
     )
     _write_reporter_env(reporter_env)
     _write_digest(digest, us_otc_available=True, archive_dir=archive_dir)
+    _write_market_scan_status(data_dir, "HK")
+    _write_market_scan_status(data_dir, "US")
 
     snapshot = readiness.build_readiness_snapshot(
         project_dir=project_dir,
@@ -140,6 +164,34 @@ def test_build_readiness_snapshot_accepts_polygon_key_file(tmp_path):
     assert snapshot["ok"] is True
     assert snapshot["checks"]["us_otc_proxy"]["api_key_present"] is True
     assert snapshot["checks"]["us_otc_proxy"]["api_key_file"] == str(key_file)
+
+
+def test_build_readiness_snapshot_flags_old_market_scan_schema(tmp_path):
+    project_dir = tmp_path / "project"
+    data_dir = tmp_path / "data"
+    reporter_env = project_dir / "reporter" / ".env"
+    digest = data_dir / "output" / "major_money_digest_latest.json"
+    archive_dir = data_dir / "output" / "major_money_digest"
+    _write_reporter_env(reporter_env)
+    _write_digest(digest, us_otc_available=False, archive_dir=archive_dir)
+    _write_market_scan_status(data_dir, "US", scanner_schema_version=0)
+
+    snapshot = readiness.build_readiness_snapshot(
+        project_dir=project_dir,
+        crontab_text=_cron(project_dir),
+        env={
+            "DATA_DIR": str(data_dir),
+            "REPORTER_ENV_FILE": str(reporter_env),
+            "MAJOR_MONEY_DIGEST_JSON": str(digest),
+            "MAJOR_MONEY_DIGEST_ARCHIVE_DIR": str(archive_dir),
+            "MAJOR_MONEY_EXPECTED_MARKETS": "A,US",
+            "ENABLE_US_OTC_PROXY_FLOW": "false",
+        },
+    )
+
+    assert snapshot["ok"] is False
+    assert snapshot["checks"]["market_scans"]["markets"]["US"]["scanner_schema_version"] == 0
+    assert any("scan needs refresh with current scanner: market=US schema=0 min=2" in issue for issue in snapshot["issues"])
 
 
 def test_build_readiness_snapshot_flags_missing_digest_archive(tmp_path):

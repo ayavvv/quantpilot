@@ -58,6 +58,9 @@ Artifacts:
     ok/error/empty counts, coverage ratio, and output paths.
   - Status files also include source/selected/excluded exchange-type counts and
     per-exchange OK/error/empty counts.
+  - Status files include `scanner_schema_version`; health/readiness checks
+    warn when the latest HK/US scan was produced by an older scanner and needs
+    a refresh before the digest can claim current stock-universe filtering.
   - The scheduled stock universe now filters obvious non-common instruments
     before per-symbol requests: preferred shares, debt/notes, units, warrants
     or rights, delisted-label rows, and listings whose `listing_date` is after
@@ -115,6 +118,9 @@ Artifacts:
   - Warns when A-share fund-flow rank, major-money digest, or HK/US full-market
     Futu scan status files are missing, stale, unreadable, or below coverage
     thresholds.
+  - Warns when HK/US market-wide scan status files lack the current scanner
+    schema metadata, so old artifacts cannot silently satisfy coverage after a
+    scanner upgrade.
   - Verifies the dated major-money digest archive JSON/CSV exists for the
     digest `flow_date` and that the archived JSON matches the latest digest
     date.
@@ -128,7 +134,8 @@ Artifacts:
 - `scripts/major_money_readiness.py`
   - End-to-end readiness check for the notification system.
   - Checks daily/HK/US cron entries, reporter email configuration, major-money
-    digest coverage, dated digest archive output, and `US_OTC` proxy state.
+    scan freshness/schema, digest coverage, dated digest archive output, and
+    `US_OTC` proxy state.
   - Uses `HEALTHCHECK_MAJOR_MONEY_MAX_NON_OK_RATIO` to flag available markets
     whose vendor empty/error rows are too high.
   - Exits non-zero until every expected market, including `US_OTC`, is covered.

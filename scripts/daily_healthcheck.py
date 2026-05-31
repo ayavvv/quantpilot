@@ -93,6 +93,7 @@ MARKET_CAPITAL_FLOW_MARKETS = [
 ]
 HEALTHCHECK_MARKET_FLOW_MIN_OK_RATIO = float(os.environ.get("HEALTHCHECK_MARKET_FLOW_MIN_OK_RATIO", "0.5"))
 HEALTHCHECK_MAJOR_MONEY_MAX_NON_OK_RATIO = float(os.environ.get("HEALTHCHECK_MAJOR_MONEY_MAX_NON_OK_RATIO", "0.05"))
+HEALTHCHECK_MARKET_FLOW_MIN_SCHEMA_VERSION = int(os.environ.get("HEALTHCHECK_MARKET_FLOW_MIN_SCHEMA_VERSION", "2"))
 MAJOR_MONEY_EXPECTED_MARKETS = [
     item.strip().upper()
     for item in os.environ.get("MAJOR_MONEY_EXPECTED_MARKETS", "A,HK,US,US_OTC").split(",")
@@ -514,11 +515,17 @@ def _read_market_scan_status(path: Path) -> dict[str, Any]:
         "error_count": 0,
         "empty_count": 0,
         "ok_ratio": 0.0,
+        "scanner_schema_version": 0,
         "source_exchange_types": {},
         "selected_exchange_types": {},
         "excluded_exchange_types": {},
+        "source_security_classes": {},
+        "selected_security_classes": {},
+        "excluded_security_classes": {},
         "unsupported_exchange_types": {},
         "status_by_exchange_type": {},
+        "status_by_security_class": {},
+        "exclude_security_classes": [],
         "finished_at": "",
         "finished_date": "",
         "mtime_date": _file_mtime_date(path),
@@ -545,6 +552,7 @@ def _read_market_scan_status(path: Path) -> dict[str, Any]:
             "error_count": int(payload.get("error_count") or 0),
             "empty_count": int(payload.get("empty_count") or 0),
             "ok_ratio": float(payload.get("ok_ratio") or 0.0),
+            "scanner_schema_version": int(payload.get("scanner_schema_version") or 0),
             "source_exchange_types": (
                 payload.get("source_exchange_types") if isinstance(payload.get("source_exchange_types"), dict) else {}
             ),
@@ -554,6 +562,21 @@ def _read_market_scan_status(path: Path) -> dict[str, Any]:
             "excluded_exchange_types": (
                 payload.get("excluded_exchange_types") if isinstance(payload.get("excluded_exchange_types"), dict) else {}
             ),
+            "source_security_classes": (
+                payload.get("source_security_classes")
+                if isinstance(payload.get("source_security_classes"), dict)
+                else {}
+            ),
+            "selected_security_classes": (
+                payload.get("selected_security_classes")
+                if isinstance(payload.get("selected_security_classes"), dict)
+                else {}
+            ),
+            "excluded_security_classes": (
+                payload.get("excluded_security_classes")
+                if isinstance(payload.get("excluded_security_classes"), dict)
+                else {}
+            ),
             "unsupported_exchange_types": (
                 payload.get("unsupported_exchange_types")
                 if isinstance(payload.get("unsupported_exchange_types"), dict)
@@ -561,6 +584,14 @@ def _read_market_scan_status(path: Path) -> dict[str, Any]:
             ),
             "status_by_exchange_type": (
                 payload.get("status_by_exchange_type") if isinstance(payload.get("status_by_exchange_type"), dict) else {}
+            ),
+            "status_by_security_class": (
+                payload.get("status_by_security_class")
+                if isinstance(payload.get("status_by_security_class"), dict)
+                else {}
+            ),
+            "exclude_security_classes": (
+                payload.get("exclude_security_classes") if isinstance(payload.get("exclude_security_classes"), list) else []
             ),
             "finished_at": str(payload.get("finished_at") or ""),
             "finished_date": str(payload.get("finished_at") or "")[:10],
@@ -775,18 +806,28 @@ def analyze_market_money_artifacts(reference_date: str = "") -> dict[str, Any]:
                 f"ok={scan_status.get('ok_count', 0)}/{scan_status.get('attempted_count', 0)} "
                 f"message={scan_status.get('message') or scan_status.get('error') or 'N/A'}"
             )
-        elif reference_date and (scan_status.get("finished_date") or scan_status.get("mtime_date")) < reference_date:
-            issues.append(
-                "Futu market-wide capital-flow scan stale: "
-                f"market={market} finished_date={scan_status.get('finished_date') or 'N/A'} "
-                f"mtime_date={scan_status.get('mtime_date') or 'N/A'} reference={reference_date}"
-            )
-        elif scan_status.get("ok_ratio", 0.0) < HEALTHCHECK_MARKET_FLOW_MIN_OK_RATIO:
-            issues.append(
-                "Futu market-wide capital-flow scan coverage too low: "
-                f"market={market} ok_ratio={scan_status.get('ok_ratio', 0.0):.1%} "
-                f"min={HEALTHCHECK_MARKET_FLOW_MIN_OK_RATIO:.1%}"
-            )
+        else:
+            if reference_date and (scan_status.get("finished_date") or scan_status.get("mtime_date")) < reference_date:
+                issues.append(
+                    "Futu market-wide capital-flow scan stale: "
+                    f"market={market} finished_date={scan_status.get('finished_date') or 'N/A'} "
+                    f"mtime_date={scan_status.get('mtime_date') or 'N/A'} reference={reference_date}"
+                )
+            if scan_status.get("ok_ratio", 0.0) < HEALTHCHECK_MARKET_FLOW_MIN_OK_RATIO:
+                issues.append(
+                    "Futu market-wide capital-flow scan coverage too low: "
+                    f"market={market} ok_ratio={scan_status.get('ok_ratio', 0.0):.1%} "
+                    f"min={HEALTHCHECK_MARKET_FLOW_MIN_OK_RATIO:.1%}"
+                )
+            if (
+                market in {"HK", "US"}
+                and int(scan_status.get("scanner_schema_version") or 0) < HEALTHCHECK_MARKET_FLOW_MIN_SCHEMA_VERSION
+            ):
+                issues.append(
+                    "Futu market-wide capital-flow scan needs refresh with current scanner: "
+                    f"market={market} schema={scan_status.get('scanner_schema_version') or 0} "
+                    f"min={HEALTHCHECK_MARKET_FLOW_MIN_SCHEMA_VERSION}"
+                )
     status["market_scans"] = market_scans
     status["issues"] = issues
     return status
