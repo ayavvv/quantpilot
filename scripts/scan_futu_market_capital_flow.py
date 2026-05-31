@@ -372,7 +372,7 @@ def scan_market(
     latest_path = output_dir / f"{market}_latest_flow.csv"
     status_path = output_dir / f"{market}_{date_tag}_status.json"
     existing_schema_version = _status_schema_version(status_path)
-    schema_upgrade_refresh = output_path.exists() and existing_schema_version < STATUS_SCHEMA_VERSION
+    schema_upgrade_refresh = output_path.exists() and status_path.exists() and existing_schema_version < STATUS_SCHEMA_VERSION
     existing, done_codes = _load_resume(output_path, overwrite=overwrite or schema_upgrade_refresh)
     records = existing.to_dict("records") if not existing.empty else []
 
