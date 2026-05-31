@@ -58,6 +58,11 @@ Artifacts:
     ok/error/empty counts, coverage ratio, and output paths.
   - Status files also include source/selected/excluded exchange-type counts and
     per-exchange OK/error/empty counts.
+  - The scheduled stock universe now filters obvious non-common instruments
+    before per-symbol requests: preferred shares, debt/notes, units, warrants
+    or rights, delisted-label rows, and listings whose `listing_date` is after
+    the scan date. This keeps the "all stocks" notification focused on common
+    stock candidates instead of stale or non-stock listed securities.
   - Writes `US_latest_source_universe.csv`, preserving the full source universe
     before scheduled filters such as `US_PINK,N/A` are applied.
   - Use `--max-codes` for smoke tests; omit it only when ready for long full
@@ -96,6 +101,8 @@ Artifacts:
     amount.
   - Coverage includes the exchange-type breakdown when the source provides it,
     making excluded or unsupported venues visible in the email.
+  - Coverage notes also include excluded security-class counts when the scanner
+    filtered non-common instruments from the stock universe.
   - Coverage notes include vendor empty/error row counts so partial scans are
     visible, not just the final entry/exit counts.
   - The summary sentence and per-market notes identify missing expected

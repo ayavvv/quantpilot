@@ -180,6 +180,7 @@ def normalize_flow_frame(
                 "latest_price": _number(row.get("latest_price")),
                 "change_pct": _number(row.get("change_pct")),
                 "exchange_type": _string(row.get("exchange_type")).strip(),
+                "security_class": _string(row.get("security_class")).strip(),
                 "error": _string(_first_present(row, ["capital_flow_error", "fund_flow_error"])).strip(),
             }
         )
@@ -246,6 +247,14 @@ def _exchange_type_counts(df: pd.DataFrame) -> dict[str, int]:
     return {str(exchange): int(count) for exchange, count in counts.items()}
 
 
+def _security_class_counts(df: pd.DataFrame) -> dict[str, int]:
+    if "security_class" not in df.columns:
+        return {}
+    values = df["security_class"].fillna("").astype(str).str.strip()
+    counts = values[values != ""].value_counts().sort_index()
+    return {str(security_class): int(count) for security_class, count in counts.items()}
+
+
 def _status_counts_by_exchange_type(df: pd.DataFrame) -> dict[str, dict[str, int]]:
     if "exchange_type" not in df.columns or "status" not in df.columns:
         return {}
@@ -259,6 +268,22 @@ def _status_counts_by_exchange_type(df: pd.DataFrame) -> dict[str, dict[str, int
     grouped = work.groupby(["exchange_type", "status"]).size()
     for (exchange, status), count in grouped.items():
         result.setdefault(str(exchange), {})[str(status)] = int(count)
+    return result
+
+
+def _status_counts_by_security_class(df: pd.DataFrame) -> dict[str, dict[str, int]]:
+    if "security_class" not in df.columns or "status" not in df.columns:
+        return {}
+    work = df[["security_class", "status"]].copy()
+    work["security_class"] = work["security_class"].fillna("").astype(str).str.strip()
+    work["status"] = work["status"].fillna("").astype(str).str.strip()
+    work = work[(work["security_class"] != "") & (work["status"] != "")]
+    if work.empty:
+        return {}
+    result: dict[str, dict[str, int]] = {}
+    grouped = work.groupby(["security_class", "status"]).size()
+    for (security_class, status), count in grouped.items():
+        result.setdefault(str(security_class), {})[str(status)] = int(count)
     return result
 
 
@@ -327,6 +352,7 @@ def _coverage_notes(
     source: str,
     excluded_exchange_types: dict[str, int],
     unsupported_exchange_types: dict[str, int],
+    excluded_security_classes: dict[str, int],
     exchange_types: dict[str, int],
     status_totals: dict[str, int],
 ) -> list[str]:
@@ -353,6 +379,9 @@ def _coverage_notes(
     if unsupported_exchange_types:
         formatted = ", ".join(f"{key}={value}" for key, value in sorted(unsupported_exchange_types.items()))
         notes.append(f"Vendor unsupported exchange types: {formatted}.")
+    if excluded_security_classes:
+        formatted = ", ".join(f"{key}={value}" for key, value in sorted(excluded_security_classes.items()))
+        notes.append(f"Excluded non-common security classes: {formatted}.")
     if (
         normalize_market(market) == "US"
         and source == "futu"
@@ -384,8 +413,14 @@ def unavailable_market_summary(market: str, *, reason: str) -> dict[str, Any]:
         "excluded_exchange_types": {},
         "status_by_exchange_type": {},
         "unsupported_exchange_types": {},
+        "security_classes": {},
+        "source_security_classes": {},
+        "selected_security_classes": {},
+        "excluded_security_classes": {},
+        "status_by_security_class": {},
         "include_exchange_types": [],
         "exclude_exchange_types": [],
+        "exclude_security_classes": [],
         "coverage_notes": [],
         "entry_count": 0,
         "entry_amount": 0.0,
@@ -442,6 +477,11 @@ def build_market_summary(
         selected_exchange_types,
     )
     status_by_exchange_type = _nested_int_counts(source_status.get("status_by_exchange_type")) or _status_counts_by_exchange_type(rows)
+    security_classes = _security_class_counts(rows)
+    source_security_classes = _int_counts(source_status.get("source_security_classes")) or security_classes
+    selected_security_classes = _int_counts(source_status.get("selected_security_classes")) or security_classes
+    excluded_security_classes = _int_counts(source_status.get("excluded_security_classes"))
+    status_by_security_class = _nested_int_counts(source_status.get("status_by_security_class")) or _status_counts_by_security_class(rows)
     status_totals = _status_totals_from_exchange(status_by_exchange_type) or _status_totals_from_rows(rows)
     unsupported_exchange_types = _int_counts(source_status.get("unsupported_exchange_types"))
     coverage_notes = _coverage_notes(
@@ -449,6 +489,7 @@ def build_market_summary(
         source=source,
         excluded_exchange_types=excluded_exchange_types,
         unsupported_exchange_types=unsupported_exchange_types,
+        excluded_security_classes=excluded_security_classes,
         exchange_types=exchange_types,
         status_totals=status_totals,
     )
@@ -474,8 +515,14 @@ def build_market_summary(
         "excluded_exchange_types": excluded_exchange_types,
         "status_by_exchange_type": status_by_exchange_type,
         "unsupported_exchange_types": unsupported_exchange_types,
+        "security_classes": security_classes,
+        "source_security_classes": source_security_classes,
+        "selected_security_classes": selected_security_classes,
+        "excluded_security_classes": excluded_security_classes,
+        "status_by_security_class": status_by_security_class,
         "include_exchange_types": list(source_status.get("include_exchange_types") or []),
         "exclude_exchange_types": list(source_status.get("exclude_exchange_types") or []),
+        "exclude_security_classes": list(source_status.get("exclude_security_classes") or []),
         "coverage_notes": coverage_notes,
         "entry_count": int(len(entry_rows)),
         "entry_amount": float(pd.to_numeric(entry_rows["main_flow"], errors="coerce").dropna().sum()),
@@ -560,6 +607,17 @@ def digest_rows(digest: dict[str, Any]) -> pd.DataFrame:
                 ),
                 "status_by_exchange_type": json.dumps(
                     market.get("status_by_exchange_type") or {},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                "security_classes": json.dumps(market.get("security_classes") or {}, ensure_ascii=False, sort_keys=True),
+                "excluded_security_classes": json.dumps(
+                    market.get("excluded_security_classes") or {},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                "status_by_security_class": json.dumps(
+                    market.get("status_by_security_class") or {},
                     ensure_ascii=False,
                     sort_keys=True,
                 ),

@@ -82,6 +82,7 @@ def test_build_market_summary_carries_source_coverage_metadata():
                     "latest_main_in_flow": 30_000_000,
                     "capital_flow_latest_date": "2026-05-29",
                     "exchange_type": "US_NASDAQ",
+                    "security_class": "common_or_unknown",
                     "capital_flow_status": "ok",
                 }
             ]
@@ -92,16 +93,26 @@ def test_build_market_summary_carries_source_coverage_metadata():
             "source_exchange_types": {"US_NASDAQ": 1, "US_PINK": 2},
             "selected_exchange_types": {"US_NASDAQ": 1},
             "excluded_exchange_types": {"US_PINK": 2},
+            "source_security_classes": {"common_or_unknown": 1, "preferred": 2},
+            "selected_security_classes": {"common_or_unknown": 1},
+            "excluded_security_classes": {"preferred": 2},
             "status_by_exchange_type": {"US_NASDAQ": {"ok": 1}},
+            "status_by_security_class": {"common_or_unknown": {"ok": 1}},
             "exclude_exchange_types": ["US_PINK"],
+            "exclude_security_classes": ["preferred"],
         },
     )
 
     assert summary["source_exchange_types"] == {"US_NASDAQ": 1, "US_PINK": 2}
     assert summary["excluded_exchange_types"] == {"US_PINK": 2}
     assert summary["status_by_exchange_type"] == {"US_NASDAQ": {"ok": 1}}
+    assert summary["security_classes"] == {"common_or_unknown": 1}
+    assert summary["excluded_security_classes"] == {"preferred": 2}
+    assert summary["status_by_security_class"] == {"common_or_unknown": {"ok": 1}}
     assert summary["exclude_exchange_types"] == ["US_PINK"]
+    assert summary["exclude_security_classes"] == ["preferred"]
     assert any("US_PINK/OTC is excluded" in note for note in summary["coverage_notes"])
+    assert any("Excluded non-common security classes: preferred=2" in note for note in summary["coverage_notes"])
 
 
 def test_build_market_summary_reports_vendor_empty_and_error_rows():
@@ -169,3 +180,4 @@ def test_digest_rows_writes_flat_summary_shape(tmp_path):
     assert rows.iloc[0]["non_ok_rows"] == 0
     assert rows.iloc[0]["exchange_types"] == '{"HK_MAIN": 1}'
     assert rows.iloc[0]["excluded_exchange_types"] == "{}"
+    assert rows.iloc[0]["excluded_security_classes"] == "{}"

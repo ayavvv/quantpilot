@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -32,6 +33,7 @@ MARKET_MAP = {
     "SZ": Market.SZ,
 }
 DEFAULT_MIN_REQUEST_INTERVAL_SECONDS = 1.05
+DEFAULT_EXCLUDE_SECURITY_CLASSES = "preferred,note_debt,unit,warrant_right,delisted_label,future_listing"
 
 
 def _default_start(days: int) -> str:
@@ -57,12 +59,59 @@ def _split_csv(value: str) -> set[str]:
     return {item.strip().upper() for item in value.split(",") if item.strip()}
 
 
+def _split_security_classes(value: str) -> set[str]:
+    return {item.strip().lower() for item in value.split(",") if item.strip()}
+
+
+def _date_after(value: Any, reference_date: str) -> bool:
+    text = str(value or "")[:10]
+    if not text or not reference_date:
+        return False
+    try:
+        parsed = datetime.strptime(text, "%Y-%m-%d").date()
+        reference = datetime.strptime(reference_date[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return False
+    return parsed > reference
+
+
+def classify_security_class(row: pd.Series | dict[str, Any], *, reference_date: str = "") -> str:
+    code = str(row.get("code", "") or "").upper()
+    name = str(row.get("name", "") or "").upper()
+    listing_date = str(row.get("listing_date", "") or "")
+
+    if _date_after(listing_date, reference_date):
+        return "future_listing"
+    if "DELISTED" in name:
+        return "delisted_label"
+    if re.search(r"\.PR[A-Z]?\b|\.PRA\b|\.PRB\b|\.PRC\b|\.PRD\b|\.PRE\b|\.PRF\b", code) or re.search(
+        r"\b(PREF|PFD|PREFERRED|PRF|DEP SH|DEPOSITARY)\b",
+        name,
+    ):
+        return "preferred"
+    if re.search(r"\b(NOTE|NOTES|NTS|DEBT|BOND|DUE|SR NT|SUBORDINATED)\b", name):
+        return "note_debt"
+    if re.search(r"\.(U|UT)\b", code) or re.search(r"\b(UNIT|UNITS)\b", name):
+        return "unit"
+    if re.search(r"\.(WS|WT|RT)\b", code) or re.search(r"\b(WT|WARRANT|WARRANTS|RIGHT|RIGHTS)\b", name):
+        return "warrant_right"
+    return "common_or_unknown"
+
+
 def _exchange_type_counts(df: pd.DataFrame) -> dict[str, int]:
     if "exchange_type" not in df.columns:
         return {}
     values = df["exchange_type"].fillna("").astype(str).str.strip()
     counts = values[values != ""].value_counts().sort_index()
     return {str(exchange): int(count) for exchange, count in counts.items()}
+
+
+def _security_class_counts(df: pd.DataFrame) -> dict[str, int]:
+    if "security_class" not in df.columns:
+        return {}
+    values = df["security_class"].fillna("").astype(str).str.strip()
+    counts = values[values != ""].value_counts().sort_index()
+    return {str(security_class): int(count) for security_class, count in counts.items()}
 
 
 def _exchange_type_delta(source: dict[str, int], selected: dict[str, int]) -> dict[str, int]:
@@ -72,6 +121,15 @@ def _exchange_type_delta(source: dict[str, int], selected: dict[str, int]) -> di
         if missing > 0:
             delta[exchange] = missing
     return delta
+
+
+def _with_security_classes(df: pd.DataFrame, *, reference_date: str) -> pd.DataFrame:
+    result = df.copy()
+    result["security_class"] = result.apply(
+        lambda row: classify_security_class(row, reference_date=reference_date),
+        axis=1,
+    )
+    return result
 
 
 def _status_counts_by_exchange_type(df: pd.DataFrame) -> dict[str, dict[str, int]]:
@@ -87,6 +145,22 @@ def _status_counts_by_exchange_type(df: pd.DataFrame) -> dict[str, dict[str, int
     grouped = work.groupby(["exchange_type", "capital_flow_status"]).size()
     for (exchange, status), count in grouped.items():
         result.setdefault(str(exchange), {})[str(status)] = int(count)
+    return result
+
+
+def _status_counts_by_security_class(df: pd.DataFrame) -> dict[str, dict[str, int]]:
+    if "security_class" not in df.columns or "capital_flow_status" not in df.columns:
+        return {}
+    result: dict[str, dict[str, int]] = {}
+    work = df[["security_class", "capital_flow_status"]].copy()
+    work["security_class"] = work["security_class"].fillna("").astype(str).str.strip()
+    work["capital_flow_status"] = work["capital_flow_status"].fillna("").astype(str).str.strip()
+    work = work[(work["security_class"] != "") & (work["capital_flow_status"] != "")]
+    if work.empty:
+        return {}
+    grouped = work.groupby(["security_class", "capital_flow_status"]).size()
+    for (security_class, status), count in grouped.items():
+        result.setdefault(str(security_class), {})[str(status)] = int(count)
     return result
 
 
@@ -119,6 +193,8 @@ def fetch_futu_universe(
     *,
     include_exchange_types: set[str] | None = None,
     exclude_exchange_types: set[str] | None = None,
+    exclude_security_classes: set[str] | None = None,
+    reference_date: str = "",
 ) -> pd.DataFrame:
     if market not in MARKET_MAP:
         raise ValueError(f"unsupported Futu market: {market}")
@@ -129,7 +205,8 @@ def fetch_futu_universe(
     df["market"] = market
     if "delisting" in df.columns:
         df = df[~df["delisting"].fillna(False).astype(bool)].copy()
-    source_universe = df.reset_index(drop=True).copy()
+    source_universe = _with_security_classes(df.reset_index(drop=True), reference_date=reference_date)
+    df = source_universe.copy()
     source_exchange_types = _exchange_type_counts(source_universe)
     if "exchange_type" in df.columns:
         exchange = df["exchange_type"].fillna("").astype(str).str.upper()
@@ -138,15 +215,29 @@ def fetch_futu_universe(
             exchange = df["exchange_type"].fillna("").astype(str).str.upper()
         if exclude_exchange_types:
             df = df[~exchange.isin(exclude_exchange_types)].copy()
+    exchange_filter_universe = df.reset_index(drop=True).copy()
+    security_filter_universe = exchange_filter_universe.copy()
+    if exclude_security_classes and "security_class" in df.columns:
+        security_classes = df["security_class"].fillna("").astype(str).str.lower()
+        df = df[~security_classes.isin(exclude_security_classes)].copy()
     if "code" not in df.columns:
         raise RuntimeError(f"Futu stock basic info missing code column for {market}")
     result = df.reset_index(drop=True)
     selected_exchange_types = _exchange_type_counts(result)
+    source_security_classes = _security_class_counts(security_filter_universe)
+    selected_security_classes = _security_class_counts(result)
     result.attrs["source_exchange_types"] = source_exchange_types
     result.attrs["selected_exchange_types"] = selected_exchange_types
-    result.attrs["excluded_exchange_types"] = _exchange_type_delta(source_exchange_types, selected_exchange_types)
+    result.attrs["excluded_exchange_types"] = _exchange_type_delta(
+        source_exchange_types,
+        _exchange_type_counts(exchange_filter_universe),
+    )
+    result.attrs["source_security_classes"] = source_security_classes
+    result.attrs["selected_security_classes"] = selected_security_classes
+    result.attrs["excluded_security_classes"] = _exchange_type_delta(source_security_classes, selected_security_classes)
     result.attrs["include_exchange_types"] = sorted(include_exchange_types or [])
     result.attrs["exclude_exchange_types"] = sorted(exclude_exchange_types or [])
+    result.attrs["exclude_security_classes"] = sorted(exclude_security_classes or [])
     result.attrs["source_universe"] = source_universe
     return result
 
@@ -215,6 +306,8 @@ def scan_market(
     records = existing.to_dict("records") if not existing.empty else []
 
     work = universe.copy()
+    if "security_class" not in work.columns:
+        work = _with_security_classes(work, reference_date=end)
     if max_codes > 0:
         work = work.head(max_codes).copy()
     total = len(work)
@@ -228,6 +321,7 @@ def scan_market(
             "code": code,
             "name": row.get("name", ""),
             "exchange_type": row.get("exchange_type", ""),
+            "security_class": row.get("security_class", "common_or_unknown"),
             "scan_date": datetime.now().strftime("%Y-%m-%d"),
             "source": "futu",
         }
@@ -290,6 +384,12 @@ def scan_market(
         source_exchange_types,
         selected_exchange_types,
     )
+    source_security_classes = universe.attrs.get("source_security_classes") or _security_class_counts(work)
+    selected_security_classes = universe.attrs.get("selected_security_classes") or _security_class_counts(work)
+    excluded_security_classes = universe.attrs.get("excluded_security_classes") or _exchange_type_delta(
+        source_security_classes,
+        selected_security_classes,
+    )
 
     status_payload = {
         "status": status_value,
@@ -314,10 +414,15 @@ def scan_market(
         "source_exchange_types": source_exchange_types,
         "selected_exchange_types": selected_exchange_types,
         "excluded_exchange_types": excluded_exchange_types,
+        "source_security_classes": source_security_classes,
+        "selected_security_classes": selected_security_classes,
+        "excluded_security_classes": excluded_security_classes,
         "status_by_exchange_type": _status_counts_by_exchange_type(result),
+        "status_by_security_class": _status_counts_by_security_class(result),
         "unsupported_exchange_types": _unsupported_exchange_types(result),
         "include_exchange_types": sorted(include_exchange_types or universe.attrs.get("include_exchange_types") or []),
         "exclude_exchange_types": sorted(exclude_exchange_types or universe.attrs.get("exclude_exchange_types") or []),
+        "exclude_security_classes": sorted(universe.attrs.get("exclude_security_classes") or []),
         "output": str(output_path),
         "latest": str(latest_path),
         "universe": str(universe_path),
@@ -372,6 +477,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--exclude-exchange-types",
         default=os.environ.get("FUTU_MARKET_FLOW_EXCLUDE_EXCHANGE_TYPES", "US_PINK,N/A"),
     )
+    parser.add_argument(
+        "--exclude-security-classes",
+        default=os.environ.get("FUTU_MARKET_FLOW_EXCLUDE_SECURITY_CLASSES", DEFAULT_EXCLUDE_SECURITY_CLASSES),
+        help=(
+            "Comma-separated scanner security classes to skip before Futu requests. "
+            "Default removes non-common instruments from the stock notification universe."
+        ),
+    )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--output-dir", default=os.environ.get("FUTU_MARKET_FLOW_OUTPUT_DIR", str(DATA_DIR / "capital_flow" / "futu_market")))
     return parser.parse_args(argv)
@@ -397,6 +510,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         include_exchange_types = _split_csv(args.include_exchange_types)
         exclude_exchange_types = _split_csv(args.exclude_exchange_types)
+        exclude_security_classes = _split_security_classes(args.exclude_security_classes)
         explicit_codes = _codes_by_market(args.codes) if args.codes else {}
         for market in _markets(args.markets):
             if explicit_codes:
@@ -410,6 +524,8 @@ def main(argv: list[str] | None = None) -> int:
                     market,
                     include_exchange_types=include_exchange_types,
                     exclude_exchange_types=exclude_exchange_types,
+                    exclude_security_classes=exclude_security_classes,
+                    reference_date=args.end,
                 )
             stats = scan_market(
                 client,

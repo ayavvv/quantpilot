@@ -3,7 +3,12 @@ import json
 import pandas as pd
 import pytest
 
-from scripts.scan_futu_market_capital_flow import _effective_pause_seconds, scan_market
+from scripts.scan_futu_market_capital_flow import (
+    _effective_pause_seconds,
+    classify_security_class,
+    fetch_futu_universe,
+    scan_market,
+)
 
 
 class FakeFutuClient:
@@ -16,6 +21,63 @@ class FakeFutuClient:
 
     def get_capital_distribution(self, code):
         return {}
+
+
+class FakeUniverseClient:
+    def __init__(self, rows):
+        self.ctx = self
+        self.rows = rows
+
+    def get_stock_basicinfo(self, market, security_type):
+        return 0, pd.DataFrame(self.rows)
+
+
+def test_classify_security_class_labels_non_common_instruments():
+    assert (
+        classify_security_class(
+            {"code": "US.AAIC.PRB", "name": "ARLINGTON ASSET 7% CUM PRF", "listing_date": "1970-01-01"},
+            reference_date="2026-05-31",
+        )
+        == "preferred"
+    )
+    assert (
+        classify_security_class(
+            {"code": "US.AAIN", "name": "SENIOR NOTES DUE 01/08/2026", "listing_date": "1970-01-01"},
+            reference_date="2026-05-31",
+        )
+        == "note_debt"
+    )
+    assert classify_security_class({"code": "US.AAPL", "name": "Apple", "listing_date": "1980-12-12"}) == "common_or_unknown"
+    assert (
+        classify_security_class({"code": "US.NEW", "name": "New Co", "listing_date": "2026-06-03"}, reference_date="2026-05-31")
+        == "future_listing"
+    )
+
+
+def test_fetch_futu_universe_filters_excluded_security_classes():
+    rows = [
+        {"code": "US.AAPL", "name": "Apple", "exchange_type": "US_NASDAQ", "delisting": False},
+        {"code": "US.PREF.PRA", "name": "Issuer Preferred Series A", "exchange_type": "US_NYSE", "delisting": False},
+        {"code": "US.NOTE", "name": "Issuer Notes Due 2029", "exchange_type": "US_NYSE", "delisting": False},
+        {"code": "US.PINKY", "name": "Pink Common", "exchange_type": "US_PINK", "delisting": False},
+    ]
+
+    universe = fetch_futu_universe(
+        FakeUniverseClient(rows),
+        "US",
+        exclude_exchange_types={"US_PINK"},
+        exclude_security_classes={"preferred", "note_debt"},
+        reference_date="2026-05-31",
+    )
+
+    assert universe["code"].tolist() == ["US.AAPL"]
+    assert universe["security_class"].tolist() == ["common_or_unknown"]
+    assert universe.attrs["source_exchange_types"] == {"US_NASDAQ": 1, "US_NYSE": 2, "US_PINK": 1}
+    assert universe.attrs["selected_exchange_types"] == {"US_NASDAQ": 1}
+    assert universe.attrs["excluded_exchange_types"] == {"US_PINK": 1}
+    assert universe.attrs["source_security_classes"] == {"common_or_unknown": 1, "note_debt": 1, "preferred": 1}
+    assert universe.attrs["selected_security_classes"] == {"common_or_unknown": 1}
+    assert universe.attrs["excluded_security_classes"] == {"note_debt": 1, "preferred": 1}
 
 
 def test_scan_market_writes_latest_status(tmp_path):
@@ -54,6 +116,8 @@ def test_scan_market_writes_latest_status(tmp_path):
     assert payload["source_exchange_types"] == {"US_NASDAQ": 1, "US_NYSE": 1}
     assert payload["selected_exchange_types"] == {"US_NASDAQ": 1, "US_NYSE": 1}
     assert payload["excluded_exchange_types"] == {}
+    assert payload["selected_security_classes"] == {"common_or_unknown": 2}
+    assert payload["status_by_security_class"] == {"common_or_unknown": {"error": 1, "ok": 1}}
     assert payload["status_by_exchange_type"] == {"US_NASDAQ": {"ok": 1}, "US_NYSE": {"error": 1}}
     assert payload["unsupported_exchange_types"] == {}
     assert (tmp_path / "US_latest_universe.csv").exists()
