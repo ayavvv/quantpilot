@@ -196,6 +196,7 @@ def test_check_major_money_digest_status_summarises_markets(tmp_path):
                 "flow_date": "2026-05-29",
                 "total_rows": 2,
                 "ok_rows": 2,
+                "non_ok_rows": 0,
                 "exchange_types": {"SSE": 1, "SZSE": 1},
                 "coverage_notes": ["source coverage note"],
                 "entry_count": 1,
@@ -299,6 +300,34 @@ def test_build_report_subject_includes_major_money_summary():
     )
 
     assert subject == "QuantPilot Daily Report - 2026-05-31 | MM 368 in/783 out; 3/4 src; missing US_OTC"
+
+
+def test_check_major_money_digest_status_subject_includes_partial_markets(monkeypatch, tmp_path):
+    monkeypatch.setenv("HEALTHCHECK_MAJOR_MONEY_MAX_NON_OK_RATIO", "0.05")
+    digest = {
+        "flow_date": "2026-05-29",
+        "market_count": 2,
+        "available_market_count": 2,
+        "entry_count": 2,
+        "exit_count": 1,
+        "markets": [
+            {"market": "A", "currency": "CNY", "available": True, "total_rows": 100, "ok_rows": 99, "non_ok_rows": 1},
+            {
+                "market": "US",
+                "currency": "USD",
+                "available": True,
+                "total_rows": 100,
+                "ok_rows": 90,
+                "non_ok_rows": 10,
+            },
+        ],
+    }
+    path = tmp_path / "major_money_digest.json"
+    path.write_text(send_report.json.dumps(digest), encoding="utf-8")
+
+    status = send_report.check_major_money_digest_status(digest_json=path)
+
+    assert status["major_money_subject_summary"] == "MM 2 in/1 out; 2/2 src; partial US"
 
 
 def test_build_report_subject_degrades_without_major_money_summary():

@@ -332,6 +332,15 @@ def _safe_int(value, fallback: int) -> int:
         return fallback
 
 
+def _safe_float(value, fallback: float) -> float:
+    try:
+        if pd.isna(value):
+            return fallback
+        return float(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
 def _format_percent(value) -> str:
     if value is None or pd.isna(value):
         return "N/A"
@@ -410,6 +419,8 @@ def check_major_money_digest_status(
     entry_rows = []
     exit_rows = []
     missing_markets = []
+    partial_markets = []
+    max_non_ok_ratio = _safe_float(os.environ.get("HEALTHCHECK_MAJOR_MONEY_MAX_NON_OK_RATIO"), 0.05)
     for market in markets:
         if not isinstance(market, dict):
             continue
@@ -427,6 +438,11 @@ def check_major_money_digest_status(
         market_name = market.get("market", "N/A")
         if not available:
             missing_markets.append(str(market_name))
+        non_ok_rows = _safe_int(market.get("non_ok_rows"), 0)
+        if available and total_rows > 0 and non_ok_rows > 0:
+            non_ok_ratio = non_ok_rows / total_rows
+            if non_ok_ratio > max_non_ok_ratio:
+                partial_markets.append(str(market_name))
         market_rows.append(
             {
                 "market": market_name,
@@ -490,6 +506,8 @@ def check_major_money_digest_status(
     ]
     if missing_markets:
         subject_parts.append(f"missing {','.join(missing_markets)}")
+    if partial_markets:
+        subject_parts.append(f"partial {','.join(partial_markets)}")
     return {
         "major_money_available": available_count > 0,
         "major_money_date": digest.get("flow_date") or "N/A",
