@@ -3,6 +3,15 @@ from datetime import datetime
 from scripts import daily_healthcheck
 
 
+def test_secret_present_accepts_secret_file(tmp_path):
+    key_file = tmp_path / "polygon.key"
+    key_file.write_text(" file-secret \n", encoding="utf-8")
+
+    assert daily_healthcheck._secret_present("", str(key_file)) is True
+    assert daily_healthcheck._secret_present("direct-secret", "") is True
+    assert daily_healthcheck._secret_present("", str(tmp_path / "missing.key")) is False
+
+
 def test_build_snapshot_pretrade_flags_stale_signal_and_nas_lag(monkeypatch):
     monkeypatch.setattr(
         daily_healthcheck,

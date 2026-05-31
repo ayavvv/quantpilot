@@ -44,6 +44,18 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def secret_present(env: dict[str, str], *, value_key: str, file_key: str) -> bool:
+    if str(env.get(value_key) or "").strip():
+        return True
+    path_value = str(env.get(file_key) or "").strip()
+    if not path_value:
+        return False
+    target = Path(path_value).expanduser()
+    if not target.exists():
+        return False
+    return bool(target.read_text(encoding="utf-8", errors="replace").strip())
+
+
 def _split_csv(value: str) -> list[str]:
     return [item.strip().upper() for item in value.split(",") if item.strip()]
 
@@ -196,14 +208,15 @@ def check_us_otc_proxy(env: dict[str, str], *, data_dir: Path, expected_markets:
     flow_path = output_dir / "US_OTC_latest_flow.csv"
     enabled = _truthy(env.get("ENABLE_US_OTC_PROXY_FLOW", "false"))
     provider = str(env.get("US_OTC_PROXY_FLOW_PROVIDER", "polygon")).lower()
-    api_key_present = bool(env.get("POLYGON_API_KEY", ""))
+    api_key_file = str(env.get("POLYGON_API_KEY_FILE", "")).strip()
+    api_key_present = secret_present(env, value_key="POLYGON_API_KEY", file_key="POLYGON_API_KEY_FILE")
 
     issues = []
     if "US_OTC" in expected_markets:
         if not enabled:
             issues.append("US OTC/Pink proxy disabled: set ENABLE_US_OTC_PROXY_FLOW=true")
         elif provider == "polygon" and not api_key_present:
-            issues.append("US OTC/Pink proxy missing POLYGON_API_KEY")
+            issues.append("US OTC/Pink proxy missing POLYGON_API_KEY or POLYGON_API_KEY_FILE")
         elif not universe_path.exists():
             issues.append(f"US OTC/Pink proxy universe missing: {universe_path}")
         elif not status_path.exists():
@@ -230,6 +243,7 @@ def check_us_otc_proxy(env: dict[str, str], *, data_dir: Path, expected_markets:
         "enabled": enabled,
         "provider": provider,
         "api_key_present": api_key_present,
+        "api_key_file": api_key_file,
         "universe_path": str(universe_path),
         "universe_exists": universe_path.exists(),
         "status_path": str(status_path),

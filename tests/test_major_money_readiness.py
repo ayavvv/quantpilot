@@ -92,6 +92,44 @@ def test_build_readiness_snapshot_accepts_ready_system(tmp_path):
     assert snapshot["checks"]["digest"]["markets"]["US_OTC"]["available"] is True
 
 
+def test_build_readiness_snapshot_accepts_polygon_key_file(tmp_path):
+    project_dir = tmp_path / "project"
+    data_dir = tmp_path / "data"
+    reporter_env = project_dir / "reporter" / ".env"
+    digest = data_dir / "output" / "major_money_digest_latest.json"
+    otc_dir = data_dir / "capital_flow" / "us_otc_proxy"
+    universe = data_dir / "capital_flow" / "futu_market" / "US_latest_source_universe.csv"
+    key_file = tmp_path / "polygon.key"
+    key_file.write_text("secret\n", encoding="utf-8")
+    universe.parent.mkdir(parents=True)
+    universe.write_text("code,exchange_type\nUS.AABB,US_PINK\n", encoding="utf-8")
+    otc_dir.mkdir(parents=True)
+    (otc_dir / "US_OTC_latest_flow.csv").write_text("code,capital_flow_status\nUS.AABB,ok\n", encoding="utf-8")
+    (otc_dir / "US_OTC_latest_status.json").write_text(
+        '{"status":"ok","attempted_count":1,"ok_count":1}',
+        encoding="utf-8",
+    )
+    _write_reporter_env(reporter_env)
+    _write_digest(digest, us_otc_available=True)
+
+    snapshot = readiness.build_readiness_snapshot(
+        project_dir=project_dir,
+        crontab_text=_cron(project_dir),
+        env={
+            "DATA_DIR": str(data_dir),
+            "REPORTER_ENV_FILE": str(reporter_env),
+            "MAJOR_MONEY_DIGEST_JSON": str(digest),
+            "MAJOR_MONEY_EXPECTED_MARKETS": "A,HK,US,US_OTC",
+            "ENABLE_US_OTC_PROXY_FLOW": "true",
+            "POLYGON_API_KEY_FILE": str(key_file),
+        },
+    )
+
+    assert snapshot["ok"] is True
+    assert snapshot["checks"]["us_otc_proxy"]["api_key_present"] is True
+    assert snapshot["checks"]["us_otc_proxy"]["api_key_file"] == str(key_file)
+
+
 def test_build_readiness_snapshot_flags_missing_us_otc_proxy(tmp_path):
     project_dir = tmp_path / "project"
     data_dir = tmp_path / "data"

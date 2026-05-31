@@ -64,8 +64,8 @@ Artifacts:
     is labeled as a proxy in the artifact source.
   - Defaults to the latest completed US session date, so China-time Monday
     evening does not request a Sunday aggregate.
-  - Requires `POLYGON_API_KEY`; without it, the daily digest will keep `US_OTC`
-    visible as missing coverage.
+  - Requires `POLYGON_API_KEY` or `POLYGON_API_KEY_FILE`; without a configured
+    key, the daily digest will keep `US_OTC` visible as missing coverage.
   - Auto digest rebuilds only include `US_OTC` after the current proxy scan
     succeeds, avoiding stale proxy artifacts after API/key failures.
 - `scripts/run_market_capital_flow.sh`
@@ -139,6 +139,8 @@ To enable this in the scheduled US after-close scan, set these in `.env`:
 ```bash
 ENABLE_US_OTC_PROXY_FLOW=true
 POLYGON_API_KEY=...
+# Or keep the secret out of .env:
+# POLYGON_API_KEY_FILE=/Users/theo/.config/quantpilot/polygon_api_key
 US_OTC_PROXY_FLOW_EXCHANGE_TYPES=US_PINK
 ```
 

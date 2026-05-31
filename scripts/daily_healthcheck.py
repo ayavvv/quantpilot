@@ -18,6 +18,17 @@ from reporter.send_report import send_email
 from scripts import a_share_readiness, major_money_readiness
 
 
+def _secret_present(value: str = "", file_path: str = "") -> bool:
+    if str(value or "").strip():
+        return True
+    if not file_path:
+        return False
+    target = Path(file_path).expanduser()
+    if not target.exists():
+        return False
+    return bool(target.read_text(encoding="utf-8", errors="replace").strip())
+
+
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(Path.home() / "quantpilot_data")))
 QLIB_DIR = DATA_DIR / "qlib_data"
 SIGNAL_DIR = DATA_DIR / "signals"
@@ -88,7 +99,8 @@ US_OTC_PROXY_FLOW_UNIVERSE_CSV = Path(
         str(DATA_DIR / "capital_flow" / "futu_market" / "US_latest_source_universe.csv"),
     )
 )
-POLYGON_API_KEY_PRESENT = bool(os.environ.get("POLYGON_API_KEY"))
+POLYGON_API_KEY_FILE = os.environ.get("POLYGON_API_KEY_FILE", "")
+POLYGON_API_KEY_PRESENT = _secret_present(os.environ.get("POLYGON_API_KEY", ""), POLYGON_API_KEY_FILE)
 
 LEVEL_ORDER = {"ok": 0, "warn": 1, "error": 2}
 
@@ -619,10 +631,11 @@ def analyze_market_money_artifacts(reference_date: str = "") -> dict[str, Any]:
     if "US_OTC" in MAJOR_MONEY_EXPECTED_MARKETS:
         if not us_otc_proxy.get("enabled"):
             issues.append(
-                "US OTC/Pink proxy flow disabled: set ENABLE_US_OTC_PROXY_FLOW=true and POLYGON_API_KEY"
+                "US OTC/Pink proxy flow disabled: set ENABLE_US_OTC_PROXY_FLOW=true and configure "
+                "POLYGON_API_KEY or POLYGON_API_KEY_FILE"
             )
         elif us_otc_proxy.get("provider") == "polygon" and not us_otc_proxy.get("api_key_present"):
-            issues.append("US OTC/Pink proxy flow missing POLYGON_API_KEY")
+            issues.append("US OTC/Pink proxy flow missing POLYGON_API_KEY or POLYGON_API_KEY_FILE")
         elif not us_otc_proxy.get("universe_exists"):
             issues.append(
                 "US OTC/Pink proxy universe missing: "

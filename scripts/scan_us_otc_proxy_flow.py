@@ -51,6 +51,18 @@ def _split_csv(value: str) -> set[str]:
     return {item.strip().upper() for item in value.split(",") if item.strip()}
 
 
+def resolve_api_key(api_key: str = "", api_key_file: str | Path = "") -> str:
+    direct = str(api_key or "").strip()
+    if direct:
+        return direct
+    if not api_key_file:
+        return ""
+    target = Path(api_key_file).expanduser()
+    if not target.exists():
+        return ""
+    return target.read_text(encoding="utf-8", errors="replace").strip()
+
+
 def _normalize_code(value: Any) -> str:
     text = str(value or "").strip().upper()
     if not text:
@@ -108,7 +120,7 @@ def fetch_polygon_grouped_daily(
     base_url: str = POLYGON_GROUPED_DAILY_URL,
 ) -> list[dict[str, Any]]:
     if not api_key:
-        raise RuntimeError("POLYGON_API_KEY is required for provider=polygon")
+        raise RuntimeError("POLYGON_API_KEY or POLYGON_API_KEY_FILE is required for provider=polygon")
     params = {
         "adjusted": str(adjusted).lower(),
         "include_otc": str(include_otc).lower(),
@@ -293,6 +305,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build a US OTC/Pink proxy-flow artifact.")
     parser.add_argument("--provider", default=os.environ.get("US_OTC_PROXY_FLOW_PROVIDER", "polygon"))
     parser.add_argument("--api-key", default=os.environ.get("POLYGON_API_KEY", ""))
+    parser.add_argument("--api-key-file", default=os.environ.get("POLYGON_API_KEY_FILE", ""))
     parser.add_argument("--date", default=os.environ.get("US_OTC_PROXY_FLOW_DATE", _default_date()))
     parser.add_argument(
         "--universe-csv",
@@ -323,12 +336,13 @@ def main(argv: list[str] | None = None) -> int:
     provider = str(args.provider).strip().lower()
     if provider != "polygon":
         raise ValueError(f"unsupported US OTC proxy provider: {args.provider}")
+    api_key = resolve_api_key(args.api_key, args.api_key_file)
     universe = load_otc_universe(
         args.universe_csv,
         exchange_types=_split_csv(args.exchange_types),
         max_codes=args.max_codes,
     )
-    aggregates = fetch_polygon_grouped_daily(api_key=args.api_key, date=args.date, include_otc=True)
+    aggregates = fetch_polygon_grouped_daily(api_key=api_key, date=args.date, include_otc=True)
     rows = build_proxy_records(
         universe,
         aggregates,

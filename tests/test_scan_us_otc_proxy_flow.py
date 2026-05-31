@@ -79,3 +79,11 @@ def test_latest_completed_us_session_date_accepts_china_time_after_us_close():
     now = datetime(2026, 5, 30, 5, 10, tzinfo=ZoneInfo("Asia/Shanghai"))
 
     assert scanner.latest_completed_us_session_date(now) == "2026-05-29"
+
+
+def test_resolve_api_key_accepts_secret_file(tmp_path):
+    key_file = tmp_path / "polygon.key"
+    key_file.write_text(" file-secret \n", encoding="utf-8")
+
+    assert scanner.resolve_api_key("", key_file) == "file-secret"
+    assert scanner.resolve_api_key("direct-secret", key_file) == "direct-secret"
