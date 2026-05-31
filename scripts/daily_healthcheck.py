@@ -69,6 +69,23 @@ MARKET_CAPITAL_FLOW_MARKETS = [
     if item.strip()
 ]
 HEALTHCHECK_MARKET_FLOW_MIN_OK_RATIO = float(os.environ.get("HEALTHCHECK_MARKET_FLOW_MIN_OK_RATIO", "0.5"))
+MAJOR_MONEY_EXPECTED_MARKETS = [
+    item.strip().upper()
+    for item in os.environ.get("MAJOR_MONEY_EXPECTED_MARKETS", "A,HK,US,US_OTC").split(",")
+    if item.strip()
+]
+US_OTC_PROXY_FLOW_ENABLED = os.environ.get("ENABLE_US_OTC_PROXY_FLOW", "false").lower() == "true"
+US_OTC_PROXY_FLOW_PROVIDER = os.environ.get("US_OTC_PROXY_FLOW_PROVIDER", "polygon")
+US_OTC_PROXY_FLOW_OUTPUT_DIR = Path(
+    os.environ.get("US_OTC_PROXY_FLOW_OUTPUT_DIR", str(DATA_DIR / "capital_flow" / "us_otc_proxy"))
+)
+US_OTC_PROXY_FLOW_UNIVERSE_CSV = Path(
+    os.environ.get(
+        "US_OTC_PROXY_FLOW_UNIVERSE_CSV",
+        str(DATA_DIR / "capital_flow" / "futu_market" / "US_latest_source_universe.csv"),
+    )
+)
+POLYGON_API_KEY_PRESENT = bool(os.environ.get("POLYGON_API_KEY"))
 
 LEVEL_ORDER = {"ok": 0, "warn": 1, "error": 2}
 
@@ -445,13 +462,70 @@ def _read_market_scan_status(path: Path) -> dict[str, Any]:
     return status
 
 
+def _read_us_otc_proxy_status() -> dict[str, Any]:
+    flow_path = US_OTC_PROXY_FLOW_OUTPUT_DIR / "US_OTC_latest_flow.csv"
+    status_path = US_OTC_PROXY_FLOW_OUTPUT_DIR / "US_OTC_latest_status.json"
+    status: dict[str, Any] = {
+        "enabled": US_OTC_PROXY_FLOW_ENABLED,
+        "provider": US_OTC_PROXY_FLOW_PROVIDER,
+        "api_key_present": POLYGON_API_KEY_PRESENT,
+        "universe_path": str(US_OTC_PROXY_FLOW_UNIVERSE_CSV),
+        "universe_exists": US_OTC_PROXY_FLOW_UNIVERSE_CSV.exists(),
+        "flow_path": str(flow_path),
+        "flow_exists": flow_path.exists(),
+        "status_path": str(status_path),
+        "status_exists": status_path.exists(),
+        "ok": False,
+        "status": "",
+        "date": "",
+        "finished_at": "",
+        "finished_date": "",
+        "attempted_count": 0,
+        "ok_count": 0,
+        "error_count": 0,
+        "empty_count": 0,
+        "ok_ratio": 0.0,
+        "message": "",
+        "error": "",
+    }
+    if not status_path.exists():
+        return status
+    try:
+        payload = json.loads(status_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        status["error"] = str(exc)
+        return status
+
+    status_value = str(payload.get("status") or "")
+    ok_count = int(payload.get("ok_count") or 0)
+    attempted_count = int(payload.get("attempted_count") or 0)
+    status.update(
+        {
+            "ok": status_value == "ok" and ok_count > 0,
+            "status": status_value,
+            "date": str(payload.get("date") or ""),
+            "finished_at": str(payload.get("finished_at") or ""),
+            "finished_date": str(payload.get("finished_at") or "")[:10],
+            "attempted_count": attempted_count,
+            "ok_count": ok_count,
+            "error_count": int(payload.get("error_count") or 0),
+            "empty_count": int(payload.get("empty_count") or 0),
+            "ok_ratio": float(payload.get("ok_ratio") or 0.0),
+            "message": str(payload.get("message") or ""),
+        }
+    )
+    return status
+
+
 def analyze_market_money_artifacts(reference_date: str = "") -> dict[str, Any]:
     status: dict[str, Any] = {
         "enabled": HEALTHCHECK_MARKET_MONEY_ENABLED,
         "reference_date": reference_date,
+        "expected_markets": MAJOR_MONEY_EXPECTED_MARKETS,
         "a_share_rank": {},
         "digest": {},
         "market_scans": {},
+        "us_otc_proxy": {},
         "issues": [],
     }
     if not HEALTHCHECK_MARKET_MONEY_ENABLED:
@@ -460,7 +534,8 @@ def analyze_market_money_artifacts(reference_date: str = "") -> dict[str, Any]:
     issues: list[str] = []
     a_share_rank = _read_csv_artifact_status(EASTMONEY_FUND_FLOW_RANK_PATH)
     digest = _read_major_money_digest_status(MAJOR_MONEY_DIGEST_PATH)
-    status.update({"a_share_rank": a_share_rank, "digest": digest})
+    us_otc_proxy = _read_us_otc_proxy_status() if "US_OTC" in MAJOR_MONEY_EXPECTED_MARKETS else {}
+    status.update({"a_share_rank": a_share_rank, "digest": digest, "us_otc_proxy": us_otc_proxy})
 
     if not a_share_rank["exists"]:
         issues.append(f"Eastmoney A-share fund-flow rank missing: {a_share_rank['path']}")
@@ -488,6 +563,15 @@ def analyze_market_money_artifacts(reference_date: str = "") -> dict[str, Any]:
             f"path={digest['path']} error={digest.get('error') or 'unknown'}"
         )
     else:
+        digest_markets = digest.get("markets", {})
+        missing_expected_markets = sorted(
+            market for market in MAJOR_MONEY_EXPECTED_MARKETS if market not in digest_markets
+        )
+        if missing_expected_markets:
+            issues.append(
+                "Major-money digest missing expected market rows: "
+                + ",".join(missing_expected_markets)
+            )
         a_market = digest.get("markets", {}).get("A", {})
         if not a_market.get("available"):
             issues.append("Major-money digest missing available A-share market coverage")
@@ -511,6 +595,31 @@ def analyze_market_money_artifacts(reference_date: str = "") -> dict[str, Any]:
             issues.append(
                 "Major-money digest file stale: "
                 f"mtime_date={digest['mtime_date']} reference={reference_date}"
+            )
+
+    if "US_OTC" in MAJOR_MONEY_EXPECTED_MARKETS:
+        if not us_otc_proxy.get("enabled"):
+            issues.append(
+                "US OTC/Pink proxy flow disabled: set ENABLE_US_OTC_PROXY_FLOW=true and POLYGON_API_KEY"
+            )
+        elif us_otc_proxy.get("provider") == "polygon" and not us_otc_proxy.get("api_key_present"):
+            issues.append("US OTC/Pink proxy flow missing POLYGON_API_KEY")
+        elif not us_otc_proxy.get("universe_exists"):
+            issues.append(
+                "US OTC/Pink proxy universe missing: "
+                f"{us_otc_proxy.get('universe_path')}"
+            )
+        elif not us_otc_proxy.get("status_exists"):
+            issues.append(
+                "US OTC/Pink proxy status missing: "
+                f"{us_otc_proxy.get('status_path')}"
+            )
+        elif not us_otc_proxy.get("ok"):
+            issues.append(
+                "US OTC/Pink proxy scan not healthy: "
+                f"status={us_otc_proxy.get('status') or 'N/A'} "
+                f"ok={us_otc_proxy.get('ok_count', 0)}/{us_otc_proxy.get('attempted_count', 0)} "
+                f"message={us_otc_proxy.get('message') or us_otc_proxy.get('error') or 'N/A'}"
             )
 
     market_scans: dict[str, Any] = {}

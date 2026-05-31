@@ -349,6 +349,7 @@ def test_analyze_market_money_artifacts_accepts_healthy_sources(monkeypatch, tmp
     monkeypatch.setattr(daily_healthcheck, "MAJOR_MONEY_DIGEST_PATH", digest)
     monkeypatch.setattr(daily_healthcheck, "MARKET_CAPITAL_FLOW_DIR", flow_dir)
     monkeypatch.setattr(daily_healthcheck, "MARKET_CAPITAL_FLOW_MARKETS", ["HK", "US"])
+    monkeypatch.setattr(daily_healthcheck, "MAJOR_MONEY_EXPECTED_MARKETS", ["A", "HK", "US"])
 
     status = daily_healthcheck.analyze_market_money_artifacts(reference_date="2026-04-09")
 
@@ -403,6 +404,74 @@ def test_analyze_market_money_artifacts_flags_unavailable_expected_market(monkey
     status = daily_healthcheck.analyze_market_money_artifacts(reference_date="2026-04-09")
 
     assert any("US_OTC" in issue for issue in status["issues"])
+
+
+def test_analyze_market_money_artifacts_flags_missing_expected_market_row(monkeypatch, tmp_path):
+    rank = tmp_path / "eastmoney_rank.csv"
+    rank.write_text("code,main_net_inflow\nSH.600000,100\n", encoding="utf-8")
+    digest = tmp_path / "major_money_digest.json"
+    digest.write_text(
+        '{"flow_date":"2026-04-09","available_market_count":3,"market_count":3,'
+        '"markets":[{"market":"A","available":true,"ok_rows":1,"total_rows":1},'
+        '{"market":"HK","available":true,"ok_rows":1,"total_rows":1},'
+        '{"market":"US","available":true,"ok_rows":1,"total_rows":1}]}',
+        encoding="utf-8",
+    )
+    flow_dir = tmp_path / "futu_market"
+    flow_dir.mkdir()
+    for market in ["HK", "US"]:
+        (flow_dir / f"{market}_latest_status.json").write_text(
+            '{"status":"ok","market":"%s","attempted_count":1,"ok_count":1,'
+            '"error_count":0,"empty_count":0,"ok_ratio":1.0,"finished_at":"2026-04-09T18:00:00+08:00"}'
+            % market,
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(daily_healthcheck, "HEALTHCHECK_MARKET_MONEY_ENABLED", True)
+    monkeypatch.setattr(daily_healthcheck, "EASTMONEY_FUND_FLOW_RANK_PATH", rank)
+    monkeypatch.setattr(daily_healthcheck, "EASTMONEY_FUND_FLOW_MIN_ROWS", 1)
+    monkeypatch.setattr(daily_healthcheck, "MAJOR_MONEY_DIGEST_PATH", digest)
+    monkeypatch.setattr(daily_healthcheck, "MARKET_CAPITAL_FLOW_DIR", flow_dir)
+    monkeypatch.setattr(daily_healthcheck, "MARKET_CAPITAL_FLOW_MARKETS", ["HK", "US"])
+    monkeypatch.setattr(daily_healthcheck, "MAJOR_MONEY_EXPECTED_MARKETS", ["A", "HK", "US", "US_OTC"])
+    monkeypatch.setattr(daily_healthcheck, "US_OTC_PROXY_FLOW_ENABLED", False)
+
+    status = daily_healthcheck.analyze_market_money_artifacts(reference_date="2026-04-09")
+
+    assert any("missing expected market rows: US_OTC" in issue for issue in status["issues"])
+    assert any("US OTC/Pink proxy flow disabled" in issue for issue in status["issues"])
+
+
+def test_analyze_market_money_artifacts_flags_us_otc_proxy_missing_key(monkeypatch, tmp_path):
+    rank = tmp_path / "eastmoney_rank.csv"
+    rank.write_text("code,main_net_inflow\nSH.600000,100\n", encoding="utf-8")
+    digest = tmp_path / "major_money_digest.json"
+    digest.write_text(
+        '{"flow_date":"2026-04-09","available_market_count":1,"market_count":2,'
+        '"markets":[{"market":"A","available":true,"ok_rows":1,"total_rows":1},'
+        '{"market":"US_OTC","available":false,"message":"missing"}]}',
+        encoding="utf-8",
+    )
+    universe = tmp_path / "US_latest_source_universe.csv"
+    universe.write_text("code,exchange_type\nUS.AABB,US_PINK\n", encoding="utf-8")
+    proxy_dir = tmp_path / "us_otc_proxy"
+    proxy_dir.mkdir()
+    monkeypatch.setattr(daily_healthcheck, "HEALTHCHECK_MARKET_MONEY_ENABLED", True)
+    monkeypatch.setattr(daily_healthcheck, "EASTMONEY_FUND_FLOW_RANK_PATH", rank)
+    monkeypatch.setattr(daily_healthcheck, "EASTMONEY_FUND_FLOW_MIN_ROWS", 1)
+    monkeypatch.setattr(daily_healthcheck, "MAJOR_MONEY_DIGEST_PATH", digest)
+    monkeypatch.setattr(daily_healthcheck, "MARKET_CAPITAL_FLOW_MARKETS", [])
+    monkeypatch.setattr(daily_healthcheck, "MAJOR_MONEY_EXPECTED_MARKETS", ["A", "US_OTC"])
+    monkeypatch.setattr(daily_healthcheck, "US_OTC_PROXY_FLOW_ENABLED", True)
+    monkeypatch.setattr(daily_healthcheck, "US_OTC_PROXY_FLOW_PROVIDER", "polygon")
+    monkeypatch.setattr(daily_healthcheck, "POLYGON_API_KEY_PRESENT", False)
+    monkeypatch.setattr(daily_healthcheck, "US_OTC_PROXY_FLOW_UNIVERSE_CSV", universe)
+    monkeypatch.setattr(daily_healthcheck, "US_OTC_PROXY_FLOW_OUTPUT_DIR", proxy_dir)
+
+    status = daily_healthcheck.analyze_market_money_artifacts(reference_date="2026-04-09")
+
+    assert status["us_otc_proxy"]["enabled"] is True
+    assert status["us_otc_proxy"]["api_key_present"] is False
+    assert any("missing POLYGON_API_KEY" in issue for issue in status["issues"])
 
 
 def test_analyze_market_money_artifacts_flags_stale_sources(monkeypatch, tmp_path):
