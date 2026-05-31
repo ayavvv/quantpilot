@@ -251,6 +251,21 @@ def _load_resume(path: Path, overwrite: bool) -> tuple[pd.DataFrame, set[str]]:
     return existing, codes
 
 
+def _status_schema_version(path: Path) -> int:
+    if not path.exists():
+        return 0
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return 0
+    if not isinstance(payload, dict):
+        return 0
+    try:
+        return int(payload.get("scanner_schema_version") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _write_outputs(df: pd.DataFrame, output_path: Path, latest_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(output_path, index=False)
@@ -303,7 +318,10 @@ def scan_market(
     date_tag = _date_tag(end)
     output_path = output_dir / f"{market}_{date_tag}_flow.csv"
     latest_path = output_dir / f"{market}_latest_flow.csv"
-    existing, done_codes = _load_resume(output_path, overwrite=overwrite)
+    status_path = output_dir / f"{market}_{date_tag}_status.json"
+    existing_schema_version = _status_schema_version(status_path)
+    schema_upgrade_refresh = output_path.exists() and existing_schema_version < STATUS_SCHEMA_VERSION
+    existing, done_codes = _load_resume(output_path, overwrite=overwrite or schema_upgrade_refresh)
     records = existing.to_dict("records") if not existing.empty else []
 
     work = universe.copy()
@@ -403,6 +421,8 @@ def scan_market(
         "date_tag": date_tag,
         "started_at": started_at,
         "finished_at": finished_at,
+        "resume_mode": "overwrite" if overwrite else ("schema_upgrade_refresh" if schema_upgrade_refresh else "resume"),
+        "previous_scanner_schema_version": existing_schema_version,
         "include_distribution": include_distribution,
         "max_codes": max_codes,
         "universe_count": int(len(universe)),

@@ -85,6 +85,10 @@ Artifacts:
   - Host-side cron wrapper around the Futu scanner.
   - Uses a lock directory so a long full-market scan cannot overlap itself.
   - Rebuilds the digest after a scan by default.
+  - Same-day reruns automatically refresh instead of resuming old rows when the
+    dated status file was produced by an older scanner schema. Set
+    `FUTU_MARKET_FLOW_OVERWRITE=true` for a manual full refresh regardless of
+    schema.
   - Can also build the optional `US_OTC` proxy artifact during the scheduled US
     after-close scan when `ENABLE_US_OTC_PROXY_FLOW=true`.
   - Defaults to excluding `US_PINK,N/A`, so the scheduled US job covers

@@ -12,6 +12,7 @@ def test_run_market_capital_flow_wraps_futu_scanner_and_digest():
     assert 'FUTU_MARKET_FLOW_MIN_OK_RATIO="${FUTU_MARKET_FLOW_MIN_OK_RATIO:-0}"' in content
     assert 'FUTU_MARKET_FLOW_EXCLUDE_EXCHANGE_TYPES="${FUTU_MARKET_FLOW_EXCLUDE_EXCHANGE_TYPES:-US_PINK,N/A}"' in content
     assert 'FUTU_MARKET_FLOW_EXCLUDE_SECURITY_CLASSES="${FUTU_MARKET_FLOW_EXCLUDE_SECURITY_CLASSES:-preferred,note_debt,unit,warrant_right,delisted_label,future_listing}"' in content
+    assert 'FUTU_MARKET_FLOW_OVERWRITE="${FUTU_MARKET_FLOW_OVERWRITE:-false}"' in content
     assert 'MAJOR_MONEY_EXPECTED_MARKETS="${MAJOR_MONEY_EXPECTED_MARKETS:-A,HK,US,US_OTC}"' in content
     assert 'MAJOR_MONEY_DIGEST_ARCHIVE_DIR="${MAJOR_MONEY_DIGEST_ARCHIVE_DIR:-$DATA_DIR/output/major_money_digest}"' in content
     assert 'ENABLE_US_OTC_PROXY_FLOW="${ENABLE_US_OTC_PROXY_FLOW:-false}"' in content
@@ -22,6 +23,7 @@ def test_run_market_capital_flow_wraps_futu_scanner_and_digest():
     assert '[ -z "${POLYGON_API_KEY:-}" ] && [ -z "${POLYGON_API_KEY_FILE:-}" ]' in content
     assert 'POLYGON_API_KEY or POLYGON_API_KEY_FILE is not set' in content
     assert '--exclude-security-classes "$FUTU_MARKET_FLOW_EXCLUDE_SECURITY_CLASSES"' in content
+    assert 'SCAN_ARGS+=(--overwrite)' in content
     assert 'US_OTC_PROXY_FLOW_AVAILABLE=true' in content
     assert '"$PYTHON_BIN" -m scripts.scan_us_otc_proxy_flow "${US_OTC_PROXY_ARGS[@]}"' in content
     assert 'MAJOR_MONEY_DIGEST_SOURCES="${MAJOR_MONEY_DIGEST_SOURCES:-auto}"' in content

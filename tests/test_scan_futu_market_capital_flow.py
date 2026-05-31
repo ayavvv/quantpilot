@@ -124,6 +124,47 @@ def test_scan_market_writes_latest_status(tmp_path):
     assert (tmp_path / "US_latest_universe.csv").exists()
 
 
+def test_scan_market_refreshes_instead_of_resuming_old_schema(tmp_path):
+    old_flow = tmp_path / "US_20260531_flow.csv"
+    old_flow.write_text(
+        "market,code,name,exchange_type,capital_flow_status,capital_flow_count\n"
+        "US,US.OLD,Old,US_NYSE,ok,1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "US_20260531_status.json").write_text(
+        '{"status":"ok","market":"US","scanner_schema_version":0,"attempted_count":1,"ok_count":1}',
+        encoding="utf-8",
+    )
+    universe = pd.DataFrame(
+        [
+            {"code": "US.AAPL", "name": "Apple", "exchange_type": "US_NASDAQ"},
+        ]
+    )
+
+    scan_market(
+        FakeFutuClient(),
+        universe,
+        market="US",
+        output_dir=tmp_path,
+        start="2026-05-01",
+        end="2026-05-31",
+        period="DAY",
+        include_distribution=False,
+        max_codes=0,
+        batch_flush=50,
+        overwrite=False,
+        pause_seconds=0,
+        min_ok_ratio=0.0,
+    )
+
+    output = pd.read_csv(old_flow)
+    assert output["code"].tolist() == ["US.AAPL"]
+    payload = json.loads((tmp_path / "US_20260531_status.json").read_text(encoding="utf-8"))
+    assert payload["scanner_schema_version"] == 2
+    assert payload["previous_scanner_schema_version"] == 0
+    assert payload["resume_mode"] == "schema_upgrade_refresh"
+
+
 def test_scan_market_writes_failed_status_before_raise(tmp_path):
     universe = pd.DataFrame(
         [
