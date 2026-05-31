@@ -43,6 +43,12 @@ CAPITAL_FLOW_GATE_JSON = Path(
         str(SIGNAL_DIR.parent / "output" / "futu_capital_flow_eval_latest" / "gate.json"),
     )
 )
+MAJOR_MONEY_DIGEST_JSON = Path(
+    os.environ.get(
+        "MAJOR_MONEY_DIGEST_JSON",
+        str(SIGNAL_DIR.parent / "output" / "major_money_digest_latest.json"),
+    )
+)
 TRADE_START_TIME = time(14, 50)
 
 REPORT_TEMPLATE = """
@@ -70,6 +76,7 @@ tr:nth-child(even) { background-color: #f8f9fa; }
 .gate-box { border-left: 4px solid #ccc; padding: 8px 12px; margin: 12px 0; background: #f8f9fa; }
 .gate-review { border-left-color: #dc3545; }
 .gate-advisory { border-left-color: #ffc107; }
+.coverage-missing { background-color: #fdecea !important; }
 </style>
 </head>
 <body>
@@ -108,7 +115,43 @@ tr:nth-child(even) { background-color: #f8f9fa; }
 <p class="warn">No signal data today</p>
 {% endif %}
 
-<h2>3. Futu Capital Flow ({{ capital_flow_date }})</h2>
+<h2>3. Market-Wide Major Money ({{ major_money_date }})</h2>
+{% if major_money_available %}
+<p class="muted">{{ major_money_message }}</p>
+<table>
+<tr><th>Market</th><th>Source</th><th>Coverage</th><th>Entry</th><th>Entry Amount</th><th>Exit</th><th>Exit Amount</th><th>Net</th></tr>
+{% for row in major_money_markets %}
+<tr class="{{ row.row_class }}">
+    <td>{{ row.market }}</td>
+    <td>{{ row.source }}</td>
+    <td>{{ row.coverage }}</td>
+    <td>{{ row.entry_count }}</td>
+    <td>{{ row.entry_amount }}</td>
+    <td>{{ row.exit_count }}</td>
+    <td>{{ row.exit_amount }}</td>
+    <td>{{ row.net_amount }}</td>
+</tr>
+{% endfor %}
+</table>
+<p><strong>Top Entries:</strong></p>
+<table>
+<tr><th>Market</th><th>Code</th><th>Name</th><th>Main Flow</th></tr>
+{% for row in major_money_top_entries %}
+<tr class="flow-confirm"><td>{{ row.market }}</td><td>{{ row.code }}</td><td>{{ row.name }}</td><td>{{ row.main_flow }}</td></tr>
+{% endfor %}
+</table>
+<p><strong>Top Exits:</strong></p>
+<table>
+<tr><th>Market</th><th>Code</th><th>Name</th><th>Main Flow</th></tr>
+{% for row in major_money_top_exits %}
+<tr class="flow-risk"><td>{{ row.market }}</td><td>{{ row.code }}</td><td>{{ row.name }}</td><td>{{ row.main_flow }}</td></tr>
+{% endfor %}
+</table>
+{% else %}
+<p class="warn">{{ major_money_message }}</p>
+{% endif %}
+
+<h2>4. Futu Capital Flow ({{ capital_flow_date }})</h2>
 {% if capital_flow_available %}
 <p class="muted">{{ capital_flow_message }}</p>
 <table>
@@ -134,7 +177,7 @@ tr:nth-child(even) { background-color: #f8f9fa; }
 <p class="warn">{{ capital_flow_message }}</p>
 {% endif %}
 
-<h2>4. Capital Flow Validation</h2>
+<h2>5. Capital Flow Validation</h2>
 <div class="gate-box {{ capital_flow_gate_class }}">
     <strong>Rule Gate:</strong> {{ capital_flow_gate_message }}
 </div>
@@ -157,7 +200,7 @@ tr:nth-child(even) { background-color: #f8f9fa; }
 <p class="warn">{{ capital_flow_eval_message }}</p>
 {% endif %}
 
-<h2>5. Trading Status</h2>
+<h2>6. Trading Status</h2>
 <p>{{ trade_status }}</p>
 
 <hr>
@@ -260,6 +303,13 @@ def _format_money(value) -> str:
     return f"{amount:.0f}"
 
 
+def _format_money_with_currency(value, currency: str) -> str:
+    formatted = _format_money(value)
+    if formatted == "N/A" or not currency:
+        return formatted
+    return f"{formatted} {currency}"
+
+
 def _flow_row_class(label: str) -> str:
     normalized = label.lower()
     if "risk" in normalized or "outflow" in normalized:
@@ -287,6 +337,112 @@ def _format_percent(value) -> str:
         return f"{float(value):.2%}"
     except (TypeError, ValueError):
         return "N/A"
+
+
+def check_major_money_digest_status(
+    digest_json: Path | None = None,
+    top_n: int = 8,
+):
+    """Summarise market-wide major-money digest for the daily report."""
+    target = digest_json or Path(os.environ.get("MAJOR_MONEY_DIGEST_JSON", str(MAJOR_MONEY_DIGEST_JSON)))
+    if not target.exists():
+        return {
+            "major_money_available": False,
+            "major_money_date": "N/A",
+            "major_money_message": f"No market-wide major-money digest found at {target}.",
+            "major_money_markets": [],
+            "major_money_top_entries": [],
+            "major_money_top_exits": [],
+        }
+
+    try:
+        digest = json.loads(target.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {
+            "major_money_available": False,
+            "major_money_date": "N/A",
+            "major_money_message": f"Could not read market-wide major-money digest: {exc}",
+            "major_money_markets": [],
+            "major_money_top_entries": [],
+            "major_money_top_exits": [],
+        }
+
+    markets = digest.get("markets", [])
+    if not isinstance(markets, list) or not markets:
+        return {
+            "major_money_available": False,
+            "major_money_date": "N/A",
+            "major_money_message": "Market-wide major-money digest is empty.",
+            "major_money_markets": [],
+            "major_money_top_entries": [],
+            "major_money_top_exits": [],
+        }
+
+    market_rows = []
+    entry_rows = []
+    exit_rows = []
+    for market in markets:
+        if not isinstance(market, dict):
+            continue
+        currency = str(market.get("currency") or "")
+        available = bool(market.get("available"))
+        ok_rows = _safe_int(market.get("ok_rows"), 0)
+        total_rows = _safe_int(market.get("total_rows"), 0)
+        market_rows.append(
+            {
+                "market": market.get("market", "N/A"),
+                "source": market.get("source") or "missing",
+                "coverage": f"{ok_rows}/{total_rows}" if total_rows else "missing",
+                "entry_count": _safe_int(market.get("entry_count"), 0),
+                "entry_amount": _format_money_with_currency(market.get("entry_amount"), currency),
+                "exit_count": _safe_int(market.get("exit_count"), 0),
+                "exit_amount": _format_money_with_currency(market.get("exit_amount"), currency),
+                "net_amount": _format_money_with_currency(market.get("net_amount"), currency),
+                "row_class": "" if available else "coverage-missing",
+            }
+        )
+        top_entries = market.get("top_entries")
+        if not isinstance(top_entries, list):
+            top_entries = []
+        for row in top_entries:
+            entry_rows.append(
+                {
+                    "market": market.get("market", "N/A"),
+                    "code": row.get("code", "N/A"),
+                    "name": row.get("name", ""),
+                    "main_flow_raw": row.get("main_flow"),
+                    "main_flow": _format_money_with_currency(row.get("main_flow"), currency),
+                }
+            )
+        top_exits = market.get("top_exits")
+        if not isinstance(top_exits, list):
+            top_exits = []
+        for row in top_exits:
+            exit_rows.append(
+                {
+                    "market": market.get("market", "N/A"),
+                    "code": row.get("code", "N/A"),
+                    "name": row.get("name", ""),
+                    "main_flow_raw": row.get("main_flow"),
+                    "main_flow": _format_money_with_currency(row.get("main_flow"), currency),
+                }
+            )
+
+    entry_rows = sorted(entry_rows, key=lambda row: float(row.get("main_flow_raw") or 0.0), reverse=True)[:top_n]
+    exit_rows = sorted(exit_rows, key=lambda row: float(row.get("main_flow_raw") or 0.0))[:top_n]
+    available_count = _safe_int(digest.get("available_market_count"), 0)
+    market_count = _safe_int(digest.get("market_count"), len(markets))
+    return {
+        "major_money_available": available_count > 0,
+        "major_money_date": digest.get("flow_date") or "N/A",
+        "major_money_message": (
+            f"Loaded {available_count}/{market_count} market-wide flow source(s). "
+            "Counts use vendor/proxy major-money fields and remain advisory."
+        ),
+        "major_money_markets": market_rows,
+        "major_money_top_entries": entry_rows,
+        "major_money_top_exits": exit_rows,
+    }
 
 
 def check_capital_flow_status(
@@ -852,6 +1008,7 @@ def main():
 
     data_info = check_data_status()
     signal_info = check_signal_status()
+    major_money_info = check_major_money_digest_status()
     capital_flow_info = check_capital_flow_status()
     capital_flow_eval_info = check_capital_flow_eval_status()
     capital_flow_gate_info = check_capital_flow_gate_status()
@@ -867,6 +1024,7 @@ def main():
         trade_status=trade_status,
         **data_info,
         **signal_info,
+        **major_money_info,
         **capital_flow_info,
         **capital_flow_eval_info,
         **capital_flow_gate_info,

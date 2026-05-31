@@ -1,0 +1,276 @@
+"""Scan Futu capital-flow data for broad market universes.
+
+This is intentionally resumable and conservative because Futu's capital-flow
+API is per symbol.  A full US/HK scan can take hours; use --max-codes for
+smoke tests and keep the output coverage fields visible in downstream reports.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import time
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+from futu import Market, RET_OK, SecurityType
+
+from collector.config import settings
+from collector.futu_client import FutuClient
+from strategy.futu_capital_flow_overlay import summarize_capital_flow
+from strategy.major_money_digest import normalize_market
+
+
+DATA_DIR = Path(os.environ.get("DATA_DIR", str(Path.home() / "quantpilot_data")))
+MARKET_MAP = {
+    "HK": Market.HK,
+    "US": Market.US,
+    "SH": Market.SH,
+    "SZ": Market.SZ,
+}
+
+
+def _default_start(days: int) -> str:
+    return (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+
+def _date_tag(value: str) -> str:
+    return value[:10].replace("-", "")
+
+
+def _markets(value: str) -> list[str]:
+    result = []
+    for item in value.split(","):
+        market = normalize_market(item)
+        if market == "A":
+            result.extend(["SH", "SZ"])
+        elif market:
+            result.append(market)
+    return result
+
+
+def _split_csv(value: str) -> set[str]:
+    return {item.strip().upper() for item in value.split(",") if item.strip()}
+
+
+def _codes_by_market(value: str) -> dict[str, list[str]]:
+    grouped: dict[str, list[str]] = {}
+    for item in value.split(","):
+        code = item.strip().upper()
+        if not code:
+            continue
+        if "." not in code:
+            raise ValueError(f"code must include market prefix: {code}")
+        market = normalize_market(code.split(".", 1)[0])
+        grouped.setdefault(market, []).append(code)
+    return grouped
+
+
+def fetch_futu_universe(
+    client: FutuClient,
+    market: str,
+    *,
+    include_exchange_types: set[str] | None = None,
+    exclude_exchange_types: set[str] | None = None,
+) -> pd.DataFrame:
+    if market not in MARKET_MAP:
+        raise ValueError(f"unsupported Futu market: {market}")
+    ret, data = client.ctx.get_stock_basicinfo(MARKET_MAP[market], SecurityType.STOCK)
+    if ret != RET_OK:
+        raise RuntimeError(f"get_stock_basicinfo failed for {market}: {data}")
+    df = data.copy()
+    df["market"] = market
+    if "delisting" in df.columns:
+        df = df[~df["delisting"].fillna(False).astype(bool)].copy()
+    if "exchange_type" in df.columns:
+        exchange = df["exchange_type"].fillna("").astype(str).str.upper()
+        if include_exchange_types:
+            df = df[exchange.isin(include_exchange_types)].copy()
+            exchange = df["exchange_type"].fillna("").astype(str).str.upper()
+        if exclude_exchange_types:
+            df = df[~exchange.isin(exclude_exchange_types)].copy()
+    if "code" not in df.columns:
+        raise RuntimeError(f"Futu stock basic info missing code column for {market}")
+    return df.reset_index(drop=True)
+
+
+def _load_resume(path: Path, overwrite: bool) -> tuple[pd.DataFrame, set[str]]:
+    if overwrite or not path.exists():
+        return pd.DataFrame(), set()
+    existing = pd.read_csv(path)
+    codes = set(existing["code"].dropna().astype(str).tolist()) if "code" in existing.columns else set()
+    return existing, codes
+
+
+def _write_outputs(df: pd.DataFrame, output_path: Path, latest_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(output_path, index=False)
+    df.to_csv(latest_path, index=False)
+
+
+def scan_market(
+    client: FutuClient,
+    universe: pd.DataFrame,
+    *,
+    market: str,
+    output_dir: Path,
+    start: str,
+    end: str,
+    period: str,
+    include_distribution: bool,
+    max_codes: int,
+    batch_flush: int,
+    overwrite: bool,
+    pause_seconds: float,
+    min_ok_ratio: float,
+) -> dict[str, Any]:
+    date_tag = _date_tag(end)
+    output_path = output_dir / f"{market}_{date_tag}_flow.csv"
+    latest_path = output_dir / f"{market}_latest_flow.csv"
+    existing, done_codes = _load_resume(output_path, overwrite=overwrite)
+    records = existing.to_dict("records") if not existing.empty else []
+
+    work = universe.copy()
+    if max_codes > 0:
+        work = work.head(max_codes).copy()
+    total = len(work)
+
+    for idx, row in work.iterrows():
+        code = str(row.get("code", "")).strip()
+        if not code or code in done_codes:
+            continue
+        base = {
+            "market": market,
+            "code": code,
+            "name": row.get("name", ""),
+            "exchange_type": row.get("exchange_type", ""),
+            "scan_date": datetime.now().strftime("%Y-%m-%d"),
+            "source": "futu",
+        }
+        try:
+            flow_records = client.get_capital_flow(code, period_type=period, start=start, end=end)
+            distribution = client.get_capital_distribution(code) if include_distribution else {}
+            summary = summarize_capital_flow(code, flow_records, distribution)
+            record = {**base, **summary}
+        except Exception as exc:
+            record = {
+                **base,
+                "capital_flow_status": "error",
+                "capital_flow_error": str(exc),
+                "capital_flow_count": 0,
+                "capital_flow_latest_date": "",
+            }
+        records.append(record)
+        done_codes.add(code)
+
+        if len(records) % max(batch_flush, 1) == 0:
+            _write_outputs(pd.DataFrame(records), output_path, latest_path)
+        if pause_seconds > 0:
+            time.sleep(pause_seconds)
+
+    result = pd.DataFrame(records)
+    ok_count = int((result.get("capital_flow_status", pd.Series(dtype=str)).astype(str) == "ok").sum())
+    attempted = len(result)
+    ok_ratio = ok_count / attempted if attempted else 0.0
+    if attempted and ok_ratio < min_ok_ratio:
+        raise RuntimeError(f"{market} Futu capital-flow ok_ratio too low: {ok_ratio:.1%} < {min_ok_ratio:.1%}")
+
+    _write_outputs(result, output_path, latest_path)
+    universe_path = output_dir / f"{market}_{date_tag}_universe.csv"
+    universe.to_csv(universe_path, index=False)
+    return {
+        "market": market,
+        "universe_count": len(universe),
+        "selected_count": total,
+        "attempted_count": attempted,
+        "ok_count": ok_count,
+        "output": str(output_path),
+        "latest": str(latest_path),
+        "universe": str(universe_path),
+    }
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Scan Futu capital flow for HK/US/A-share market universes.")
+    parser.add_argument("--markets", default=os.environ.get("FUTU_MARKET_FLOW_MARKETS", "HK,US"))
+    parser.add_argument("--codes", default=os.environ.get("FUTU_MARKET_FLOW_CODES", ""))
+    parser.add_argument("--host", default=os.environ.get("FUTU_HOST", settings.futu_host))
+    parser.add_argument("--port", type=int, default=int(os.environ.get("FUTU_PORT", settings.futu_port)))
+    parser.add_argument("--connect-timeout", type=float, default=float(os.environ.get("FUTU_CONNECT_TIMEOUT", "8")))
+    parser.add_argument("--period", default=os.environ.get("FUTU_MARKET_FLOW_PERIOD", "DAY"))
+    parser.add_argument("--days", type=int, default=int(os.environ.get("FUTU_MARKET_FLOW_DAYS", "30")))
+    parser.add_argument("--start", default=os.environ.get("FUTU_MARKET_FLOW_START", ""))
+    parser.add_argument("--end", default=os.environ.get("FUTU_MARKET_FLOW_END", datetime.now().strftime("%Y-%m-%d")))
+    parser.add_argument("--include-distribution", action="store_true")
+    parser.add_argument("--max-codes", type=int, default=int(os.environ.get("FUTU_MARKET_FLOW_MAX_CODES", "0")))
+    parser.add_argument("--batch-flush", type=int, default=int(os.environ.get("FUTU_MARKET_FLOW_BATCH_FLUSH", "50")))
+    parser.add_argument("--pause-seconds", type=float, default=float(os.environ.get("FUTU_MARKET_FLOW_PAUSE_SECONDS", "1.1")))
+    parser.add_argument("--rate-limit-delay", type=float, default=float(os.environ.get("FUTU_MARKET_FLOW_RATE_LIMIT_DELAY", "0.0")))
+    parser.add_argument("--min-ok-ratio", type=float, default=float(os.environ.get("FUTU_MARKET_FLOW_MIN_OK_RATIO", "0.5")))
+    parser.add_argument("--include-exchange-types", default=os.environ.get("FUTU_MARKET_FLOW_INCLUDE_EXCHANGE_TYPES", ""))
+    parser.add_argument(
+        "--exclude-exchange-types",
+        default=os.environ.get("FUTU_MARKET_FLOW_EXCLUDE_EXCHANGE_TYPES", "US_PINK,N/A"),
+    )
+    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--output-dir", default=os.environ.get("FUTU_MARKET_FLOW_OUTPUT_DIR", str(DATA_DIR / "capital_flow" / "futu_market")))
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    start = args.start or _default_start(args.days)
+    output_dir = Path(args.output_dir).expanduser()
+
+    client = FutuClient(args.host, args.port)
+    client.connect_timeout = args.connect_timeout
+    if args.rate_limit_delay > 0:
+        client.rate_limit_delay = args.rate_limit_delay
+    if not client.connect():
+        raise RuntimeError(f"failed to connect Futu OpenD at {args.host}:{args.port}")
+
+    try:
+        include_exchange_types = _split_csv(args.include_exchange_types)
+        exclude_exchange_types = _split_csv(args.exclude_exchange_types)
+        explicit_codes = _codes_by_market(args.codes) if args.codes else {}
+        for market in _markets(args.markets):
+            if explicit_codes:
+                codes = explicit_codes.get(market, [])
+                if not codes:
+                    continue
+                universe = pd.DataFrame({"market": market, "code": codes, "name": "", "exchange_type": ""})
+            else:
+                universe = fetch_futu_universe(
+                    client,
+                    market,
+                    include_exchange_types=include_exchange_types,
+                    exclude_exchange_types=exclude_exchange_types,
+                )
+            stats = scan_market(
+                client,
+                universe,
+                market=market,
+                output_dir=output_dir,
+                start=start,
+                end=args.end,
+                period=args.period,
+                include_distribution=args.include_distribution,
+                max_codes=args.max_codes,
+                batch_flush=args.batch_flush,
+                overwrite=args.overwrite,
+                pause_seconds=args.pause_seconds,
+                min_ok_ratio=args.min_ok_ratio,
+            )
+            print(
+                "{market}: universe={universe_count} selected={selected_count} ok={ok_count}/{attempted_count} "
+                "latest={latest}".format(**stats)
+            )
+    finally:
+        client.disconnect()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

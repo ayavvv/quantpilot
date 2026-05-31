@@ -176,6 +176,54 @@ def test_build_message_attaches_files(tmp_path):
     assert "metrics.txt" in filenames
 
 
+def test_check_major_money_digest_status_summarises_markets(tmp_path):
+    digest = {
+        "generated_at": "2026-05-31T00:00:00+08:00",
+        "flow_date": "2026-05-29",
+        "market_count": 3,
+        "available_market_count": 1,
+        "markets": [
+            {
+                "market": "A",
+                "source": "eastmoney",
+                "currency": "CNY",
+                "available": True,
+                "flow_date": "2026-05-29",
+                "total_rows": 2,
+                "ok_rows": 2,
+                "entry_count": 1,
+                "entry_amount": 80_000_000,
+                "exit_count": 1,
+                "exit_amount": 70_000_000,
+                "net_amount": 10_000_000,
+                "top_entries": [{"code": "SH.600000", "name": "Entry", "main_flow": 80_000_000}],
+                "top_exits": [{"code": "SZ.000001", "name": "Exit", "main_flow": -70_000_000}],
+            },
+            {"market": "HK", "currency": "HKD", "available": False, "message": "missing"},
+        ],
+    }
+    path = tmp_path / "major_money_digest.json"
+    path.write_text(send_report.json.dumps(digest), encoding="utf-8")
+
+    status = send_report.check_major_money_digest_status(digest_json=path)
+
+    assert status["major_money_available"] is True
+    assert status["major_money_date"] == "2026-05-29"
+    assert status["major_money_markets"][0]["coverage"] == "2/2"
+    assert status["major_money_markets"][0]["entry_amount"] == "80.0m CNY"
+    assert status["major_money_markets"][1]["row_class"] == "coverage-missing"
+    assert status["major_money_top_entries"][0]["code"] == "SH.600000"
+    assert status["major_money_top_exits"][0]["main_flow"] == "-70.0m CNY"
+
+
+def test_check_major_money_digest_status_missing_file_degrades(tmp_path):
+    status = send_report.check_major_money_digest_status(digest_json=tmp_path / "missing.json")
+
+    assert status["major_money_available"] is False
+    assert status["major_money_markets"] == []
+    assert "No market-wide major-money digest found" in status["major_money_message"]
+
+
 def test_send_email_prefers_mailapp_when_configured(monkeypatch, tmp_path):
     monkeypatch.setattr(send_report, "REPORT_DIR", tmp_path)
     monkeypatch.setattr(

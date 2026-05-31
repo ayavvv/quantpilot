@@ -59,6 +59,11 @@ A_SHARE_CAPITAL_FLOW_GATE_RISK_ALPHA_THRESHOLD="${A_SHARE_CAPITAL_FLOW_GATE_RISK
 A_SHARE_CAPITAL_FLOW_GATE_CONFIRM_ALPHA_THRESHOLD="${A_SHARE_CAPITAL_FLOW_GATE_CONFIRM_ALPHA_THRESHOLD:-0.005}"
 A_SHARE_CAPITAL_FLOW_GATE_RISK_MAX_HIT_RATE="${A_SHARE_CAPITAL_FLOW_GATE_RISK_MAX_HIT_RATE:-0.45}"
 A_SHARE_CAPITAL_FLOW_GATE_CONFIRM_MIN_HIT_RATE="${A_SHARE_CAPITAL_FLOW_GATE_CONFIRM_MIN_HIT_RATE:-0.55}"
+ENABLE_MAJOR_MONEY_DIGEST="${ENABLE_MAJOR_MONEY_DIGEST:-true}"
+MAJOR_MONEY_DIGEST_SOURCES="${MAJOR_MONEY_DIGEST_SOURCES:-auto}"
+MAJOR_MONEY_EXPECTED_MARKETS="${MAJOR_MONEY_EXPECTED_MARKETS:-A,HK,US}"
+MAJOR_MONEY_DIGEST_JSON="${MAJOR_MONEY_DIGEST_JSON:-$DATA_DIR/output/major_money_digest_latest.json}"
+MAJOR_MONEY_DIGEST_CSV="${MAJOR_MONEY_DIGEST_CSV:-$DATA_DIR/output/major_money_digest_latest.csv}"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
@@ -269,6 +274,32 @@ else
     log "Step 2c: Skipped Futu capital-flow evaluation"
 fi
 
+# Step 2d: Build market-wide major-money digest for the email report.
+if [ "$ENABLE_MAJOR_MONEY_DIGEST" = "true" ]; then
+    log "Step 2d: Building market-wide major-money digest..."
+    MAJOR_MONEY_SOURCE_ARGS=()
+    if [ "$MAJOR_MONEY_DIGEST_SOURCES" != "auto" ]; then
+        IFS=';' read -r -a MAJOR_MONEY_SOURCE_SPECS <<< "$MAJOR_MONEY_DIGEST_SOURCES"
+        for spec in "${MAJOR_MONEY_SOURCE_SPECS[@]}"; do
+            if [ -n "$spec" ]; then
+                MAJOR_MONEY_SOURCE_ARGS+=(--source "$spec")
+            fi
+        done
+    fi
+    if PYTHONPATH="$PYTHONPATH" \
+        "$PYTHON_BIN" -m scripts.build_major_money_digest \
+            "${MAJOR_MONEY_SOURCE_ARGS[@]}" \
+            --expected-markets "$MAJOR_MONEY_EXPECTED_MARKETS" \
+            --output-json "$MAJOR_MONEY_DIGEST_JSON" \
+            --output-csv "$MAJOR_MONEY_DIGEST_CSV"; then
+        log "  Market-wide major-money digest complete"
+    else
+        log "  WARNING: market-wide major-money digest failed; continuing daily pipeline"
+    fi
+else
+    log "Step 2d: Skipped market-wide major-money digest"
+fi
+
 # Step 3: Run reporter natively so Mail.app fallback is available on macOS host
 log "Step 3: Running reporter..."
 log "  Working directory: $PROJECT_DIR"
@@ -278,6 +309,7 @@ if REPORTER_ENV_FILE="$PROJECT_DIR/reporter/.env" \
     REPORT_DIR="$DATA_DIR/reports" \
     SIGNAL_DIR="$DATA_DIR/signals" \
     QLIB_DATA_DIR="$DATA_DIR/qlib_data" \
+    MAJOR_MONEY_DIGEST_JSON="$MAJOR_MONEY_DIGEST_JSON" \
     CAPITAL_FLOW_EVAL_SUMMARY_CSV="$A_SHARE_CAPITAL_FLOW_EVAL_OUTPUT_DIR/summary.csv" \
     CAPITAL_FLOW_GATE_JSON="$A_SHARE_CAPITAL_FLOW_EVAL_OUTPUT_DIR/gate.json" \
     TRADE_LOG="$PROJECT_DIR/logs/trade.log" \

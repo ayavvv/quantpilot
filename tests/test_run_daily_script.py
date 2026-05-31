@@ -49,6 +49,7 @@ def test_run_daily_runs_reporter_natively_with_reporter_env():
     content = RUN_DAILY.read_text()
     assert 'REPORTER_ENV_FILE="$PROJECT_DIR/reporter/.env"' in content
     assert '"$PYTHON_BIN" -m reporter.send_report' in content
+    assert 'MAJOR_MONEY_DIGEST_JSON="$MAJOR_MONEY_DIGEST_JSON"' in content
     assert 'CAPITAL_FLOW_EVAL_SUMMARY_CSV="$A_SHARE_CAPITAL_FLOW_EVAL_OUTPUT_DIR/summary.csv"' in content
     assert 'CAPITAL_FLOW_GATE_JSON="$A_SHARE_CAPITAL_FLOW_EVAL_OUTPUT_DIR/gate.json"' in content
     assert 'TRADE_LOG="$PROJECT_DIR/logs/trade.log"' in content
@@ -80,6 +81,15 @@ def test_run_daily_evaluates_archived_capital_flow_overlays():
     assert '--output-dir "$A_SHARE_CAPITAL_FLOW_EVAL_OUTPUT_DIR"' in content
     assert '--gate-min-date-count "$A_SHARE_CAPITAL_FLOW_GATE_MIN_DATE_COUNT"' in content
     assert '--gate-risk-alpha-threshold "$A_SHARE_CAPITAL_FLOW_GATE_RISK_ALPHA_THRESHOLD"' in content
+
+
+def test_run_daily_builds_market_wide_major_money_digest():
+    content = RUN_DAILY.read_text()
+    assert 'ENABLE_MAJOR_MONEY_DIGEST="${ENABLE_MAJOR_MONEY_DIGEST:-true}"' in content
+    assert 'MAJOR_MONEY_DIGEST_SOURCES="${MAJOR_MONEY_DIGEST_SOURCES:-auto}"' in content
+    assert '"$PYTHON_BIN" -m scripts.build_major_money_digest' in content
+    assert '--expected-markets "$MAJOR_MONEY_EXPECTED_MARKETS"' in content
+    assert '--output-json "$MAJOR_MONEY_DIGEST_JSON"' in content
 
 
 def test_run_daily_when_ready_replays_target_date():
