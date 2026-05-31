@@ -40,6 +40,22 @@ class FakeRateLimitClient:
         return {}
 
 
+class FakeTransientFutuClient:
+    def __init__(self):
+        self.calls = 0
+
+    def get_capital_flow(self, code, period_type="DAY", start=None, end=None):
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("Failed to get capital flow for HK.00186: Network interruption")
+        return [
+            {"code": code, "date": "2026-05-29", "main_in_flow": 12.0, "super_in_flow": 8.0, "big_in_flow": 4.0}
+        ]
+
+    def get_capital_distribution(self, code):
+        return {}
+
+
 class FakeUniverseClient:
     def __init__(self, rows):
         self.ctx = self
@@ -219,6 +235,45 @@ def test_scan_market_retries_futu_rate_limit_before_recording_result(tmp_path, m
     assert payload["error_count"] == 0
     assert payload["rate_limit_retry_attempts"] == 1
     assert payload["rate_limit_retry_seconds"] == 31.0
+    assert output["capital_flow_status"].tolist() == ["ok"]
+
+
+def test_scan_market_retries_transient_futu_network_errors(tmp_path, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(scanner.time, "sleep", sleeps.append)
+    client = FakeTransientFutuClient()
+    universe = pd.DataFrame(
+        [
+            {"code": "HK.00186", "name": "Nimble", "exchange_type": "HK_MAINBOARD"},
+        ]
+    )
+
+    stats = scan_market(
+        client,
+        universe,
+        market="HK",
+        output_dir=tmp_path,
+        start="2026-05-01",
+        end="2026-05-31",
+        period="DAY",
+        include_distribution=False,
+        max_codes=0,
+        batch_flush=50,
+        overwrite=True,
+        pause_seconds=0,
+        min_ok_ratio=0.0,
+        transient_retry_attempts=1,
+        transient_retry_seconds=5.0,
+    )
+
+    payload = json.loads((tmp_path / "HK_latest_status.json").read_text(encoding="utf-8"))
+    output = pd.read_csv(tmp_path / "HK_latest_flow.csv")
+    assert client.calls == 2
+    assert sleeps == [5.0]
+    assert stats["ok_count"] == 1
+    assert payload["error_count"] == 0
+    assert payload["transient_retry_attempts"] == 1
+    assert payload["transient_retry_seconds"] == 5.0
     assert output["capital_flow_status"].tolist() == ["ok"]
 
 

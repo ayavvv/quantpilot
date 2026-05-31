@@ -71,14 +71,16 @@ Artifacts:
   - Use `--max-codes` for smoke tests; omit it only when ready for long full
     scans.
 - `scripts/scan_us_otc_proxy_flow.py`
-  - Optional Polygon/Massive daily aggregate scanner for `US_PINK`.
+  - Optional OTC/Pink daily aggregate scanner for `US_PINK`.
   - Produces a `US_OTC` proxy artifact using directional dollar volume from
-    daily OHLCV. This is lower-confidence than vendor capital-flow fields and
-    is labeled as a proxy in the artifact source.
+    Polygon/Massive grouped daily aggregates or the no-key `yahoo_chart`
+    per-symbol daily OHLCV fallback. This is lower-confidence than vendor
+    capital-flow fields and is labeled as a proxy in the artifact source.
   - Defaults to the latest completed US session date, so China-time Monday
     evening does not request a Sunday aggregate.
-  - Requires `POLYGON_API_KEY` or `POLYGON_API_KEY_FILE`; without a configured
-    key, the daily digest will keep `US_OTC` visible as missing coverage.
+  - `provider=polygon` requires `POLYGON_API_KEY` or `POLYGON_API_KEY_FILE`;
+    `provider=yahoo_chart` requires no key but is slower because it queries
+    symbols one by one.
   - Auto digest rebuilds only include `US_OTC` after the current proxy scan
     succeeds, avoiding stale proxy artifacts after API/key failures.
 - `scripts/run_market_capital_flow.sh`
@@ -171,13 +173,27 @@ POLYGON_API_KEY=... \
   --output-dir ~/quantpilot_data/capital_flow/us_otc_proxy
 ```
 
+No-key OTC/Pink proxy smoke test using Yahoo chart daily bars:
+
+```bash
+.venv/bin/python -m scripts.scan_us_otc_proxy_flow \
+  --provider yahoo_chart \
+  --universe-csv ~/quantpilot_data/capital_flow/futu_market/US_latest_source_universe.csv \
+  --exchange-types US_PINK \
+  --max-codes 5 \
+  --output-dir /tmp/quantpilot_us_otc_yahoo_smoke
+```
+
 To enable this in the scheduled US after-close scan, set these in `.env`:
 
 ```bash
 ENABLE_US_OTC_PROXY_FLOW=true
+# Preferred if available:
 POLYGON_API_KEY=...
 # Or keep the secret out of .env:
 # POLYGON_API_KEY_FILE=/Users/theo/.config/quantpilot/polygon_api_key
+# No-key fallback:
+# US_OTC_PROXY_FLOW_PROVIDER=yahoo_chart
 US_OTC_PROXY_FLOW_EXCHANGE_TYPES=US_PINK
 ```
 
@@ -237,4 +253,6 @@ main A-share pipeline, until runtime and rate limits are measured on this
 account. Keep the effective request interval at about one request per second or
 slower; when Futu still returns its 30-requests-per-30-seconds limit error, the
 scanner sleeps `FUTU_MARKET_FLOW_RATE_LIMIT_RETRY_SECONDS` and retries the same
-symbol before counting it as an error.
+symbol before counting it as an error. Transient OpenD disconnects such as
+`Network interruption` are also retried with
+`FUTU_MARKET_FLOW_TRANSIENT_RETRY_SECONDS` before the symbol is marked failed.

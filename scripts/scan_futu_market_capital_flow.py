@@ -271,25 +271,46 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     return "too frequent" in text or "no more than" in text or "rate limit" in text
 
 
-def _fetch_flow_with_rate_limit_retry(
+def _is_transient_futu_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in (
+            "network interruption",
+            "nn_protoret_bydisconnorcacnel",
+            "bydisconn",
+            "disconnect",
+            "timeout",
+        )
+    )
+
+
+def _fetch_flow_with_retry(
     client: FutuClient,
     code: str,
     *,
     period: str,
     start: str,
     end: str,
-    retry_attempts: int,
-    retry_seconds: float,
+    rate_limit_retry_attempts: int,
+    rate_limit_retry_seconds: float,
+    transient_retry_attempts: int,
+    transient_retry_seconds: float,
 ) -> list[dict[str, Any]]:
-    attempts = max(int(retry_attempts), 0) + 1
+    attempts = max(max(int(rate_limit_retry_attempts), 0), max(int(transient_retry_attempts), 0)) + 1
     for attempt in range(attempts):
         try:
             return client.get_capital_flow(code, period_type=period, start=start, end=end)
         except Exception as exc:
-            if attempt >= attempts - 1 or not _is_rate_limit_error(exc):
-                raise
-            if retry_seconds > 0:
-                time.sleep(retry_seconds)
+            if _is_rate_limit_error(exc) and attempt < max(int(rate_limit_retry_attempts), 0):
+                if rate_limit_retry_seconds > 0:
+                    time.sleep(rate_limit_retry_seconds)
+                continue
+            if _is_transient_futu_error(exc) and attempt < max(int(transient_retry_attempts), 0):
+                if transient_retry_seconds > 0:
+                    time.sleep(transient_retry_seconds)
+                continue
+            raise
     return []
 
 
@@ -340,6 +361,8 @@ def scan_market(
     min_ok_ratio: float,
     rate_limit_retry_attempts: int = 2,
     rate_limit_retry_seconds: float = 31.0,
+    transient_retry_attempts: int = 2,
+    transient_retry_seconds: float = 5.0,
     include_exchange_types: set[str] | None = None,
     exclude_exchange_types: set[str] | None = None,
 ) -> dict[str, Any]:
@@ -374,14 +397,16 @@ def scan_market(
             "source": "futu",
         }
         try:
-            flow_records = _fetch_flow_with_rate_limit_retry(
+            flow_records = _fetch_flow_with_retry(
                 client,
                 code,
                 period=period,
                 start=start,
                 end=end,
-                retry_attempts=rate_limit_retry_attempts,
-                retry_seconds=rate_limit_retry_seconds,
+                rate_limit_retry_attempts=rate_limit_retry_attempts,
+                rate_limit_retry_seconds=rate_limit_retry_seconds,
+                transient_retry_attempts=transient_retry_attempts,
+                transient_retry_seconds=transient_retry_seconds,
             )
             distribution = client.get_capital_distribution(code) if include_distribution else {}
             summary = summarize_capital_flow(code, flow_records, distribution)
@@ -464,6 +489,8 @@ def scan_market(
         "max_codes": max_codes,
         "rate_limit_retry_attempts": rate_limit_retry_attempts,
         "rate_limit_retry_seconds": rate_limit_retry_seconds,
+        "transient_retry_attempts": transient_retry_attempts,
+        "transient_retry_seconds": transient_retry_seconds,
         "universe_count": int(len(universe)),
         "selected_count": int(total),
         "attempted_count": int(attempted),
@@ -535,6 +562,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--rate-limit-retry-seconds",
         type=float,
         default=float(os.environ.get("FUTU_MARKET_FLOW_RATE_LIMIT_RETRY_SECONDS", "31")),
+    )
+    parser.add_argument(
+        "--transient-retry-attempts",
+        type=int,
+        default=int(os.environ.get("FUTU_MARKET_FLOW_TRANSIENT_RETRY_ATTEMPTS", "2")),
+    )
+    parser.add_argument(
+        "--transient-retry-seconds",
+        type=float,
+        default=float(os.environ.get("FUTU_MARKET_FLOW_TRANSIENT_RETRY_SECONDS", "5")),
     )
     parser.add_argument(
         "--min-request-interval",
@@ -614,6 +651,8 @@ def main(argv: list[str] | None = None) -> int:
                 min_ok_ratio=args.min_ok_ratio,
                 rate_limit_retry_attempts=args.rate_limit_retry_attempts,
                 rate_limit_retry_seconds=args.rate_limit_retry_seconds,
+                transient_retry_attempts=args.transient_retry_attempts,
+                transient_retry_seconds=args.transient_retry_seconds,
                 include_exchange_types=include_exchange_types,
                 exclude_exchange_types=exclude_exchange_types,
             )

@@ -10,10 +10,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time as time_module
 from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
@@ -22,6 +24,7 @@ import pandas as pd
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(Path.home() / "quantpilot_data")))
 POLYGON_GROUPED_DAILY_URL = "https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/{date}"
+YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
 US_EASTERN = ZoneInfo("America/New_York")
 US_SESSION_READY_TIME = time(16, 30)
 
@@ -138,6 +141,113 @@ def fetch_polygon_grouped_daily(
     return [row for row in results if isinstance(row, dict)]
 
 
+def _yahoo_period_range(date: str) -> tuple[int, int]:
+    session = datetime.strptime(date[:10], "%Y-%m-%d").replace(tzinfo=US_EASTERN)
+    return int(session.timestamp()), int((session + timedelta(days=2)).timestamp())
+
+
+def fetch_yahoo_chart_daily_bar(
+    ticker: str,
+    *,
+    date: str,
+    timeout: float = 15.0,
+    base_url: str = YAHOO_CHART_URL,
+) -> dict[str, Any] | None:
+    symbol = str(ticker or "").strip().upper()
+    if not symbol:
+        return None
+    period1, period2 = _yahoo_period_range(date)
+    params = {
+        "period1": period1,
+        "period2": period2,
+        "interval": "1d",
+        "includePrePost": "false",
+        "events": "history",
+    }
+    url = f"{base_url.format(ticker=symbol)}?{urlencode(params)}"
+    request = Request(url, headers={"User-Agent": "QuantPilot/1.0"})
+    with urlopen(request, timeout=timeout) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    chart = payload.get("chart") or {}
+    error = chart.get("error")
+    if error:
+        if isinstance(error, dict):
+            code = error.get("code") or "error"
+            description = error.get("description") or ""
+            raise RuntimeError(f"Yahoo chart request failed for {symbol}: {code} {description}".strip())
+        raise RuntimeError(f"Yahoo chart request failed for {symbol}: {error}")
+    results = chart.get("result") or []
+    if not results:
+        return None
+    result = results[0] if isinstance(results[0], dict) else {}
+    timestamps = result.get("timestamp") or []
+    quotes = (result.get("indicators") or {}).get("quote") or []
+    quote = quotes[0] if quotes and isinstance(quotes[0], dict) else {}
+    if not timestamps or not quote:
+        return None
+
+    target_date = date[:10]
+    for idx, timestamp in enumerate(timestamps):
+        try:
+            session_date = datetime.fromtimestamp(int(timestamp), US_EASTERN).date().isoformat()
+        except (TypeError, ValueError, OSError):
+            continue
+        if session_date != target_date:
+            continue
+        return {
+            "T": symbol,
+            "o": _list_value(quote.get("open"), idx),
+            "c": _list_value(quote.get("close"), idx),
+            "h": _list_value(quote.get("high"), idx),
+            "l": _list_value(quote.get("low"), idx),
+            "v": _list_value(quote.get("volume"), idx),
+        }
+    return None
+
+
+def _list_value(values: Any, idx: int) -> Any:
+    if not isinstance(values, list) or idx >= len(values):
+        return None
+    return values[idx]
+
+
+def fetch_yahoo_chart_daily(
+    universe: pd.DataFrame,
+    *,
+    date: str,
+    request_delay: float = 0.2,
+    max_retries: int = 2,
+    timeout: float = 15.0,
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    aggregates: list[dict[str, Any]] = []
+    errors: dict[str, str] = {}
+    if universe.empty:
+        return aggregates, errors
+    tickers = universe["ticker"].fillna("").astype(str).str.upper()
+    tickers = [ticker for ticker in dict.fromkeys(tickers.tolist()) if ticker]
+    attempts = max(int(max_retries), 0) + 1
+    for index, ticker in enumerate(tickers):
+        for attempt in range(attempts):
+            try:
+                row = fetch_yahoo_chart_daily_bar(ticker, date=date, timeout=timeout)
+                if row:
+                    aggregates.append(row)
+                break
+            except HTTPError as exc:
+                errors[ticker] = f"Yahoo chart HTTP {exc.code}"
+                if exc.code == 404 or attempt >= attempts - 1:
+                    break
+                time_module.sleep(min(2 ** attempt, 8))
+            except (URLError, TimeoutError, RuntimeError, json.JSONDecodeError) as exc:
+                errors[ticker] = f"Yahoo chart fetch failed: {exc}"
+                if attempt >= attempts - 1:
+                    break
+                time_module.sleep(min(2 ** attempt, 8))
+        if request_delay > 0 and index < len(tickers) - 1:
+            time_module.sleep(request_delay)
+    return aggregates, errors
+
+
 def _num(row: dict[str, Any], key: str) -> float | None:
     value = row.get(key)
     if value is None:
@@ -156,8 +266,10 @@ def build_proxy_records(
     date: str,
     provider: str,
     min_dollar_volume: float = 0.0,
+    aggregate_errors: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     by_ticker = {str(row.get("T") or row.get("ticker") or "").upper(): row for row in aggregates}
+    aggregate_errors = aggregate_errors or {}
     records: list[dict[str, Any]] = []
     for _, item in universe.iterrows():
         ticker = str(item.get("ticker") or _ticker_from_code(item.get("code"))).upper()
@@ -177,7 +289,7 @@ def build_proxy_records(
                 {
                     **base,
                     "capital_flow_status": "empty",
-                    "capital_flow_error": "No provider aggregate for ticker.",
+                    "capital_flow_error": aggregate_errors.get(ticker, "No provider aggregate for ticker."),
                     "capital_flow_count": 0,
                 }
             )
@@ -364,6 +476,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=float(os.environ.get("US_OTC_PROXY_FLOW_MIN_DOLLAR_VOLUME", "0")),
     )
     parser.add_argument(
+        "--request-delay",
+        type=float,
+        default=float(os.environ.get("US_OTC_PROXY_FLOW_REQUEST_DELAY", "0.2")),
+        help="Seconds to sleep between per-symbol provider requests when the provider needs it.",
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=int(os.environ.get("US_OTC_PROXY_FLOW_MAX_RETRIES", "2")),
+        help="Retries per symbol for per-symbol provider requests.",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=float(os.environ.get("US_OTC_PROXY_FLOW_TIMEOUT", "15")),
+        help="HTTP timeout in seconds for provider requests.",
+    )
+    parser.add_argument(
         "--output-dir",
         default=os.environ.get(
             "US_OTC_PROXY_FLOW_OUTPUT_DIR",
@@ -376,16 +506,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     provider = str(args.provider).strip().lower()
-    if provider != "polygon":
+    if provider == "yahoo":
+        provider = "yahoo_chart"
+    if provider not in {"polygon", "yahoo_chart"}:
         raise ValueError(f"unsupported US OTC proxy provider: {args.provider}")
-    api_key = resolve_api_key(args.api_key, args.api_key_file)
     universe = load_otc_universe(
         args.universe_csv,
         exchange_types=_split_csv(args.exchange_types),
         max_codes=args.max_codes,
     )
+    aggregate_errors: dict[str, str] = {}
     try:
-        aggregates = fetch_polygon_grouped_daily(api_key=api_key, date=args.date, include_otc=True)
+        if provider == "polygon":
+            api_key = resolve_api_key(args.api_key, args.api_key_file)
+            aggregates = fetch_polygon_grouped_daily(api_key=api_key, date=args.date, include_otc=True)
+        else:
+            aggregates, aggregate_errors = fetch_yahoo_chart_daily(
+                universe,
+                date=args.date,
+                request_delay=args.request_delay,
+                max_retries=args.max_retries,
+                timeout=args.timeout,
+            )
     except Exception as exc:
         write_failure_status(
             output_dir=Path(args.output_dir).expanduser(),
@@ -402,6 +544,7 @@ def main(argv: list[str] | None = None) -> int:
         date=args.date,
         provider=provider,
         min_dollar_volume=args.min_dollar_volume,
+        aggregate_errors=aggregate_errors,
     )
     status = write_outputs(
         rows,
