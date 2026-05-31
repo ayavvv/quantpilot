@@ -284,6 +284,26 @@ def _num(row: dict[str, Any], key: str) -> float | None:
     return parsed if pd.notna(parsed) else None
 
 
+def _missing_aggregate_status(error: str) -> str:
+    text = str(error or "").strip().lower()
+    if not text:
+        return "empty"
+    if "http 404" in text or "no provider aggregate" in text:
+        return "empty"
+    return "error"
+
+
+def _normalize_resume_statuses(rows: pd.DataFrame) -> pd.DataFrame:
+    if rows.empty or "capital_flow_status" not in rows.columns or "capital_flow_error" not in rows.columns:
+        return rows
+    result = rows.copy()
+    status = result["capital_flow_status"].fillna("").astype(str).str.lower()
+    errors = result["capital_flow_error"].fillna("").astype(str)
+    mask = status.eq("empty") & errors.map(lambda value: _missing_aggregate_status(value) == "error")
+    result.loc[mask, "capital_flow_status"] = "error"
+    return result
+
+
 def build_proxy_records(
     universe: pd.DataFrame,
     aggregates: list[dict[str, Any]],
@@ -310,11 +330,12 @@ def build_proxy_records(
             "proxy_method": "directional_dollar_volume",
         }
         if not aggregate:
+            error = aggregate_errors.get(ticker, "No provider aggregate for ticker.")
             records.append(
                 {
                     **base,
-                    "capital_flow_status": "empty",
-                    "capital_flow_error": aggregate_errors.get(ticker, "No provider aggregate for ticker."),
+                    "capital_flow_status": _missing_aggregate_status(error),
+                    "capital_flow_error": error,
                     "capital_flow_count": 0,
                 }
             )
@@ -404,7 +425,7 @@ def _write_flow_files(rows: pd.DataFrame, universe: pd.DataFrame, *, output_dir:
 def _load_resume(path: Path, *, overwrite: bool) -> tuple[pd.DataFrame, set[str]]:
     if overwrite or not path.exists():
         return pd.DataFrame(), set()
-    existing = pd.read_csv(path)
+    existing = _normalize_resume_statuses(pd.read_csv(path))
     if "ticker" in existing.columns:
         tickers = set(existing["ticker"].dropna().astype(str).str.upper().tolist())
     elif "code" in existing.columns:
@@ -448,6 +469,7 @@ def _print_yahoo_progress(rows: pd.DataFrame, *, universe_count: int, latest_pat
         f"rows={len(rows)}/{universe_count} "
         f"ok={int((statuses == 'ok').sum())} "
         f"empty={int((statuses == 'empty').sum())} "
+        f"error={int((statuses == 'error').sum())} "
         f"latest={latest_path}",
         flush=True,
     )

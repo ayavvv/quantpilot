@@ -61,6 +61,24 @@ def test_build_proxy_records_uses_provider_error_for_missing_aggregate():
     assert row["capital_flow_error"] == "Yahoo chart HTTP 404"
 
 
+def test_build_proxy_records_marks_provider_fetch_failures_as_errors():
+    universe = pd.DataFrame(
+        [{"code": "US.MISSING", "ticker": "MISSING", "name": "Missing", "exchange_type": "US_PINK"}]
+    )
+
+    rows = scanner.build_proxy_records(
+        universe,
+        [],
+        date="2026-05-29",
+        provider="yahoo_chart",
+        aggregate_errors={"MISSING": "Yahoo chart fetch failed: timed out"},
+    )
+
+    row = rows.iloc[0].to_dict()
+    assert row["capital_flow_status"] == "error"
+    assert row["capital_flow_error"] == "Yahoo chart fetch failed: timed out"
+
+
 def test_fetch_yahoo_chart_daily_bar_parses_chart_response(monkeypatch):
     timestamp = int(datetime(2026, 5, 29, 9, 30, tzinfo=ZoneInfo("America/New_York")).timestamp())
     payload = {
@@ -252,6 +270,44 @@ def test_yahoo_chart_scan_resumes_existing_dated_output(monkeypatch, tmp_path):
     assert calls == ["AACAY"]
     assert rows["code"].tolist() == ["US.AABB", "US.AACAY"]
     assert output["code"].tolist() == ["US.AABB", "US.AACAY"]
+
+
+def test_yahoo_chart_scan_normalizes_old_resume_fetch_failures(monkeypatch, tmp_path):
+    universe = pd.DataFrame(
+        [
+            {"code": "US.AABB", "ticker": "AABB", "name": "Asia Broadband", "exchange_type": "US_PINK"},
+            {"code": "US.AACAY", "ticker": "AACAY", "name": "AAC", "exchange_type": "US_PINK"},
+        ]
+    )
+    (tmp_path / "US_OTC_20260529_flow.csv").write_text(
+        "market,code,name,exchange_type,capital_flow_status,capital_flow_error,capital_flow_count\n"
+        "US_OTC,US.AABB,Asia Broadband,US_PINK,empty,Yahoo chart fetch failed: timed out,0\n",
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_fetch(ticker, **kwargs):
+        calls.append(ticker)
+        return {"T": ticker, "o": 10.0, "c": 9.0, "h": 10.5, "l": 8.5, "v": 10_000}, ""
+
+    monkeypatch.setattr(scanner, "_fetch_yahoo_chart_daily_bar_with_retries", fake_fetch)
+
+    rows = scanner.scan_yahoo_chart_proxy_records(
+        universe,
+        output_dir=tmp_path,
+        date="2026-05-29",
+        min_dollar_volume=0.0,
+        request_delay=0.0,
+        max_retries=0,
+        timeout=1.0,
+        batch_flush=1,
+        overwrite=False,
+    )
+
+    output = pd.read_csv(tmp_path / "US_OTC_latest_flow.csv")
+    assert calls == ["AACAY"]
+    assert rows.loc[rows["code"] == "US.AABB", "capital_flow_status"].iloc[0] == "error"
+    assert output.loc[output["code"] == "US.AABB", "capital_flow_status"].iloc[0] == "error"
 
 
 def test_latest_completed_us_session_date_skips_weekend_before_monday_close():
