@@ -99,6 +99,11 @@ Artifacts:
   - Checks `MAJOR_MONEY_EXPECTED_MARKETS` explicitly and reports whether
     `US_OTC` is missing because the proxy is disabled, the provider key is
     absent, the universe is missing, or the proxy scan/status is unhealthy.
+- `scripts/major_money_readiness.py`
+  - End-to-end readiness check for the notification system.
+  - Checks daily/HK/US cron entries, reporter email configuration, major-money
+    digest coverage, and `US_OTC` proxy state.
+  - Exits non-zero until every expected market, including `US_OTC`, is covered.
 
 ## Daily Commands
 
@@ -159,6 +164,19 @@ FUTU_MARKET_FLOW_OUTPUT_DIR=/tmp/quantpilot_futu_market_flow_smoke \
 MAJOR_MONEY_DIGEST_JSON=/tmp/major_money_digest_smoke.json \
 MAJOR_MONEY_DIGEST_CSV=/tmp/major_money_digest_smoke.csv \
 ./scripts/run_market_capital_flow.sh
+```
+
+End-to-end readiness check:
+
+```bash
+PYTHONPATH=/Users/theo/quantpilot .venv/bin/python -m scripts.major_money_readiness
+```
+
+Current expected failure without a provider key:
+
+```text
+Major-money digest expected market unavailable: US_OTC
+US OTC/Pink proxy disabled: set ENABLE_US_OTC_PROXY_FLOW=true
 ```
 
 Recommended host cron entries, Asia/Shanghai:
