@@ -279,15 +279,19 @@ def build_market_summary(
     watch_entry_rows = ok_rows[ok_rows["flow_label"] == "watch_entry"]
     watch_exit_rows = ok_rows[ok_rows["flow_label"] == "watch_exit"]
 
+    ok_count = int(len(ok_rows))
+    available = ok_count > 0
+    message = "ok" if available else f"Loaded {len(rows)} row(s), but none had usable major-money flow."
+
     return {
         "market": normalized_market,
         "source": source,
         "currency": market_currency(normalized_market),
-        "available": True,
-        "message": "ok",
+        "available": available,
+        "message": message,
         "flow_date": _latest_date(rows["flow_date"]) if "flow_date" in rows.columns else "",
         "total_rows": int(len(rows)),
-        "ok_rows": int(len(ok_rows)),
+        "ok_rows": ok_count,
         "error_rows": int((~ok_mask).sum()),
         "missing_rows": int(ok_rows["main_flow"].isna().sum()),
         "entry_count": int(len(entry_rows)),

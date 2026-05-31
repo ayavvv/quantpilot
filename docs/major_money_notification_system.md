@@ -42,6 +42,10 @@ Artifacts:
     `~/quantpilot_data/capital_flow/futu_market/`.
   - Use `--max-codes` for smoke tests; omit it only when ready for long full
     scans.
+- `scripts/run_market_capital_flow.sh`
+  - Host-side cron wrapper around the Futu scanner.
+  - Uses a lock directory so a long full-market scan cannot overlap itself.
+  - Rebuilds the digest after a scan by default.
 - `reporter/send_report.py`
   - Adds a "Market-Wide Major Money" section to the daily email.
   - Shows market coverage, entry count/amount, exit count/amount, net amount,
@@ -72,6 +76,30 @@ PYTHONPATH=/Users/theo/quantpilot .venv/bin/python -m scripts.scan_futu_market_c
   --port 11111 \
   --connect-timeout 5 \
   --output-dir /tmp/quantpilot_futu_market_flow_smoke
+```
+
+Production-style wrapper smoke test:
+
+```bash
+FUTU_MARKET_FLOW_MARKETS=HK,US \
+FUTU_MARKET_FLOW_CODES=HK.00700,US.AAPL,US.NVDA \
+FUTU_MARKET_FLOW_MAX_CODES=0 \
+FUTU_MARKET_FLOW_PAUSE_SECONDS=0 \
+FUTU_MARKET_FLOW_RATE_LIMIT_DELAY=0.1 \
+FUTU_MARKET_FLOW_OUTPUT_DIR=/tmp/quantpilot_futu_market_flow_smoke \
+MAJOR_MONEY_DIGEST_JSON=/tmp/major_money_digest_smoke.json \
+MAJOR_MONEY_DIGEST_CSV=/tmp/major_money_digest_smoke.csv \
+./scripts/run_market_capital_flow.sh
+```
+
+Recommended host cron entries, Asia/Shanghai:
+
+```cron
+# HK after close; expected to finish before the 19:00 A-share daily report.
+40 16 * * 1-5 FUTU_MARKET_FLOW_MARKETS=HK /Users/theo/quantpilot/scripts/run_market_capital_flow.sh >> /Users/theo/quantpilot/logs/market_capital_flow_hk.log 2>&1
+
+# US after regular close; Tuesday-Saturday China time maps to Monday-Friday US sessions.
+10 5 * * 2-6 FUTU_MARKET_FLOW_MARKETS=US /Users/theo/quantpilot/scripts/run_market_capital_flow.sh >> /Users/theo/quantpilot/logs/market_capital_flow_us.log 2>&1
 ```
 
 Full Futu market scans should run as separate off-hours jobs, not inside the
