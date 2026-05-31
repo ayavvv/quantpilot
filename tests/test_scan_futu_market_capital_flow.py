@@ -3,7 +3,7 @@ import json
 import pandas as pd
 import pytest
 
-from scripts.scan_futu_market_capital_flow import scan_market
+from scripts.scan_futu_market_capital_flow import _effective_pause_seconds, scan_market
 
 
 class FakeFutuClient:
@@ -83,3 +83,21 @@ def test_scan_market_writes_failed_status_before_raise(tmp_path):
     assert payload["attempted_count"] == 2
     assert payload["ok_count"] == 1
     assert payload["error_count"] == 1
+
+
+def test_effective_pause_seconds_enforces_minimum_interval():
+    assert _effective_pause_seconds(
+        client_rate_limit_delay=0.35,
+        pause_seconds=0.0,
+        min_request_interval=1.05,
+    ) == pytest.approx(0.70)
+    assert _effective_pause_seconds(
+        client_rate_limit_delay=0.6,
+        pause_seconds=1.1,
+        min_request_interval=1.05,
+    ) == pytest.approx(1.1)
+    assert _effective_pause_seconds(
+        client_rate_limit_delay=0.1,
+        pause_seconds=0.0,
+        min_request_interval=0,
+    ) == pytest.approx(0.0)

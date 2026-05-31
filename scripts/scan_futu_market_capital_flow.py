@@ -31,6 +31,7 @@ MARKET_MAP = {
     "SH": Market.SH,
     "SZ": Market.SZ,
 }
+DEFAULT_MIN_REQUEST_INTERVAL_SECONDS = 1.05
 
 
 def _default_start(days: int) -> str:
@@ -119,6 +120,20 @@ def _write_status(status: dict[str, Any], output_dir: Path, market: str, date_ta
     dated_path.write_text(content, encoding="utf-8")
     latest_path.write_text(content, encoding="utf-8")
     return {"status": dated_path, "latest_status": latest_path}
+
+
+def _effective_pause_seconds(
+    *,
+    client_rate_limit_delay: float,
+    pause_seconds: float,
+    min_request_interval: float,
+) -> float:
+    if min_request_interval <= 0:
+        return pause_seconds
+    effective_interval = max(client_rate_limit_delay, 0.0) + max(pause_seconds, 0.0)
+    if effective_interval >= min_request_interval:
+        return pause_seconds
+    return pause_seconds + (min_request_interval - effective_interval)
 
 
 def scan_market(
@@ -262,6 +277,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--batch-flush", type=int, default=int(os.environ.get("FUTU_MARKET_FLOW_BATCH_FLUSH", "50")))
     parser.add_argument("--pause-seconds", type=float, default=float(os.environ.get("FUTU_MARKET_FLOW_PAUSE_SECONDS", "1.1")))
     parser.add_argument("--rate-limit-delay", type=float, default=float(os.environ.get("FUTU_MARKET_FLOW_RATE_LIMIT_DELAY", "0.0")))
+    parser.add_argument(
+        "--min-request-interval",
+        type=float,
+        default=float(os.environ.get("FUTU_MARKET_FLOW_MIN_REQUEST_INTERVAL", str(DEFAULT_MIN_REQUEST_INTERVAL_SECONDS))),
+        help="Minimum seconds between Futu capital-flow requests. Use 0 to disable automatic pacing.",
+    )
     parser.add_argument("--min-ok-ratio", type=float, default=float(os.environ.get("FUTU_MARKET_FLOW_MIN_OK_RATIO", "0.5")))
     parser.add_argument("--include-exchange-types", default=os.environ.get("FUTU_MARKET_FLOW_INCLUDE_EXCHANGE_TYPES", ""))
     parser.add_argument(
@@ -282,6 +303,11 @@ def main(argv: list[str] | None = None) -> int:
     client.connect_timeout = args.connect_timeout
     if args.rate_limit_delay > 0:
         client.rate_limit_delay = args.rate_limit_delay
+    args.pause_seconds = _effective_pause_seconds(
+        client_rate_limit_delay=float(client.rate_limit_delay),
+        pause_seconds=float(args.pause_seconds),
+        min_request_interval=float(args.min_request_interval),
+    )
     if not client.connect():
         raise RuntimeError(f"failed to connect Futu OpenD at {args.host}:{args.port}")
 
