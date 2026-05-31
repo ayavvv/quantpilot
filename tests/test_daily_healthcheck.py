@@ -25,6 +25,13 @@ def test_secret_present_accepts_secret_file(tmp_path):
     assert daily_healthcheck._secret_present("", str(tmp_path / "missing.key")) is False
 
 
+def test_env_value_uses_project_env_defaults(monkeypatch):
+    monkeypatch.delenv("ENABLE_US_OTC_PROXY_FLOW", raising=False)
+    monkeypatch.setattr(daily_healthcheck, "PROJECT_ENV_DEFAULTS", {"ENABLE_US_OTC_PROXY_FLOW": "true"})
+
+    assert daily_healthcheck._env_value("ENABLE_US_OTC_PROXY_FLOW", "false") == "true"
+
+
 def test_build_snapshot_pretrade_flags_stale_signal_and_nas_lag(monkeypatch):
     monkeypatch.setattr(
         daily_healthcheck,

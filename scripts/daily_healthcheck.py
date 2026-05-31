@@ -18,6 +18,13 @@ from reporter.send_report import send_email
 from scripts import a_share_readiness, major_money_readiness
 
 
+PROJECT_ENV_DEFAULTS = major_money_readiness.load_env_file(PROJECT_DIR / ".env")
+
+
+def _env_value(key: str, default: str = "") -> str:
+    return os.environ.get(key, PROJECT_ENV_DEFAULTS.get(key, default))
+
+
 def _secret_present(value: str = "", file_path: str = "") -> bool:
     if str(value or "").strip():
         return True
@@ -29,7 +36,7 @@ def _secret_present(value: str = "", file_path: str = "") -> bool:
     return bool(target.read_text(encoding="utf-8", errors="replace").strip())
 
 
-DATA_DIR = Path(os.environ.get("DATA_DIR", str(Path.home() / "quantpilot_data")))
+DATA_DIR = Path(_env_value("DATA_DIR", str(Path.home() / "quantpilot_data")))
 QLIB_DIR = DATA_DIR / "qlib_data"
 SIGNAL_DIR = DATA_DIR / "signals"
 LOGS_DIR = PROJECT_DIR / "logs"
@@ -96,22 +103,22 @@ HEALTHCHECK_MAJOR_MONEY_MAX_NON_OK_RATIO = float(os.environ.get("HEALTHCHECK_MAJ
 HEALTHCHECK_MARKET_FLOW_MIN_SCHEMA_VERSION = int(os.environ.get("HEALTHCHECK_MARKET_FLOW_MIN_SCHEMA_VERSION", "2"))
 MAJOR_MONEY_EXPECTED_MARKETS = [
     item.strip().upper()
-    for item in os.environ.get("MAJOR_MONEY_EXPECTED_MARKETS", "A,HK,US,US_OTC").split(",")
+    for item in _env_value("MAJOR_MONEY_EXPECTED_MARKETS", "A,HK,US,US_OTC").split(",")
     if item.strip()
 ]
-US_OTC_PROXY_FLOW_ENABLED = os.environ.get("ENABLE_US_OTC_PROXY_FLOW", "false").lower() == "true"
-US_OTC_PROXY_FLOW_PROVIDER = os.environ.get("US_OTC_PROXY_FLOW_PROVIDER", "polygon")
+US_OTC_PROXY_FLOW_ENABLED = _env_value("ENABLE_US_OTC_PROXY_FLOW", "false").lower() == "true"
+US_OTC_PROXY_FLOW_PROVIDER = _env_value("US_OTC_PROXY_FLOW_PROVIDER", "polygon")
 US_OTC_PROXY_FLOW_OUTPUT_DIR = Path(
-    os.environ.get("US_OTC_PROXY_FLOW_OUTPUT_DIR", str(DATA_DIR / "capital_flow" / "us_otc_proxy"))
+    _env_value("US_OTC_PROXY_FLOW_OUTPUT_DIR", str(DATA_DIR / "capital_flow" / "us_otc_proxy"))
 )
 US_OTC_PROXY_FLOW_UNIVERSE_CSV = Path(
-    os.environ.get(
+    _env_value(
         "US_OTC_PROXY_FLOW_UNIVERSE_CSV",
         str(DATA_DIR / "capital_flow" / "futu_market" / "US_latest_source_universe.csv"),
     )
 )
-POLYGON_API_KEY_FILE = os.environ.get("POLYGON_API_KEY_FILE", "")
-POLYGON_API_KEY_PRESENT = _secret_present(os.environ.get("POLYGON_API_KEY", ""), POLYGON_API_KEY_FILE)
+POLYGON_API_KEY_FILE = _env_value("POLYGON_API_KEY_FILE", "")
+POLYGON_API_KEY_PRESENT = _secret_present(_env_value("POLYGON_API_KEY", ""), POLYGON_API_KEY_FILE)
 
 LEVEL_ORDER = {"ok": 0, "warn": 1, "error": 2}
 
