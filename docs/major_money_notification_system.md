@@ -99,6 +99,8 @@ Artifacts:
   - Checks `MAJOR_MONEY_EXPECTED_MARKETS` explicitly and reports whether
     `US_OTC` is missing because the proxy is disabled, the provider key is
     absent, the universe is missing, or the proxy scan/status is unhealthy.
+  - Nightly health snapshots include the end-to-end readiness result, while
+    de-duplicating overlapping market-money issues in the alert list.
 - `scripts/major_money_readiness.py`
   - End-to-end readiness check for the notification system.
   - Checks daily/HK/US cron entries, reporter email configuration, major-money

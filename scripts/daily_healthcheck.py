@@ -15,7 +15,7 @@ from typing import Any
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 
 from reporter.send_report import send_email
-from scripts import a_share_readiness
+from scripts import a_share_readiness, major_money_readiness
 
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(Path.home() / "quantpilot_data")))
@@ -53,6 +53,9 @@ CAPITAL_FLOW_GATE_PATH = Path(
     os.environ.get("CAPITAL_FLOW_GATE_JSON", str(DATA_DIR / "output" / "futu_capital_flow_eval_latest" / "gate.json"))
 )
 HEALTHCHECK_MARKET_MONEY_ENABLED = os.environ.get("HEALTHCHECK_MARKET_MONEY_ENABLED", "true").lower() == "true"
+HEALTHCHECK_MAJOR_MONEY_READINESS_ENABLED = (
+    os.environ.get("HEALTHCHECK_MAJOR_MONEY_READINESS_ENABLED", "true").lower() == "true"
+)
 MAJOR_MONEY_DIGEST_PATH = Path(
     os.environ.get("MAJOR_MONEY_DIGEST_JSON", str(DATA_DIR / "output" / "major_money_digest_latest.json"))
 )
@@ -173,6 +176,22 @@ def local_disk_status() -> dict[str, Any]:
 
 def _bump_level(current: str, new_level: str) -> str:
     return new_level if LEVEL_ORDER[new_level] > LEVEL_ORDER[current] else current
+
+
+def _readiness_issue_already_covered(issue: str, existing_issues: set[str]) -> bool:
+    if issue in existing_issues:
+        return True
+    if issue.startswith("Major-money digest expected market unavailable:"):
+        market = issue.rsplit(":", 1)[-1].strip()
+        return any(
+            "Major-money digest missing available expected market coverage" in existing and market in existing
+            for existing in existing_issues
+        )
+    if issue.startswith("US OTC/Pink proxy disabled:"):
+        return any("US OTC/Pink proxy flow disabled:" in existing for existing in existing_issues)
+    if issue.startswith("US OTC/Pink proxy missing POLYGON_API_KEY"):
+        return any("US OTC/Pink" in existing and "POLYGON_API_KEY" in existing for existing in existing_issues)
+    return False
 
 
 def process_running(patterns: list[str]) -> bool:
@@ -652,6 +671,33 @@ def analyze_market_money_artifacts(reference_date: str = "") -> dict[str, Any]:
     return status
 
 
+def analyze_major_money_readiness() -> dict[str, Any]:
+    status: dict[str, Any] = {
+        "enabled": HEALTHCHECK_MAJOR_MONEY_READINESS_ENABLED,
+        "ok": False,
+        "expected_markets": [],
+        "checks": {},
+        "issues": [],
+        "error": "",
+    }
+    if not HEALTHCHECK_MAJOR_MONEY_READINESS_ENABLED:
+        return status
+    try:
+        snapshot = major_money_readiness.build_readiness_snapshot(project_dir=PROJECT_DIR)
+    except Exception as exc:
+        status["issues"] = [f"Major-money readiness check failed: {exc}"]
+        status["error"] = str(exc)
+        return status
+    return {
+        "enabled": True,
+        "ok": bool(snapshot.get("ok")),
+        "expected_markets": snapshot.get("expected_markets") or [],
+        "checks": snapshot.get("checks") or {},
+        "issues": snapshot.get("issues") or [],
+        "error": "",
+    }
+
+
 def analyze_capital_flow_artifacts(phase: str, reference_date: str = "") -> dict[str, Any]:
     status: dict[str, Any] = {
         "enabled": HEALTHCHECK_CAPITAL_FLOW_ENABLED,
@@ -755,6 +801,14 @@ def build_snapshot(
     market_money = analyze_market_money_artifacts(
         reference_date=target_a_share_date or expected_signal_date or signal_date or local_latest,
     )
+    major_money_readiness_status = analyze_major_money_readiness() if phase == "nightly" else {
+        "enabled": HEALTHCHECK_MAJOR_MONEY_READINESS_ENABLED,
+        "ok": False,
+        "expected_markets": [],
+        "checks": {},
+        "issues": [],
+        "error": "",
+    }
 
     overall = "ok"
     issues: list[str] = []
@@ -888,6 +942,14 @@ def build_snapshot(
         overall = _bump_level(overall, "warn")
         issues.append(issue)
 
+    existing_issues = set(issues)
+    for issue in major_money_readiness_status.get("issues", []):
+        if _readiness_issue_already_covered(str(issue), existing_issues):
+            continue
+        overall = _bump_level(overall, "warn")
+        issues.append(f"Major-money readiness: {issue}")
+        existing_issues.add(str(issue))
+
     if not issues:
         issues.append("All monitored checks passed")
 
@@ -917,6 +979,7 @@ def build_snapshot(
         "trade": trade,
         "capital_flow": capital_flow,
         "market_money": market_money,
+        "major_money_readiness": major_money_readiness_status,
     }
 
 
@@ -940,11 +1003,16 @@ def render_snapshot_html(snapshot: dict[str, Any]) -> str:
     trade = snapshot["trade"]
     capital_flow = snapshot.get("capital_flow", {})
     market_money = snapshot.get("market_money", {})
+    readiness = snapshot.get("major_money_readiness", {})
     gate = capital_flow.get("gate", {}) if isinstance(capital_flow, dict) else {}
     daily_overlay = capital_flow.get("daily_overlay", {}) if isinstance(capital_flow, dict) else {}
     pretrade_overlay = capital_flow.get("pretrade_overlay", {}) if isinstance(capital_flow, dict) else {}
     digest = market_money.get("digest", {}) if isinstance(market_money, dict) else {}
     a_share_rank = market_money.get("a_share_rank", {}) if isinstance(market_money, dict) else {}
+    readiness_checks = readiness.get("checks", {}) if isinstance(readiness, dict) else {}
+    cron_readiness = readiness_checks.get("cron", {}) if isinstance(readiness_checks, dict) else {}
+    email_readiness = readiness_checks.get("email", {}) if isinstance(readiness_checks, dict) else {}
+    otc_readiness = readiness_checks.get("us_otc_proxy", {}) if isinstance(readiness_checks, dict) else {}
     disk = local.get(
         "disk",
         {"path": str(DATA_DIR), "used_ratio": 0.0},
@@ -983,6 +1051,12 @@ def render_snapshot_html(snapshot: dict[str, Any]) -> str:
       <p>enabled={market_money.get('enabled', False)}<br>
       digest_date={digest.get('flow_date') or 'N/A'} available_markets={digest.get('available_market_count', 0)}/{digest.get('market_count', 0)}<br>
       eastmoney_rows={a_share_rank.get('row_count', 0)} mtime={a_share_rank.get('mtime_date') or 'N/A'}</p>
+      <h2>Major-Money Notification Readiness</h2>
+      <p>enabled={readiness.get('enabled', False)} ok={readiness.get('ok', False)}<br>
+      expected_markets={','.join(readiness.get('expected_markets') or []) or 'N/A'}<br>
+      cron_ok={cron_readiness.get('ok', False)} email_ok={email_readiness.get('ok', False)}<br>
+      us_otc_enabled={otc_readiness.get('enabled', False)} us_otc_ok={otc_readiness.get('ok', False)}<br>
+      us_otc_status={otc_readiness.get('status') or 'N/A'} us_otc_ok_count={otc_readiness.get('ok_count', 0)}</p>
     </body>
     </html>
     """

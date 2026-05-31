@@ -140,6 +140,63 @@ def test_build_snapshot_nightly_flags_target_date_not_reached(monkeypatch):
     assert snapshot["target_a_share_date"] == "2026-04-10"
 
 
+def test_build_snapshot_nightly_includes_major_money_readiness(monkeypatch):
+    monkeypatch.setattr(
+        daily_healthcheck,
+        "local_disk_status",
+        lambda: {"path": "/tmp/quantpilot_data", "total_bytes": 100, "used_bytes": 50, "free_bytes": 50, "used_ratio": 0.5},
+    )
+    monkeypatch.setattr(daily_healthcheck, "latest_local_completed_date", lambda: "2026-04-09")
+    monkeypatch.setattr(daily_healthcheck, "latest_local_a_share_date", lambda: "2026-04-09")
+    monkeypatch.setattr(daily_healthcheck, "latest_signal_date", lambda: "2026-04-09")
+    monkeypatch.setattr(daily_healthcheck, "latest_nas_completed_date", lambda: ("", ""))
+    monkeypatch.setattr(daily_healthcheck, "latest_nas_a_share_date", lambda: ("", ""))
+    monkeypatch.setattr(
+        daily_healthcheck,
+        "analyze_trade_log",
+        lambda today: {
+            "starts": 0,
+            "done": 0,
+            "order_failures": 0,
+            "order_fills": 0,
+            "errors": 0,
+            "stale_signal_errors": [],
+            "latest_line": "",
+        },
+    )
+    monkeypatch.setattr(
+        daily_healthcheck,
+        "analyze_daily_logs",
+        lambda today: {
+            "timeouts": 0,
+            "inference_failures": 0,
+            "retry_activity": 0,
+            "latest_daily_line": "",
+            "latest_retry_line": "",
+        },
+    )
+    monkeypatch.setattr(daily_healthcheck, "process_running", lambda patterns: False)
+    monkeypatch.setattr(daily_healthcheck, "analyze_capital_flow_artifacts", lambda phase, reference_date="": {"issues": []})
+    monkeypatch.setattr(daily_healthcheck, "analyze_market_money_artifacts", lambda reference_date="": {"issues": []})
+    monkeypatch.setattr(
+        daily_healthcheck.major_money_readiness,
+        "build_readiness_snapshot",
+        lambda project_dir: {
+            "ok": False,
+            "expected_markets": ["A", "HK", "US", "US_OTC"],
+            "checks": {"cron": {"ok": True}, "email": {"ok": True}, "us_otc_proxy": {"ok": False}},
+            "issues": ["US OTC/Pink proxy disabled: set ENABLE_US_OTC_PROXY_FLOW=true"],
+        },
+    )
+
+    snapshot = daily_healthcheck.build_snapshot("nightly", now=datetime(2026, 4, 10, 19, 0, 0))
+
+    assert snapshot["overall_status"] == "warn"
+    assert snapshot["major_money_readiness"]["ok"] is False
+    assert snapshot["major_money_readiness"]["expected_markets"] == ["A", "HK", "US", "US_OTC"]
+    assert any("Major-money readiness: US OTC/Pink proxy disabled" in issue for issue in snapshot["issues"])
+
+
 def test_maybe_send_alert_deduplicates(monkeypatch, tmp_path):
     monkeypatch.setattr(daily_healthcheck, "HEALTH_DIR", tmp_path)
     sent_subjects: list[str] = []
