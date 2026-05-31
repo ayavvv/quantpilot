@@ -79,6 +79,28 @@ def test_build_proxy_records_marks_provider_fetch_failures_as_errors():
     assert row["capital_flow_error"] == "Yahoo chart fetch failed: timed out"
 
 
+def test_resume_status_normalization_keeps_missing_price_as_empty():
+    rows = pd.DataFrame(
+        [
+            {
+                "code": "US.AABB",
+                "capital_flow_status": "error",
+                "capital_flow_error": "Provider aggregate missing price or volume.",
+            },
+            {
+                "code": "US.BAD",
+                "capital_flow_status": "empty",
+                "capital_flow_error": "Yahoo chart fetch failed: timed out",
+            },
+        ]
+    )
+
+    normalized = scanner._normalize_resume_statuses(rows)
+
+    assert normalized.loc[normalized["code"] == "US.AABB", "capital_flow_status"].iloc[0] == "empty"
+    assert normalized.loc[normalized["code"] == "US.BAD", "capital_flow_status"].iloc[0] == "error"
+
+
 def test_fetch_yahoo_chart_daily_bar_parses_chart_response(monkeypatch):
     timestamp = int(datetime(2026, 5, 29, 9, 30, tzinfo=ZoneInfo("America/New_York")).timestamp())
     payload = {

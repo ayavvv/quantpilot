@@ -288,9 +288,11 @@ def _missing_aggregate_status(error: str) -> str:
     text = str(error or "").strip().lower()
     if not text:
         return "empty"
-    if "http 404" in text or "no provider aggregate" in text:
-        return "empty"
-    return "error"
+    if "fetch failed" in text or "worker failed" in text:
+        return "error"
+    if "http " in text and "http 404" not in text:
+        return "error"
+    return "empty"
 
 
 def _normalize_resume_statuses(rows: pd.DataFrame) -> pd.DataFrame:
@@ -299,8 +301,8 @@ def _normalize_resume_statuses(rows: pd.DataFrame) -> pd.DataFrame:
     result = rows.copy()
     status = result["capital_flow_status"].fillna("").astype(str).str.lower()
     errors = result["capital_flow_error"].fillna("").astype(str)
-    mask = status.eq("empty") & errors.map(lambda value: _missing_aggregate_status(value) == "error")
-    result.loc[mask, "capital_flow_status"] = "error"
+    mask = status.isin({"empty", "error"}) & errors.astype(bool)
+    result.loc[mask, "capital_flow_status"] = errors[mask].map(_missing_aggregate_status)
     return result
 
 
