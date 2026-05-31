@@ -361,3 +361,38 @@ def test_check_capital_flow_eval_status_empty_file_degrades(tmp_path):
     assert status["capital_flow_eval_available"] is False
     assert status["capital_flow_eval_rows"] == []
     assert status["capital_flow_eval_message"] == "Capital-flow validation has no forward-return samples yet."
+
+
+def test_check_capital_flow_gate_status_summarises_gate(tmp_path):
+    gate_json = tmp_path / "gate.json"
+    gate_json.write_text(
+        """
+{
+  "overall_action": "review_filter",
+  "message": "Capital-flow risk labels have enough evidence for manual filter review.",
+  "criteria": {"min_date_count": 20},
+  "decisions": [
+    {"label": "risk_flag_main_outflow", "status": "candidate_filter_review"},
+    {"label": "capital_flow_confirm", "status": "keep_advisory"}
+  ]
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    status = send_report.check_capital_flow_gate_status(gate_json=gate_json)
+
+    assert status["capital_flow_gate_available"] is True
+    assert status["capital_flow_gate_class"] == "gate-review"
+    assert status["capital_flow_gate_message"] == (
+        "Capital-flow risk labels have enough evidence for manual filter review. "
+        "Min dates=20. Candidate label(s): risk_flag_main_outflow."
+    )
+
+
+def test_check_capital_flow_gate_status_missing_file_degrades(tmp_path):
+    status = send_report.check_capital_flow_gate_status(gate_json=tmp_path / "missing.json")
+
+    assert status["capital_flow_gate_available"] is False
+    assert status["capital_flow_gate_class"] == "gate-advisory"
+    assert "keep labels advisory" in status["capital_flow_gate_message"]

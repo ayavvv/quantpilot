@@ -11,6 +11,7 @@ import ssl
 import subprocess
 import sys
 import mimetypes
+import json
 from datetime import datetime, time
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -34,6 +35,12 @@ CAPITAL_FLOW_EVAL_SUMMARY_CSV = Path(
     os.environ.get(
         "CAPITAL_FLOW_EVAL_SUMMARY_CSV",
         str(SIGNAL_DIR.parent / "output" / "futu_capital_flow_eval_latest" / "summary.csv"),
+    )
+)
+CAPITAL_FLOW_GATE_JSON = Path(
+    os.environ.get(
+        "CAPITAL_FLOW_GATE_JSON",
+        str(SIGNAL_DIR.parent / "output" / "futu_capital_flow_eval_latest" / "gate.json"),
     )
 )
 TRADE_START_TIME = time(14, 50)
@@ -60,6 +67,9 @@ tr:nth-child(even) { background-color: #f8f9fa; }
 .flow-confirm { background-color: #e6f4ea !important; }
 .flow-risk { background-color: #fdecea !important; }
 .flow-watch { background-color: #fff8e1 !important; }
+.gate-box { border-left: 4px solid #ccc; padding: 8px 12px; margin: 12px 0; background: #f8f9fa; }
+.gate-review { border-left-color: #dc3545; }
+.gate-advisory { border-left-color: #ffc107; }
 </style>
 </head>
 <body>
@@ -125,6 +135,9 @@ tr:nth-child(even) { background-color: #f8f9fa; }
 {% endif %}
 
 <h2>4. Capital Flow Validation</h2>
+<div class="gate-box {{ capital_flow_gate_class }}">
+    <strong>Rule Gate:</strong> {{ capital_flow_gate_message }}
+</div>
 {% if capital_flow_eval_available %}
 <p class="muted">{{ capital_flow_eval_message }}</p>
 <table>
@@ -415,6 +428,53 @@ def check_capital_flow_eval_status(
             f"Loaded {len(df)} validation row(s); use this before promoting advisory labels to trade rules."
         ),
         "capital_flow_eval_rows": rows,
+    }
+
+
+def check_capital_flow_gate_status(gate_json: Path | None = None):
+    """Summarise the evidence gate for capital-flow rule promotion."""
+    target = gate_json or Path(os.environ.get("CAPITAL_FLOW_GATE_JSON", str(CAPITAL_FLOW_GATE_JSON)))
+    if not target.exists():
+        return {
+            "capital_flow_gate_available": False,
+            "capital_flow_gate_class": "gate-advisory",
+            "capital_flow_gate_message": f"No capital-flow promotion gate found at {target}; keep labels advisory.",
+        }
+
+    try:
+        gate = json.loads(target.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {
+            "capital_flow_gate_available": False,
+            "capital_flow_gate_class": "gate-advisory",
+            "capital_flow_gate_message": f"Could not read capital-flow promotion gate: {exc}; keep labels advisory.",
+        }
+
+    action = str(gate.get("overall_action", "keep_advisory"))
+    message = str(gate.get("message", "Keep capital-flow labels advisory."))
+    criteria = gate.get("criteria", {}) if isinstance(gate.get("criteria"), dict) else {}
+    min_dates = criteria.get("min_date_count", "N/A")
+    decisions = gate.get("decisions", [])
+    candidates = []
+    if isinstance(decisions, list):
+        candidates = [
+            str(item.get("label"))
+            for item in decisions
+            if isinstance(item, dict) and str(item.get("status", "")).startswith("candidate_")
+        ]
+
+    if action in {"review_filter", "review_boost"}:
+        gate_class = "gate-review"
+    else:
+        gate_class = "gate-advisory"
+
+    suffix = f" Min dates={min_dates}."
+    if candidates:
+        suffix += f" Candidate label(s): {', '.join(candidates)}."
+    return {
+        "capital_flow_gate_available": True,
+        "capital_flow_gate_class": gate_class,
+        "capital_flow_gate_message": f"{message}{suffix}",
     }
 
 
@@ -794,6 +854,7 @@ def main():
     signal_info = check_signal_status()
     capital_flow_info = check_capital_flow_status()
     capital_flow_eval_info = check_capital_flow_eval_status()
+    capital_flow_gate_info = check_capital_flow_gate_status()
 
     trade_log_env = os.environ.get("TRADE_LOG", "").strip()
     trade_log = Path(trade_log_env) if trade_log_env else Path.home() / "quantpilot/logs/trade.log"
@@ -808,6 +869,7 @@ def main():
         **signal_info,
         **capital_flow_info,
         **capital_flow_eval_info,
+        **capital_flow_gate_info,
     )
 
     subject = f"QuantPilot Daily Report - {today}"

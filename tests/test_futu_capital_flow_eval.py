@@ -2,6 +2,7 @@ import pandas as pd
 
 from converter.incremental import QlibDirectWriter
 from strategy.futu_capital_flow_eval import (
+    build_capital_flow_promotion_gate,
     evaluate_archived_capital_flow_overlays,
     load_archived_overlays,
 )
@@ -79,3 +80,62 @@ def test_load_archived_overlays_reads_multiple_files(tmp_path):
 
     assert set(df["code"]) == {"SH.600000", "SZ.000001"}
     assert "overlay_file" in df.columns
+
+
+def test_build_capital_flow_promotion_gate_requires_samples():
+    gate = build_capital_flow_promotion_gate(pd.DataFrame(), min_date_count=2)
+
+    assert gate["overall_action"] == "insufficient_samples"
+    assert gate["decisions"] == []
+
+
+def test_build_capital_flow_promotion_gate_flags_risk_review():
+    summary = pd.DataFrame(
+        [
+            {
+                "capital_flow_label": "risk_flag_main_outflow",
+                "horizon": 1,
+                "date_count": 3,
+                "avg_return": -0.03,
+                "avg_universe_return": 0.0,
+                "avg_alpha": -0.03,
+                "avg_hit_rate": 0.2,
+            },
+            {
+                "capital_flow_label": "risk_flag_main_outflow",
+                "horizon": 3,
+                "date_count": 3,
+                "avg_return": -0.04,
+                "avg_universe_return": -0.01,
+                "avg_alpha": -0.03,
+                "avg_hit_rate": 0.3,
+            },
+        ]
+    )
+
+    gate = build_capital_flow_promotion_gate(summary, min_date_count=3, min_confirming_horizons=2)
+
+    assert gate["overall_action"] == "review_filter"
+    assert gate["decisions"][0]["status"] == "candidate_filter_review"
+    assert gate["decisions"][0]["matching_horizon_count"] == 2
+
+
+def test_build_capital_flow_promotion_gate_keeps_advisory_on_mixed_evidence():
+    summary = pd.DataFrame(
+        [
+            {
+                "capital_flow_label": "capital_flow_confirm",
+                "horizon": 1,
+                "date_count": 5,
+                "avg_return": 0.01,
+                "avg_universe_return": 0.009,
+                "avg_alpha": 0.001,
+                "avg_hit_rate": 0.51,
+            }
+        ]
+    )
+
+    gate = build_capital_flow_promotion_gate(summary, min_date_count=3)
+
+    assert gate["overall_action"] == "keep_advisory"
+    assert gate["decisions"][0]["status"] == "keep_advisory"

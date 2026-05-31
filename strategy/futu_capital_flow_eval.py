@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -172,6 +174,126 @@ def evaluate_archived_capital_flow_overlays(
     return summary, rows
 
 
+def _as_int(value: object) -> int:
+    if value is None or pd.isna(value):
+        return 0
+    return int(value)
+
+
+def _as_float(value: object) -> float:
+    if value is None or pd.isna(value):
+        return 0.0
+    return float(value)
+
+
+def _summary_row_payload(row: pd.Series) -> dict[str, object]:
+    return {
+        "horizon": _as_int(row.get("horizon")),
+        "date_count": _as_int(row.get("date_count")),
+        "avg_return": _as_float(row.get("avg_return")),
+        "avg_universe_return": _as_float(row.get("avg_universe_return")),
+        "avg_alpha": _as_float(row.get("avg_alpha")),
+        "avg_hit_rate": _as_float(row.get("avg_hit_rate")),
+    }
+
+
+def build_capital_flow_promotion_gate(
+    summary: pd.DataFrame,
+    *,
+    min_date_count: int = 20,
+    min_confirming_horizons: int = 2,
+    risk_alpha_threshold: float = -0.005,
+    confirm_alpha_threshold: float = 0.005,
+    risk_max_hit_rate: float = 0.45,
+    confirm_min_hit_rate: float = 0.55,
+) -> dict[str, object]:
+    """Build a conservative evidence gate before labels become trade rules."""
+
+    criteria = {
+        "min_date_count": int(min_date_count),
+        "min_confirming_horizons": int(min_confirming_horizons),
+        "risk_alpha_threshold": float(risk_alpha_threshold),
+        "confirm_alpha_threshold": float(confirm_alpha_threshold),
+        "risk_max_hit_rate": float(risk_max_hit_rate),
+        "confirm_min_hit_rate": float(confirm_min_hit_rate),
+    }
+    gate: dict[str, object] = {
+        "gate_version": "futu_capital_flow_promotion_v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "overall_action": "insufficient_samples",
+        "criteria": criteria,
+        "decisions": [],
+        "message": "No forward-return samples are available yet; keep capital-flow labels advisory.",
+    }
+
+    required = {"capital_flow_label", "horizon", "date_count", "avg_alpha", "avg_hit_rate"}
+    if summary.empty or not required.issubset(summary.columns):
+        return gate
+
+    decisions = []
+    for label in sorted(summary["capital_flow_label"].dropna().astype(str).unique()):
+        label_df = summary[summary["capital_flow_label"].astype(str) == label].copy()
+        payload_rows = [_summary_row_payload(row) for _, row in label_df.sort_values("horizon").iterrows()]
+        eligible_rows = [row for row in payload_rows if row["date_count"] >= min_date_count]
+        kind = "monitor"
+        matching_rows: list[dict[str, object]] = []
+        status = "keep_advisory"
+        recommendation = "Keep collecting samples before changing trading rules."
+
+        if label.startswith("risk_flag"):
+            kind = "risk"
+            matching_rows = [
+                row
+                for row in eligible_rows
+                if row["avg_alpha"] <= risk_alpha_threshold and row["avg_hit_rate"] <= risk_max_hit_rate
+            ]
+            if not eligible_rows:
+                status = "insufficient_samples"
+            elif len(matching_rows) >= min_confirming_horizons:
+                status = "candidate_filter_review"
+                recommendation = "Review this label for an automatic filter or score downgrade."
+        elif label == "capital_flow_confirm":
+            kind = "confirm"
+            matching_rows = [
+                row
+                for row in eligible_rows
+                if row["avg_alpha"] >= confirm_alpha_threshold and row["avg_hit_rate"] >= confirm_min_hit_rate
+            ]
+            if not eligible_rows:
+                status = "insufficient_samples"
+            elif len(matching_rows) >= min_confirming_horizons:
+                status = "candidate_boost_review"
+                recommendation = "Review this label for a score boost or tie-breaker."
+        elif not eligible_rows:
+            status = "insufficient_samples"
+
+        decisions.append(
+            {
+                "label": label,
+                "kind": kind,
+                "status": status,
+                "recommendation": recommendation,
+                "eligible_horizon_count": len(eligible_rows),
+                "matching_horizon_count": len(matching_rows),
+                "rows": payload_rows,
+            }
+        )
+
+    gate["decisions"] = decisions
+    statuses = {str(decision["status"]) for decision in decisions}
+    if "candidate_filter_review" in statuses:
+        gate["overall_action"] = "review_filter"
+        gate["message"] = "Capital-flow risk labels have enough evidence for manual filter review."
+    elif "candidate_boost_review" in statuses:
+        gate["overall_action"] = "review_boost"
+        gate["message"] = "Capital-flow confirm labels have enough evidence for manual boost review."
+    elif statuses and statuses != {"insufficient_samples"}:
+        gate["overall_action"] = "keep_advisory"
+        gate["message"] = "Evidence is not strong enough to promote capital-flow labels; keep advisory."
+
+    return gate
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate archived Futu capital-flow overlays.")
     parser.add_argument("--qlib-dir", default=os.environ.get("QLIB_DATA_DIR", "~/quantpilot_data/qlib_data"))
@@ -180,6 +302,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--horizons", default="1,3,5")
     parser.add_argument("--entry-lag-days", type=int, default=1)
     parser.add_argument("--output-dir", default="~/quantpilot_data/output/futu_capital_flow_eval")
+    parser.add_argument("--gate-min-date-count", type=int, default=int(os.environ.get("CAPITAL_FLOW_GATE_MIN_DATE_COUNT", "20")))
+    parser.add_argument("--gate-min-confirming-horizons", type=int, default=int(os.environ.get("CAPITAL_FLOW_GATE_MIN_CONFIRMING_HORIZONS", "2")))
+    parser.add_argument("--gate-risk-alpha-threshold", type=float, default=float(os.environ.get("CAPITAL_FLOW_GATE_RISK_ALPHA_THRESHOLD", "-0.005")))
+    parser.add_argument("--gate-confirm-alpha-threshold", type=float, default=float(os.environ.get("CAPITAL_FLOW_GATE_CONFIRM_ALPHA_THRESHOLD", "0.005")))
+    parser.add_argument("--gate-risk-max-hit-rate", type=float, default=float(os.environ.get("CAPITAL_FLOW_GATE_RISK_MAX_HIT_RATE", "0.45")))
+    parser.add_argument("--gate-confirm-min-hit-rate", type=float, default=float(os.environ.get("CAPITAL_FLOW_GATE_CONFIRM_MIN_HIT_RATE", "0.55")))
     return parser.parse_args(argv)
 
 
@@ -209,10 +337,22 @@ def main(argv: list[str] | None = None) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     summary_path = output_dir / "summary.csv"
     rows_path = output_dir / "rows.csv"
+    gate_path = output_dir / "gate.json"
     summary.to_csv(summary_path, index=False)
     rows.to_csv(rows_path, index=False)
+    gate = build_capital_flow_promotion_gate(
+        summary,
+        min_date_count=max(1, args.gate_min_date_count),
+        min_confirming_horizons=max(1, args.gate_min_confirming_horizons),
+        risk_alpha_threshold=args.gate_risk_alpha_threshold,
+        confirm_alpha_threshold=args.gate_confirm_alpha_threshold,
+        risk_max_hit_rate=args.gate_risk_max_hit_rate,
+        confirm_min_hit_rate=args.gate_confirm_min_hit_rate,
+    )
+    gate_path.write_text(json.dumps(gate, indent=2, sort_keys=True), encoding="utf-8")
     print(f"Wrote summary: {summary_path}")
     print(f"Wrote rows: {rows_path}")
+    print(f"Wrote gate: {gate_path}")
     return 0
 
 
