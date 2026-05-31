@@ -36,6 +36,13 @@ Artifacts:
   - Also consumes HK/US Futu full-market scan artifacts when present:
     - `~/quantpilot_data/capital_flow/futu_market/HK_latest_flow.csv`
     - `~/quantpilot_data/capital_flow/futu_market/US_latest_flow.csv`
+- `scripts/refresh_eastmoney_fund_flow_rank.py`
+  - Refreshes the A-share market-wide Eastmoney rank artifact before the daily
+    report.
+  - Writes `~/quantpilot_data/output/eastmoney_fund_flow_rank_latest.csv`.
+  - Archives daily copies under `~/quantpilot_data/fund_flow/eastmoney/`.
+  - Refuses to replace the latest artifact if the fetched row count is below
+    `EASTMONEY_FUND_FLOW_MIN_ROWS`.
 - `scripts/scan_futu_market_capital_flow.py`
   - Resumable Futu scanner for HK/US/SH/SZ stock universes.
   - Writes dated and latest flow CSVs under
@@ -60,6 +67,12 @@ Artifacts:
 Build the digest from currently available artifacts:
 
 ```bash
+.venv/bin/python -m scripts.refresh_eastmoney_fund_flow_rank \
+  --output ~/quantpilot_data/output/eastmoney_fund_flow_rank_latest.csv \
+  --archive-dir ~/quantpilot_data/fund_flow/eastmoney \
+  --limit 6000 \
+  --min-rows 1000
+
 .venv/bin/python -m scripts.build_major_money_digest \
   --expected-markets A,HK,US \
   --output-json ~/quantpilot_data/output/major_money_digest_latest.json \

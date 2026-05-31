@@ -64,6 +64,13 @@ MAJOR_MONEY_DIGEST_SOURCES="${MAJOR_MONEY_DIGEST_SOURCES:-auto}"
 MAJOR_MONEY_EXPECTED_MARKETS="${MAJOR_MONEY_EXPECTED_MARKETS:-A,HK,US}"
 MAJOR_MONEY_DIGEST_JSON="${MAJOR_MONEY_DIGEST_JSON:-$DATA_DIR/output/major_money_digest_latest.json}"
 MAJOR_MONEY_DIGEST_CSV="${MAJOR_MONEY_DIGEST_CSV:-$DATA_DIR/output/major_money_digest_latest.csv}"
+ENABLE_EASTMONEY_FUND_FLOW_REFRESH="${ENABLE_EASTMONEY_FUND_FLOW_REFRESH:-true}"
+EASTMONEY_FUND_FLOW_RANK_OUTPUT="${EASTMONEY_FUND_FLOW_RANK_OUTPUT:-$DATA_DIR/output/eastmoney_fund_flow_rank_latest.csv}"
+EASTMONEY_FUND_FLOW_ARCHIVE_DIR="${EASTMONEY_FUND_FLOW_ARCHIVE_DIR:-$DATA_DIR/fund_flow/eastmoney}"
+EASTMONEY_FUND_FLOW_LIMIT="${EASTMONEY_FUND_FLOW_LIMIT:-6000}"
+EASTMONEY_FUND_FLOW_MIN_ROWS="${EASTMONEY_FUND_FLOW_MIN_ROWS:-1000}"
+EASTMONEY_FUND_FLOW_SOURCE="${EASTMONEY_FUND_FLOW_SOURCE:-auto}"
+EASTMONEY_FUND_FLOW_TIMEOUT="${EASTMONEY_FUND_FLOW_TIMEOUT:-10}"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
@@ -277,6 +284,21 @@ fi
 # Step 2d: Build market-wide major-money digest for the email report.
 if [ "$ENABLE_MAJOR_MONEY_DIGEST" = "true" ]; then
     log "Step 2d: Building market-wide major-money digest..."
+    if [ "$ENABLE_EASTMONEY_FUND_FLOW_REFRESH" = "true" ]; then
+        log "  Refreshing A-share Eastmoney fund-flow rank..."
+        if PYTHONPATH="$PYTHONPATH" \
+            "$PYTHON_BIN" -m scripts.refresh_eastmoney_fund_flow_rank \
+                --output "$EASTMONEY_FUND_FLOW_RANK_OUTPUT" \
+                --archive-dir "$EASTMONEY_FUND_FLOW_ARCHIVE_DIR" \
+                --limit "$EASTMONEY_FUND_FLOW_LIMIT" \
+                --min-rows "$EASTMONEY_FUND_FLOW_MIN_ROWS" \
+                --source "$EASTMONEY_FUND_FLOW_SOURCE" \
+                --timeout "$EASTMONEY_FUND_FLOW_TIMEOUT"; then
+            log "  Eastmoney fund-flow refresh complete"
+        else
+            log "  WARNING: Eastmoney fund-flow refresh failed; digest will use any existing rank artifact"
+        fi
+    fi
     MAJOR_MONEY_SOURCE_ARGS=()
     if [ "$MAJOR_MONEY_DIGEST_SOURCES" != "auto" ]; then
         IFS=';' read -r -a MAJOR_MONEY_SOURCE_SPECS <<< "$MAJOR_MONEY_DIGEST_SOURCES"
