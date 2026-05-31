@@ -89,8 +89,11 @@ def test_run_daily_builds_market_wide_major_money_digest():
     assert 'MAJOR_MONEY_EXPECTED_MARKETS="${MAJOR_MONEY_EXPECTED_MARKETS:-A,HK,US,US_OTC}"' in content
     assert 'ENABLE_EASTMONEY_FUND_FLOW_REFRESH="${ENABLE_EASTMONEY_FUND_FLOW_REFRESH:-true}"' in content
     assert 'ENABLE_US_OTC_PROXY_FLOW="${ENABLE_US_OTC_PROXY_FLOW:-false}"' in content
+    assert 'US_OTC_PROXY_FLOW_EXCHANGE_TYPES="${US_OTC_PROXY_FLOW_EXCHANGE_TYPES:-US_PINK}"' in content
     assert '"$PYTHON_BIN" -m scripts.refresh_eastmoney_fund_flow_rank' in content
     assert '"$PYTHON_BIN" -m scripts.scan_us_otc_proxy_flow' in content
+    assert '--exchange-types "$US_OTC_PROXY_FLOW_EXCHANGE_TYPES"' in content
+    assert 'US_OTC_PROXY_ARGS+=(--date "$US_OTC_PROXY_FLOW_DATE")' in content
     assert '--output "$EASTMONEY_FUND_FLOW_RANK_OUTPUT"' in content
     assert 'MAJOR_MONEY_SOURCE_ARGS+=(--source "A:$EASTMONEY_FUND_FLOW_RANK_OUTPUT:eastmoney")' in content
     assert 'latest_flow="$DATA_DIR/capital_flow/futu_market/${market}_latest_flow.csv"' in content

@@ -45,12 +45,26 @@ MAJOR_MONEY_DIGEST_SOURCES="${MAJOR_MONEY_DIGEST_SOURCES:-auto}"
 MAJOR_MONEY_EXPECTED_MARKETS="${MAJOR_MONEY_EXPECTED_MARKETS:-A,HK,US,US_OTC}"
 MAJOR_MONEY_DIGEST_JSON="${MAJOR_MONEY_DIGEST_JSON:-$DATA_DIR/output/major_money_digest_latest.json}"
 MAJOR_MONEY_DIGEST_CSV="${MAJOR_MONEY_DIGEST_CSV:-$DATA_DIR/output/major_money_digest_latest.csv}"
+ENABLE_US_OTC_PROXY_FLOW="${ENABLE_US_OTC_PROXY_FLOW:-false}"
 US_OTC_PROXY_FLOW_PROVIDER="${US_OTC_PROXY_FLOW_PROVIDER:-polygon}"
 US_OTC_PROXY_FLOW_OUTPUT_DIR="${US_OTC_PROXY_FLOW_OUTPUT_DIR:-$DATA_DIR/capital_flow/us_otc_proxy}"
+US_OTC_PROXY_FLOW_UNIVERSE_CSV="${US_OTC_PROXY_FLOW_UNIVERSE_CSV:-$DATA_DIR/capital_flow/futu_market/US_latest_source_universe.csv}"
+US_OTC_PROXY_FLOW_EXCHANGE_TYPES="${US_OTC_PROXY_FLOW_EXCHANGE_TYPES:-US_PINK}"
+US_OTC_PROXY_FLOW_MAX_CODES="${US_OTC_PROXY_FLOW_MAX_CODES:-0}"
+US_OTC_PROXY_FLOW_MIN_DOLLAR_VOLUME="${US_OTC_PROXY_FLOW_MIN_DOLLAR_VOLUME:-0}"
+US_OTC_PROXY_FLOW_DATE="${US_OTC_PROXY_FLOW_DATE:-}"
 LOCK_DIR="${LOCK_DIR:-$PROJECT_DIR/logs/market_capital_flow_${FUTU_MARKET_FLOW_MARKETS//,/}.lock}"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
+
+market_list_contains() {
+    local list
+    local value
+    list=",$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]'),"
+    value="$(printf '%s' "$2" | tr '[:lower:]' '[:upper:]')"
+    [[ "$list" == *",$value,"* ]]
 }
 
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
@@ -88,6 +102,32 @@ log "market_capital_flow: start markets=$FUTU_MARKET_FLOW_MARKETS output=$FUTU_M
 source .venv/bin/activate
 PYTHONPATH="$PYTHONPATH" "$PYTHON_BIN" -m scripts.scan_futu_market_capital_flow "${SCAN_ARGS[@]}"
 log "market_capital_flow: scan complete"
+
+if [ "$ENABLE_US_OTC_PROXY_FLOW" = "true" ] && market_list_contains "$FUTU_MARKET_FLOW_MARKETS" "US"; then
+    log "market_capital_flow: building US OTC/Pink proxy flow"
+    if [ "$US_OTC_PROXY_FLOW_PROVIDER" = "polygon" ] && [ -z "${POLYGON_API_KEY:-}" ]; then
+        log "market_capital_flow: WARNING: POLYGON_API_KEY is not set; US_OTC will remain missing"
+    else
+        US_OTC_PROXY_ARGS=(
+            --provider "$US_OTC_PROXY_FLOW_PROVIDER"
+            --universe-csv "$US_OTC_PROXY_FLOW_UNIVERSE_CSV"
+            --exchange-types "$US_OTC_PROXY_FLOW_EXCHANGE_TYPES"
+            --output-dir "$US_OTC_PROXY_FLOW_OUTPUT_DIR"
+            --min-dollar-volume "$US_OTC_PROXY_FLOW_MIN_DOLLAR_VOLUME"
+        )
+        if [ -n "$US_OTC_PROXY_FLOW_DATE" ]; then
+            US_OTC_PROXY_ARGS+=(--date "$US_OTC_PROXY_FLOW_DATE")
+        fi
+        if [ "$US_OTC_PROXY_FLOW_MAX_CODES" != "0" ]; then
+            US_OTC_PROXY_ARGS+=(--max-codes "$US_OTC_PROXY_FLOW_MAX_CODES")
+        fi
+        if PYTHONPATH="$PYTHONPATH" "$PYTHON_BIN" -m scripts.scan_us_otc_proxy_flow "${US_OTC_PROXY_ARGS[@]}"; then
+            log "market_capital_flow: US OTC/Pink proxy flow complete"
+        else
+            log "market_capital_flow: WARNING: US OTC/Pink proxy flow failed; digest will show US_OTC coverage as missing"
+        fi
+    fi
+fi
 
 if [ "$RUN_MAJOR_MONEY_DIGEST_AFTER_SCAN" = "true" ]; then
     log "market_capital_flow: rebuilding major-money digest"

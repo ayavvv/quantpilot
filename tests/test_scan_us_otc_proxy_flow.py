@@ -1,4 +1,6 @@
 import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -65,3 +67,15 @@ def test_write_outputs_creates_digest_compatible_artifacts(tmp_path):
     payload = json.loads((tmp_path / "US_OTC_latest_status.json").read_text(encoding="utf-8"))
     assert payload["market"] == "US_OTC"
     assert payload["source_exchange_types"] == {"US_PINK": 1}
+
+
+def test_latest_completed_us_session_date_skips_weekend_before_monday_close():
+    now = datetime(2026, 6, 1, 7, 0, tzinfo=ZoneInfo("America/New_York"))
+
+    assert scanner.latest_completed_us_session_date(now) == "2026-05-29"
+
+
+def test_latest_completed_us_session_date_accepts_china_time_after_us_close():
+    now = datetime(2026, 5, 30, 5, 10, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    assert scanner.latest_completed_us_session_date(now) == "2026-05-29"

@@ -62,12 +62,16 @@ Artifacts:
   - Produces a `US_OTC` proxy artifact using directional dollar volume from
     daily OHLCV. This is lower-confidence than vendor capital-flow fields and
     is labeled as a proxy in the artifact source.
+  - Defaults to the latest completed US session date, so China-time Monday
+    evening does not request a Sunday aggregate.
   - Requires `POLYGON_API_KEY`; without it, the daily digest will keep `US_OTC`
     visible as missing coverage.
 - `scripts/run_market_capital_flow.sh`
   - Host-side cron wrapper around the Futu scanner.
   - Uses a lock directory so a long full-market scan cannot overlap itself.
   - Rebuilds the digest after a scan by default.
+  - Can also build the optional `US_OTC` proxy artifact during the scheduled US
+    after-close scan when `ENABLE_US_OTC_PROXY_FLOW=true`.
   - Defaults to excluding `US_PINK,N/A`, so the scheduled US job covers
     exchange-listed NYSE/NASDAQ/AMEX names unless
     `FUTU_MARKET_FLOW_EXCLUDE_EXCHANGE_TYPES` is overridden.
@@ -112,7 +116,16 @@ Optional US OTC/Pink proxy flow, if a Polygon/Massive API key is configured:
 POLYGON_API_KEY=... \
 .venv/bin/python -m scripts.scan_us_otc_proxy_flow \
   --universe-csv ~/quantpilot_data/capital_flow/futu_market/US_latest_source_universe.csv \
+  --exchange-types US_PINK \
   --output-dir ~/quantpilot_data/capital_flow/us_otc_proxy
+```
+
+To enable this in the scheduled US after-close scan, set these in `.env`:
+
+```bash
+ENABLE_US_OTC_PROXY_FLOW=true
+POLYGON_API_KEY=...
+US_OTC_PROXY_FLOW_EXCHANGE_TYPES=US_PINK
 ```
 
 Smoke-test Futu HK/US scanning without claiming full-market coverage:

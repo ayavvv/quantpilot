@@ -10,21 +10,37 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(Path.home() / "quantpilot_data")))
 POLYGON_GROUPED_DAILY_URL = "https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/{date}"
+US_EASTERN = ZoneInfo("America/New_York")
+US_SESSION_READY_TIME = time(16, 30)
+
+
+def latest_completed_us_session_date(now: datetime | None = None) -> str:
+    current = now or datetime.now(US_EASTERN)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=US_EASTERN)
+    current_et = current.astimezone(US_EASTERN)
+    candidate = current_et.date()
+    if candidate.weekday() >= 5 or current_et.time() < US_SESSION_READY_TIME:
+        candidate -= timedelta(days=1)
+    while candidate.weekday() >= 5:
+        candidate -= timedelta(days=1)
+    return candidate.isoformat()
 
 
 def _default_date() -> str:
-    return (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    return latest_completed_us_session_date()
 
 
 def _date_tag(value: str) -> str:
