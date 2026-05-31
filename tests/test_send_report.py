@@ -303,7 +303,7 @@ def test_build_report_subject_includes_major_money_summary():
 
 
 def test_check_major_money_digest_status_subject_includes_partial_markets(monkeypatch, tmp_path):
-    monkeypatch.setenv("HEALTHCHECK_MAJOR_MONEY_MAX_NON_OK_RATIO", "0.05")
+    monkeypatch.setenv("HEALTHCHECK_MAJOR_MONEY_MAX_ERROR_RATIO", "0.05")
     digest = {
         "flow_date": "2026-05-29",
         "market_count": 2,
@@ -318,6 +318,7 @@ def test_check_major_money_digest_status_subject_includes_partial_markets(monkey
                 "available": True,
                 "total_rows": 100,
                 "ok_rows": 90,
+                "error_rows": 10,
                 "non_ok_rows": 10,
             },
         ],

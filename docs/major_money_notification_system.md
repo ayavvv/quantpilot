@@ -132,7 +132,9 @@ Artifacts:
     digest `flow_date` and that the archived JSON matches the latest digest
     date.
   - Warns when available major-money sources exceed
-    `HEALTHCHECK_MAJOR_MONEY_MAX_NON_OK_RATIO` for vendor empty/error rows.
+    `HEALTHCHECK_MAJOR_MONEY_MAX_ERROR_RATIO` for vendor error rows. Vendor
+    empty rows are still shown in coverage notes, but they do not block
+    readiness because many illiquid symbols legitimately return no flow row.
   - Checks `MAJOR_MONEY_EXPECTED_MARKETS` explicitly and reports whether
     `US_OTC` is missing because the proxy is disabled, the provider key is
     absent, the universe is missing, or the proxy scan/status is unhealthy.
@@ -143,8 +145,8 @@ Artifacts:
   - Checks daily/HK/US cron entries, reporter email configuration, major-money
     scan freshness/schema, digest coverage, dated digest archive output, and
     `US_OTC` proxy state.
-  - Uses `HEALTHCHECK_MAJOR_MONEY_MAX_NON_OK_RATIO` to flag available markets
-    whose vendor empty/error rows are too high.
+  - Uses `HEALTHCHECK_MAJOR_MONEY_MAX_ERROR_RATIO` to flag available markets
+    whose vendor error rows are too high.
   - Exits non-zero until every expected market, including `US_OTC`, is covered.
 
 ## Daily Commands

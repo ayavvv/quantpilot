@@ -176,7 +176,7 @@ def _date_tag(value: str) -> str:
     return ""
 
 
-def check_digest(path: Path, *, expected_markets: list[str], max_non_ok_ratio: float = 0.05) -> dict[str, Any]:
+def check_digest(path: Path, *, expected_markets: list[str], max_error_ratio: float = 0.05) -> dict[str, Any]:
     payload, error = _read_json(path)
     markets = payload.get("markets") if isinstance(payload, dict) else []
     by_market: dict[str, dict[str, Any]] = {}
@@ -198,17 +198,17 @@ def check_digest(path: Path, *, expected_markets: list[str], max_non_ok_ratio: f
         if not row.get("available"):
             continue
         total_rows = int(row.get("total_rows") or 0)
-        non_ok_rows = int(row.get("non_ok_rows") or 0)
-        if total_rows <= 0 or non_ok_rows <= 0:
+        error_rows = int(row.get("error_rows") or 0)
+        if total_rows <= 0 or error_rows <= 0:
             continue
-        non_ok_ratio = non_ok_rows / total_rows
-        if non_ok_ratio > max_non_ok_ratio:
+        error_ratio = error_rows / total_rows
+        if error_ratio > max_error_ratio:
             issues.append(
-                "Major-money digest partial source coverage: "
-                f"market={market} non_ok={non_ok_rows}/{total_rows} ({non_ok_ratio:.1%}) "
+                "Major-money digest source error coverage: "
+                f"market={market} error={error_rows}/{total_rows} ({error_ratio:.1%}) "
                 f"empty={int(row.get('empty_rows') or 0)} "
-                f"error={int(row.get('error_rows') or 0)} "
-                f"max={max_non_ok_ratio:.1%}"
+                f"non_ok={int(row.get('non_ok_rows') or 0)} "
+                f"max_error={max_error_ratio:.1%}"
             )
 
     return {
@@ -434,7 +434,13 @@ def build_readiness_snapshot(
     reporter_env = load_env_file(reporter_env_path)
     email_env = {**reporter_env, **merged_env}
     expected_markets = _split_csv(merged_env.get("MAJOR_MONEY_EXPECTED_MARKETS", "A,HK,US,US_OTC"))
-    max_non_ok_ratio = _float_value(merged_env.get("HEALTHCHECK_MAJOR_MONEY_MAX_NON_OK_RATIO"), 0.05)
+    max_error_ratio = _float_value(
+        merged_env.get(
+            "HEALTHCHECK_MAJOR_MONEY_MAX_ERROR_RATIO",
+            merged_env.get("HEALTHCHECK_MAJOR_MONEY_MAX_NON_OK_RATIO"),
+        ),
+        0.05,
+    )
     min_scan_schema_version = _int_value(merged_env.get("HEALTHCHECK_MARKET_FLOW_MIN_SCHEMA_VERSION"), 2)
     digest_path = Path(
         merged_env.get("MAJOR_MONEY_DIGEST_JSON", str(data_dir / "output" / "major_money_digest_latest.json"))
@@ -447,7 +453,7 @@ def build_readiness_snapshot(
     if crontab_text is None:
         crontab_text, cron_error = read_crontab()
 
-    digest_check = check_digest(digest_path, expected_markets=expected_markets, max_non_ok_ratio=max_non_ok_ratio)
+    digest_check = check_digest(digest_path, expected_markets=expected_markets, max_error_ratio=max_error_ratio)
     checks = {
         "cron": check_cron(crontab_text or "", project_dir=project_dir),
         "email": check_email_config(email_env, reporter_env_path=reporter_env_path),

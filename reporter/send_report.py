@@ -420,7 +420,13 @@ def check_major_money_digest_status(
     exit_rows = []
     missing_markets = []
     partial_markets = []
-    max_non_ok_ratio = _safe_float(os.environ.get("HEALTHCHECK_MAJOR_MONEY_MAX_NON_OK_RATIO"), 0.05)
+    max_error_ratio = _safe_float(
+        os.environ.get(
+            "HEALTHCHECK_MAJOR_MONEY_MAX_ERROR_RATIO",
+            os.environ.get("HEALTHCHECK_MAJOR_MONEY_MAX_NON_OK_RATIO"),
+        ),
+        0.05,
+    )
     for market in markets:
         if not isinstance(market, dict):
             continue
@@ -438,10 +444,10 @@ def check_major_money_digest_status(
         market_name = market.get("market", "N/A")
         if not available:
             missing_markets.append(str(market_name))
-        non_ok_rows = _safe_int(market.get("non_ok_rows"), 0)
-        if available and total_rows > 0 and non_ok_rows > 0:
-            non_ok_ratio = non_ok_rows / total_rows
-            if non_ok_ratio > max_non_ok_ratio:
+        error_rows = _safe_int(market.get("error_rows"), 0)
+        if available and total_rows > 0 and error_rows > 0:
+            error_ratio = error_rows / total_rows
+            if error_ratio > max_error_ratio:
                 partial_markets.append(str(market_name))
         market_rows.append(
             {

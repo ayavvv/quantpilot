@@ -30,11 +30,11 @@ def test_default_sources_include_healthy_us_otc_proxy(tmp_path):
     otc_path = otc_dir / "US_OTC_latest_flow.csv"
     otc_path.write_text("code,capital_flow_status,latest_main_in_flow\nUS.AABB,ok,100\n", encoding="utf-8")
     (otc_dir / "US_OTC_latest_status.json").write_text(
-        json.dumps({"status": "ok", "ok_count": 1}),
+        json.dumps({"status": "ok", "ok_count": 1, "provider": "yahoo_chart", "source": "yahoo_chart_otc_proxy"}),
         encoding="utf-8",
     )
 
-    assert ("US_OTC", otc_path, "polygon_otc_proxy") in builder._default_sources(data_dir)
+    assert ("US_OTC", otc_path, "yahoo_chart_otc_proxy") in builder._default_sources(data_dir)
 
 
 def test_main_writes_dated_archive_outputs(tmp_path):

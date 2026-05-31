@@ -37,11 +37,13 @@ def _status_for_source(path: Path, market: str) -> dict:
     return {}
 
 
-def _healthy_otc_proxy_source(path: Path) -> bool:
+def _healthy_otc_proxy_status(path: Path) -> dict:
     status = _status_for_source(path, "US_OTC")
     if not status:
-        return False
-    return str(status.get("status") or "").lower() == "ok" and int(status.get("ok_count") or 0) > 0
+        return {}
+    if str(status.get("status") or "").lower() == "ok" and int(status.get("ok_count") or 0) > 0:
+        return status
+    return {}
 
 
 def _default_sources(data_dir: Path) -> list[tuple[str, Path, str]]:
@@ -52,8 +54,13 @@ def _default_sources(data_dir: Path) -> list[tuple[str, Path, str]]:
     ]
     sources = [(market, path, source) for market, path, source in candidates if path.exists()]
     otc_path = data_dir / "capital_flow" / "us_otc_proxy" / "US_OTC_latest_flow.csv"
-    if otc_path.exists() and _healthy_otc_proxy_source(otc_path):
-        sources.append(("US_OTC", otc_path, "polygon_otc_proxy"))
+    otc_status = _healthy_otc_proxy_status(otc_path) if otc_path.exists() else {}
+    if otc_status:
+        source = str(otc_status.get("source") or "").strip()
+        if not source:
+            provider = str(otc_status.get("provider") or "polygon").strip().lower()
+            source = f"{provider}_otc_proxy"
+        sources.append(("US_OTC", otc_path, source))
     return sources
 
 
