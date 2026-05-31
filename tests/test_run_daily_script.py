@@ -89,6 +89,8 @@ def test_run_daily_builds_market_wide_major_money_digest():
     assert 'ENABLE_EASTMONEY_FUND_FLOW_REFRESH="${ENABLE_EASTMONEY_FUND_FLOW_REFRESH:-true}"' in content
     assert '"$PYTHON_BIN" -m scripts.refresh_eastmoney_fund_flow_rank' in content
     assert '--output "$EASTMONEY_FUND_FLOW_RANK_OUTPUT"' in content
+    assert 'MAJOR_MONEY_SOURCE_ARGS+=(--source "A:$EASTMONEY_FUND_FLOW_RANK_OUTPUT:eastmoney")' in content
+    assert 'latest_flow="$DATA_DIR/capital_flow/futu_market/${market}_latest_flow.csv"' in content
     assert 'MAJOR_MONEY_DIGEST_SOURCES="${MAJOR_MONEY_DIGEST_SOURCES:-auto}"' in content
     assert '"$PYTHON_BIN" -m scripts.build_major_money_digest' in content
     assert '--expected-markets "$MAJOR_MONEY_EXPECTED_MARKETS"' in content

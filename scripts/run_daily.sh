@@ -307,6 +307,16 @@ if [ "$ENABLE_MAJOR_MONEY_DIGEST" = "true" ]; then
                 MAJOR_MONEY_SOURCE_ARGS+=(--source "$spec")
             fi
         done
+    else
+        if [ -f "$EASTMONEY_FUND_FLOW_RANK_OUTPUT" ]; then
+            MAJOR_MONEY_SOURCE_ARGS+=(--source "A:$EASTMONEY_FUND_FLOW_RANK_OUTPUT:eastmoney")
+        fi
+        for market in HK US; do
+            latest_flow="$DATA_DIR/capital_flow/futu_market/${market}_latest_flow.csv"
+            if [ -f "$latest_flow" ]; then
+                MAJOR_MONEY_SOURCE_ARGS+=(--source "$market:$latest_flow:futu")
+            fi
+        done
     fi
     if PYTHONPATH="$PYTHONPATH" \
         "$PYTHON_BIN" -m scripts.build_major_money_digest \
