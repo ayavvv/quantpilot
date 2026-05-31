@@ -235,6 +235,47 @@ def test_scan_market_resumes_partial_output_without_status(tmp_path):
     assert payload["previous_scanner_schema_version"] == 0
 
 
+def test_scan_market_resumes_partial_output_when_old_status_expected_more_rows(tmp_path):
+    partial_flow = tmp_path / "HK_20260531_flow.csv"
+    partial_flow.write_text(
+        "market,code,name,exchange_type,capital_flow_status,capital_flow_count\n"
+        "HK,HK.00700,Tencent,HK_MAINBOARD,ok,1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "HK_20260531_status.json").write_text(
+        '{"status":"ok","market":"HK","scanner_schema_version":0,"attempted_count":3,"ok_count":3}',
+        encoding="utf-8",
+    )
+    universe = pd.DataFrame(
+        [
+            {"code": "HK.00700", "name": "Tencent", "exchange_type": "HK_MAINBOARD"},
+            {"code": "HK.00005", "name": "HSBC", "exchange_type": "HK_MAINBOARD"},
+        ]
+    )
+
+    scan_market(
+        FakeFutuClient(),
+        universe,
+        market="HK",
+        output_dir=tmp_path,
+        start="2026-05-01",
+        end="2026-05-31",
+        period="DAY",
+        include_distribution=False,
+        max_codes=0,
+        batch_flush=50,
+        overwrite=False,
+        pause_seconds=0,
+        min_ok_ratio=0.0,
+    )
+
+    output = pd.read_csv(partial_flow)
+    payload = json.loads((tmp_path / "HK_20260531_status.json").read_text(encoding="utf-8"))
+    assert output["code"].tolist() == ["HK.00700", "HK.00005"]
+    assert payload["resume_mode"] == "resume"
+    assert payload["previous_scanner_schema_version"] == 0
+
+
 def test_scan_market_retries_futu_rate_limit_before_recording_result(tmp_path, monkeypatch):
     sleeps = []
     monkeypatch.setattr(scanner.time, "sleep", sleeps.append)

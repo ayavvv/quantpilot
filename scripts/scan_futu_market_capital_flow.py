@@ -251,19 +251,49 @@ def _load_resume(path: Path, overwrite: bool) -> tuple[pd.DataFrame, set[str]]:
     return existing, codes
 
 
-def _status_schema_version(path: Path) -> int:
+def _read_status_payload(path: Path) -> dict[str, Any]:
     if not path.exists():
-        return 0
+        return {}
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return 0
-    if not isinstance(payload, dict):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _status_schema_version(path: Path) -> int:
+    payload = _read_status_payload(path)
+    if not payload:
         return 0
     try:
         return int(payload.get("scanner_schema_version") or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _csv_row_count(path: Path) -> int:
+    if not path.exists():
+        return 0
+    try:
+        return int(len(pd.read_csv(path, usecols=["code"])))
+    except Exception:
+        return 0
+
+
+def _needs_schema_upgrade_refresh(output_path: Path, status_path: Path) -> bool:
+    payload = _read_status_payload(status_path)
+    if not output_path.exists() or not payload:
+        return False
+    try:
+        schema_version = int(payload.get("scanner_schema_version") or 0)
+    except (TypeError, ValueError):
+        schema_version = 0
+    if schema_version >= STATUS_SCHEMA_VERSION:
+        return False
+    attempted_count = int(payload.get("attempted_count") or payload.get("selected_count") or 0)
+    if attempted_count <= 0:
+        return True
+    return _csv_row_count(output_path) >= attempted_count
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
@@ -372,7 +402,7 @@ def scan_market(
     latest_path = output_dir / f"{market}_latest_flow.csv"
     status_path = output_dir / f"{market}_{date_tag}_status.json"
     existing_schema_version = _status_schema_version(status_path)
-    schema_upgrade_refresh = output_path.exists() and status_path.exists() and existing_schema_version < STATUS_SCHEMA_VERSION
+    schema_upgrade_refresh = _needs_schema_upgrade_refresh(output_path, status_path)
     existing, done_codes = _load_resume(output_path, overwrite=overwrite or schema_upgrade_refresh)
     records = existing.to_dict("records") if not existing.empty else []
 
