@@ -103,6 +103,7 @@ source .venv/bin/activate
 PYTHONPATH="$PYTHONPATH" "$PYTHON_BIN" -m scripts.scan_futu_market_capital_flow "${SCAN_ARGS[@]}"
 log "market_capital_flow: scan complete"
 
+US_OTC_PROXY_FLOW_AVAILABLE=false
 if [ "$ENABLE_US_OTC_PROXY_FLOW" = "true" ] && market_list_contains "$FUTU_MARKET_FLOW_MARKETS" "US"; then
     log "market_capital_flow: building US OTC/Pink proxy flow"
     if [ "$US_OTC_PROXY_FLOW_PROVIDER" = "polygon" ] && [ -z "${POLYGON_API_KEY:-}" ]; then
@@ -122,6 +123,7 @@ if [ "$ENABLE_US_OTC_PROXY_FLOW" = "true" ] && market_list_contains "$FUTU_MARKE
             US_OTC_PROXY_ARGS+=(--max-codes "$US_OTC_PROXY_FLOW_MAX_CODES")
         fi
         if PYTHONPATH="$PYTHONPATH" "$PYTHON_BIN" -m scripts.scan_us_otc_proxy_flow "${US_OTC_PROXY_ARGS[@]}"; then
+            US_OTC_PROXY_FLOW_AVAILABLE=true
             log "market_capital_flow: US OTC/Pink proxy flow complete"
         else
             log "market_capital_flow: WARNING: US OTC/Pink proxy flow failed; digest will show US_OTC coverage as missing"
@@ -151,7 +153,7 @@ if [ "$RUN_MAJOR_MONEY_DIGEST_AFTER_SCAN" = "true" ]; then
             fi
         done
         otc_latest_flow="$US_OTC_PROXY_FLOW_OUTPUT_DIR/US_OTC_latest_flow.csv"
-        if [ -f "$otc_latest_flow" ]; then
+        if [ "$US_OTC_PROXY_FLOW_AVAILABLE" = "true" ] && [ -f "$otc_latest_flow" ]; then
             MAJOR_MONEY_SOURCE_ARGS+=(--source "US_OTC:$otc_latest_flow:${US_OTC_PROXY_FLOW_PROVIDER}_otc_proxy")
         fi
     fi

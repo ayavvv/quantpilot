@@ -15,11 +15,13 @@ def test_run_market_capital_flow_wraps_futu_scanner_and_digest():
     assert 'ENABLE_US_OTC_PROXY_FLOW="${ENABLE_US_OTC_PROXY_FLOW:-false}"' in content
     assert 'mkdir "$LOCK_DIR"' in content
     assert '"$PYTHON_BIN" -m scripts.scan_futu_market_capital_flow "${SCAN_ARGS[@]}"' in content
+    assert 'US_OTC_PROXY_FLOW_AVAILABLE=false' in content
     assert 'market_list_contains "$FUTU_MARKET_FLOW_MARKETS" "US"' in content
+    assert 'US_OTC_PROXY_FLOW_AVAILABLE=true' in content
     assert '"$PYTHON_BIN" -m scripts.scan_us_otc_proxy_flow "${US_OTC_PROXY_ARGS[@]}"' in content
     assert 'MAJOR_MONEY_DIGEST_SOURCES="${MAJOR_MONEY_DIGEST_SOURCES:-auto}"' in content
     assert 'MAJOR_MONEY_SOURCE_ARGS+=(--source "$market:$latest_flow:futu")' in content
-    assert 'MAJOR_MONEY_SOURCE_ARGS+=(--source "US_OTC:$otc_latest_flow:${US_OTC_PROXY_FLOW_PROVIDER}_otc_proxy")' in content
+    assert 'if [ "$US_OTC_PROXY_FLOW_AVAILABLE" = "true" ] && [ -f "$otc_latest_flow" ]; then' in content
     assert '"$PYTHON_BIN" -m scripts.build_major_money_digest' in content
 
 

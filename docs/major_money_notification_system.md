@@ -66,6 +66,8 @@ Artifacts:
     evening does not request a Sunday aggregate.
   - Requires `POLYGON_API_KEY`; without it, the daily digest will keep `US_OTC`
     visible as missing coverage.
+  - Auto digest rebuilds only include `US_OTC` after the current proxy scan
+    succeeds, avoiding stale proxy artifacts after API/key failures.
 - `scripts/run_market_capital_flow.sh`
   - Host-side cron wrapper around the Futu scanner.
   - Uses a lock directory so a long full-market scan cannot overlap itself.

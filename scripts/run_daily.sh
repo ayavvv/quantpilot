@@ -307,6 +307,7 @@ if [ "$ENABLE_MAJOR_MONEY_DIGEST" = "true" ]; then
             log "  WARNING: Eastmoney fund-flow refresh failed; digest will use any existing rank artifact"
         fi
     fi
+    US_OTC_PROXY_FLOW_AVAILABLE=false
     if [ "$ENABLE_US_OTC_PROXY_FLOW" = "true" ]; then
         log "  Building US OTC/Pink proxy flow..."
         US_OTC_PROXY_ARGS=(
@@ -323,6 +324,7 @@ if [ "$ENABLE_MAJOR_MONEY_DIGEST" = "true" ]; then
             US_OTC_PROXY_ARGS+=(--max-codes "$US_OTC_PROXY_FLOW_MAX_CODES")
         fi
         if PYTHONPATH="$PYTHONPATH" "$PYTHON_BIN" -m scripts.scan_us_otc_proxy_flow "${US_OTC_PROXY_ARGS[@]}"; then
+            US_OTC_PROXY_FLOW_AVAILABLE=true
             log "  US OTC/Pink proxy flow complete"
         else
             log "  WARNING: US OTC/Pink proxy flow failed; digest will show US_OTC coverage as missing"
@@ -347,7 +349,7 @@ if [ "$ENABLE_MAJOR_MONEY_DIGEST" = "true" ]; then
             fi
         done
         otc_latest_flow="$US_OTC_PROXY_FLOW_OUTPUT_DIR/US_OTC_latest_flow.csv"
-        if [ -f "$otc_latest_flow" ]; then
+        if [ "$US_OTC_PROXY_FLOW_AVAILABLE" = "true" ] && [ -f "$otc_latest_flow" ]; then
             MAJOR_MONEY_SOURCE_ARGS+=(--source "US_OTC:$otc_latest_flow:${US_OTC_PROXY_FLOW_PROVIDER}_otc_proxy")
         fi
     fi
