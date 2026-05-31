@@ -35,3 +35,41 @@ def test_default_sources_include_healthy_us_otc_proxy(tmp_path):
     )
 
     assert ("US_OTC", otc_path, "polygon_otc_proxy") in builder._default_sources(data_dir)
+
+
+def test_main_writes_dated_archive_outputs(tmp_path):
+    source = tmp_path / "a_flow.csv"
+    output_json = tmp_path / "latest.json"
+    output_csv = tmp_path / "latest.csv"
+    archive_dir = tmp_path / "archive"
+    source.write_text(
+        "code,name,main_net_inflow,update_time\nSH.600000,Entry,80000000,2026-05-29\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        builder.main(
+            [
+                "--source",
+                f"A:{source}:eastmoney",
+                "--expected-markets",
+                "A",
+                "--output-json",
+                str(output_json),
+                "--output-csv",
+                str(output_csv),
+                "--archive-dir",
+                str(archive_dir),
+            ]
+        )
+        == 0
+    )
+
+    assert output_json.exists()
+    assert output_csv.exists()
+    archived_json = archive_dir / "20260529_major_money_digest.json"
+    archived_csv = archive_dir / "20260529_major_money_digest.csv"
+    assert archived_json.exists()
+    assert archived_csv.exists()
+    payload = json.loads(archived_json.read_text(encoding="utf-8"))
+    assert payload["flow_date"] == "2026-05-29"

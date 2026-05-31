@@ -75,6 +75,13 @@ def _snapshot_date(path: Path) -> str:
     return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d")
 
 
+def _digest_date_tag(digest: dict) -> str:
+    date_value = str(digest.get("flow_date") or digest.get("generated_at") or "")[:10]
+    if len(date_value) == 10 and date_value[:4].isdigit():
+        return date_value.replace("-", "")
+    return datetime.now().strftime("%Y%m%d")
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build market-wide major-money digest JSON/CSV.")
     parser.add_argument(
@@ -99,6 +106,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "MAJOR_MONEY_DIGEST_CSV",
             str(DATA_DIR / "output" / "major_money_digest_latest.csv"),
         ),
+    )
+    parser.add_argument(
+        "--archive-dir",
+        default=os.environ.get(
+            "MAJOR_MONEY_DIGEST_ARCHIVE_DIR",
+            str(DATA_DIR / "output" / "major_money_digest"),
+        ),
+        help="Directory for dated digest JSON/CSV archives. Set empty to disable.",
     )
     return parser.parse_args(argv)
 
@@ -130,10 +145,22 @@ def main(argv: list[str] | None = None) -> int:
 
     output_csv = Path(args.output_csv).expanduser()
     output_csv.parent.mkdir(parents=True, exist_ok=True)
-    digest_rows(digest).to_csv(output_csv, index=False)
+    rows = digest_rows(digest)
+    rows.to_csv(output_csv, index=False)
 
     print(f"Wrote major-money digest JSON: {output_json}")
     print(f"Wrote major-money digest CSV: {output_csv}")
+    archive_dir_value = str(args.archive_dir or "").strip()
+    if archive_dir_value:
+        archive_dir = Path(archive_dir_value).expanduser()
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        date_tag = _digest_date_tag(digest)
+        archive_json = archive_dir / f"{date_tag}_major_money_digest.json"
+        archive_csv = archive_dir / f"{date_tag}_major_money_digest.csv"
+        archive_json.write_text(json.dumps(digest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        rows.to_csv(archive_csv, index=False)
+        print(f"Wrote major-money digest archive JSON: {archive_json}")
+        print(f"Wrote major-money digest archive CSV: {archive_csv}")
     for market in digest["markets"]:
         print(
             "{market}: available={available} rows={ok_rows}/{total_rows} "

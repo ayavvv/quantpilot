@@ -64,6 +64,7 @@ MAJOR_MONEY_DIGEST_SOURCES="${MAJOR_MONEY_DIGEST_SOURCES:-auto}"
 MAJOR_MONEY_EXPECTED_MARKETS="${MAJOR_MONEY_EXPECTED_MARKETS:-A,HK,US,US_OTC}"
 MAJOR_MONEY_DIGEST_JSON="${MAJOR_MONEY_DIGEST_JSON:-$DATA_DIR/output/major_money_digest_latest.json}"
 MAJOR_MONEY_DIGEST_CSV="${MAJOR_MONEY_DIGEST_CSV:-$DATA_DIR/output/major_money_digest_latest.csv}"
+MAJOR_MONEY_DIGEST_ARCHIVE_DIR="${MAJOR_MONEY_DIGEST_ARCHIVE_DIR:-$DATA_DIR/output/major_money_digest}"
 ENABLE_US_OTC_PROXY_FLOW="${ENABLE_US_OTC_PROXY_FLOW:-false}"
 US_OTC_PROXY_FLOW_PROVIDER="${US_OTC_PROXY_FLOW_PROVIDER:-polygon}"
 US_OTC_PROXY_FLOW_OUTPUT_DIR="${US_OTC_PROXY_FLOW_OUTPUT_DIR:-$DATA_DIR/capital_flow/us_otc_proxy}"
@@ -358,7 +359,8 @@ if [ "$ENABLE_MAJOR_MONEY_DIGEST" = "true" ]; then
             "${MAJOR_MONEY_SOURCE_ARGS[@]}" \
             --expected-markets "$MAJOR_MONEY_EXPECTED_MARKETS" \
             --output-json "$MAJOR_MONEY_DIGEST_JSON" \
-            --output-csv "$MAJOR_MONEY_DIGEST_CSV"; then
+            --output-csv "$MAJOR_MONEY_DIGEST_CSV" \
+            --archive-dir "$MAJOR_MONEY_DIGEST_ARCHIVE_DIR"; then
         log "  Market-wide major-money digest complete"
     else
         log "  WARNING: market-wide major-money digest failed; continuing daily pipeline"

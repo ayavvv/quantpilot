@@ -12,6 +12,7 @@ def test_run_market_capital_flow_wraps_futu_scanner_and_digest():
     assert 'FUTU_MARKET_FLOW_MIN_OK_RATIO="${FUTU_MARKET_FLOW_MIN_OK_RATIO:-0}"' in content
     assert 'FUTU_MARKET_FLOW_EXCLUDE_EXCHANGE_TYPES="${FUTU_MARKET_FLOW_EXCLUDE_EXCHANGE_TYPES:-US_PINK,N/A}"' in content
     assert 'MAJOR_MONEY_EXPECTED_MARKETS="${MAJOR_MONEY_EXPECTED_MARKETS:-A,HK,US,US_OTC}"' in content
+    assert 'MAJOR_MONEY_DIGEST_ARCHIVE_DIR="${MAJOR_MONEY_DIGEST_ARCHIVE_DIR:-$DATA_DIR/output/major_money_digest}"' in content
     assert 'ENABLE_US_OTC_PROXY_FLOW="${ENABLE_US_OTC_PROXY_FLOW:-false}"' in content
     assert 'mkdir "$LOCK_DIR"' in content
     assert '"$PYTHON_BIN" -m scripts.scan_futu_market_capital_flow "${SCAN_ARGS[@]}"' in content
@@ -25,6 +26,7 @@ def test_run_market_capital_flow_wraps_futu_scanner_and_digest():
     assert 'MAJOR_MONEY_SOURCE_ARGS+=(--source "$market:$latest_flow:futu")' in content
     assert 'if [ "$US_OTC_PROXY_FLOW_AVAILABLE" = "true" ] && [ -f "$otc_latest_flow" ]; then' in content
     assert '"$PYTHON_BIN" -m scripts.build_major_money_digest' in content
+    assert '--archive-dir "$MAJOR_MONEY_DIGEST_ARCHIVE_DIR"' in content
 
 
 def test_run_market_capital_flow_supports_smoke_codes():

@@ -32,6 +32,8 @@ Artifacts:
 - `scripts/build_major_money_digest.py`
   - Builds `~/quantpilot_data/output/major_money_digest_latest.json`.
   - Builds `~/quantpilot_data/output/major_money_digest_latest.csv`.
+  - Archives dated JSON/CSV copies under
+    `~/quantpilot_data/output/major_money_digest/`.
   - Defaults to A-share Eastmoney full-market flow if present.
   - Also consumes HK/US Futu full-market scan artifacts when present:
     - `~/quantpilot_data/capital_flow/futu_market/HK_latest_flow.csv`

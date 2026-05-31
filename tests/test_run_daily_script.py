@@ -87,6 +87,7 @@ def test_run_daily_builds_market_wide_major_money_digest():
     content = RUN_DAILY.read_text()
     assert 'ENABLE_MAJOR_MONEY_DIGEST="${ENABLE_MAJOR_MONEY_DIGEST:-true}"' in content
     assert 'MAJOR_MONEY_EXPECTED_MARKETS="${MAJOR_MONEY_EXPECTED_MARKETS:-A,HK,US,US_OTC}"' in content
+    assert 'MAJOR_MONEY_DIGEST_ARCHIVE_DIR="${MAJOR_MONEY_DIGEST_ARCHIVE_DIR:-$DATA_DIR/output/major_money_digest}"' in content
     assert 'ENABLE_EASTMONEY_FUND_FLOW_REFRESH="${ENABLE_EASTMONEY_FUND_FLOW_REFRESH:-true}"' in content
     assert 'ENABLE_US_OTC_PROXY_FLOW="${ENABLE_US_OTC_PROXY_FLOW:-false}"' in content
     assert 'US_OTC_PROXY_FLOW_EXCHANGE_TYPES="${US_OTC_PROXY_FLOW_EXCHANGE_TYPES:-US_PINK}"' in content
@@ -104,6 +105,7 @@ def test_run_daily_builds_market_wide_major_money_digest():
     assert '"$PYTHON_BIN" -m scripts.build_major_money_digest' in content
     assert '--expected-markets "$MAJOR_MONEY_EXPECTED_MARKETS"' in content
     assert '--output-json "$MAJOR_MONEY_DIGEST_JSON"' in content
+    assert '--archive-dir "$MAJOR_MONEY_DIGEST_ARCHIVE_DIR"' in content
 
 
 def test_run_daily_when_ready_replays_target_date():
