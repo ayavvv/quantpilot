@@ -141,12 +141,12 @@ def test_main_supports_yahoo_chart_without_api_key(monkeypatch, tmp_path):
         index=False,
     )
 
-    def fake_fetch(universe, **kwargs):
+    def fake_fetch(ticker, **kwargs):
+        assert ticker == "AABB"
         assert kwargs["date"] == "2026-05-29"
-        assert kwargs["request_delay"] == 0
-        return [{"T": "AABB", "o": 0.01, "c": 0.02, "h": 0.02, "l": 0.01, "v": 1_000_000}], {}
+        return {"T": "AABB", "o": 0.01, "c": 0.02, "h": 0.02, "l": 0.01, "v": 1_000_000}, ""
 
-    monkeypatch.setattr(scanner, "fetch_yahoo_chart_daily", fake_fetch)
+    monkeypatch.setattr(scanner, "_fetch_yahoo_chart_daily_bar_with_retries", fake_fetch)
 
     scanner.main(
         [
@@ -160,6 +160,8 @@ def test_main_supports_yahoo_chart_without_api_key(monkeypatch, tmp_path):
             str(tmp_path),
             "--request-delay",
             "0",
+            "--concurrency",
+            "2",
         ]
     )
 
@@ -169,6 +171,40 @@ def test_main_supports_yahoo_chart_without_api_key(monkeypatch, tmp_path):
     assert output["capital_flow_status"].tolist() == ["ok"]
     assert payload["provider"] == "yahoo_chart"
     assert payload["ok_count"] == 1
+
+
+def test_yahoo_chart_scan_concurrency_processes_pending_rows(monkeypatch, tmp_path):
+    universe = pd.DataFrame(
+        [
+            {"code": "US.AABB", "ticker": "AABB", "name": "Asia Broadband", "exchange_type": "US_PINK"},
+            {"code": "US.AACAY", "ticker": "AACAY", "name": "AAC", "exchange_type": "US_PINK"},
+            {"code": "US.AAGC", "ticker": "AAGC", "name": "All American", "exchange_type": "US_PINK"},
+        ]
+    )
+    calls = []
+
+    def fake_fetch(ticker, **kwargs):
+        calls.append(ticker)
+        return {"T": ticker, "o": 1.0, "c": 2.0, "h": 2.0, "l": 1.0, "v": 1_000}, ""
+
+    monkeypatch.setattr(scanner, "_fetch_yahoo_chart_daily_bar_with_retries", fake_fetch)
+
+    rows = scanner.scan_yahoo_chart_proxy_records(
+        universe,
+        output_dir=tmp_path,
+        date="2026-05-29",
+        min_dollar_volume=0.0,
+        request_delay=0.0,
+        max_retries=0,
+        timeout=1.0,
+        batch_flush=2,
+        overwrite=False,
+        concurrency=2,
+    )
+
+    assert set(calls) == {"AABB", "AACAY", "AAGC"}
+    assert set(rows["code"]) == {"US.AABB", "US.AACAY", "US.AAGC"}
+    assert (tmp_path / "US_OTC_latest_flow.csv").exists()
 
 
 def test_yahoo_chart_scan_resumes_existing_dated_output(monkeypatch, tmp_path):

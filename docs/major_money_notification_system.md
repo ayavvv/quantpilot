@@ -81,7 +81,9 @@ Artifacts:
   - `provider=polygon` requires `POLYGON_API_KEY` or `POLYGON_API_KEY_FILE`;
     `provider=yahoo_chart` requires no key but is slower because it queries
     symbols one by one. The Yahoo fallback writes partial CSV batches and
-    resumes dated output unless `US_OTC_PROXY_FLOW_OVERWRITE=true`.
+    resumes dated output unless `US_OTC_PROXY_FLOW_OVERWRITE=true`. Use
+    `US_OTC_PROXY_FLOW_CONCURRENCY` conservatively to shorten no-key full scans
+    without overwhelming Yahoo's chart endpoint.
   - Auto digest rebuilds only include `US_OTC` after the current proxy scan
     succeeds, avoiding stale proxy artifacts after API/key failures.
 - `scripts/run_market_capital_flow.sh`

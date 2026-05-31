@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import time as time_module
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Any
@@ -413,6 +414,45 @@ def _load_resume(path: Path, *, overwrite: bool) -> tuple[pd.DataFrame, set[str]
     return existing, {ticker for ticker in tickers if ticker}
 
 
+def _yahoo_record_for_item(
+    item: dict[str, Any],
+    *,
+    date: str,
+    min_dollar_volume: float,
+    max_retries: int,
+    timeout: float,
+    provider: str,
+) -> tuple[str, list[dict[str, Any]]]:
+    ticker = str(item.get("ticker") or _ticker_from_code(item.get("code"))).upper()
+    aggregate, error = _fetch_yahoo_chart_daily_bar_with_retries(
+        ticker,
+        date=date,
+        max_retries=max_retries,
+        timeout=timeout,
+    )
+    row = build_proxy_records(
+        pd.DataFrame([item]),
+        [aggregate] if aggregate else [],
+        date=date,
+        provider=provider,
+        min_dollar_volume=min_dollar_volume,
+        aggregate_errors={ticker: error} if error else {},
+    )
+    return ticker, row.to_dict("records")
+
+
+def _print_yahoo_progress(rows: pd.DataFrame, *, universe_count: int, latest_path: Path) -> None:
+    statuses = rows.get("capital_flow_status", pd.Series(dtype=str)).fillna("").astype(str)
+    print(
+        "US_OTC yahoo_chart progress: "
+        f"rows={len(rows)}/{universe_count} "
+        f"ok={int((statuses == 'ok').sum())} "
+        f"empty={int((statuses == 'empty').sum())} "
+        f"latest={latest_path}",
+        flush=True,
+    )
+
+
 def scan_yahoo_chart_proxy_records(
     universe: pd.DataFrame,
     *,
@@ -424,48 +464,112 @@ def scan_yahoo_chart_proxy_records(
     timeout: float,
     batch_flush: int,
     overwrite: bool,
+    concurrency: int = 1,
 ) -> pd.DataFrame:
     paths = _flow_paths(output_dir, date)
     existing, done_tickers = _load_resume(paths["output"], overwrite=overwrite)
     records = existing.to_dict("records") if not existing.empty else []
     batch_count = 0
     provider = "yahoo_chart"
+    worker_count = max(int(concurrency), 1)
 
-    for _, item in universe.iterrows():
+    pending_items: list[dict[str, Any]] = []
+    for _, row in universe.iterrows():
+        item = row.to_dict()
         ticker = str(item.get("ticker") or _ticker_from_code(item.get("code"))).upper()
         if not ticker or ticker in done_tickers:
             continue
-        aggregate, error = _fetch_yahoo_chart_daily_bar_with_retries(
-            ticker,
-            date=date,
-            max_retries=max_retries,
-            timeout=timeout,
-        )
-        row = build_proxy_records(
-            pd.DataFrame([item]),
-            [aggregate] if aggregate else [],
-            date=date,
-            provider=provider,
-            min_dollar_volume=min_dollar_volume,
-            aggregate_errors={ticker: error} if error else {},
-        )
-        records.extend(row.to_dict("records"))
-        done_tickers.add(ticker)
-        batch_count += 1
-        if batch_count % max(batch_flush, 1) == 0:
-            partial = pd.DataFrame(records)
-            paths = _write_flow_files(partial, universe, output_dir=output_dir, date=date)
-            statuses = partial.get("capital_flow_status", pd.Series(dtype=str)).fillna("").astype(str)
-            print(
-                "US_OTC yahoo_chart progress: "
-                f"rows={len(partial)}/{len(universe)} "
-                f"ok={int((statuses == 'ok').sum())} "
-                f"empty={int((statuses == 'empty').sum())} "
-                f"latest={paths['latest']}",
-                flush=True,
+        pending_items.append(item)
+
+    def flush_if_needed(force: bool = False) -> None:
+        nonlocal batch_count
+        if not records:
+            return
+        if not force and batch_count % max(batch_flush, 1) != 0:
+            return
+        batch_count = 0
+        partial = pd.DataFrame(records)
+        written_paths = _write_flow_files(partial, universe, output_dir=output_dir, date=date)
+        _print_yahoo_progress(partial, universe_count=len(universe), latest_path=written_paths["latest"])
+
+    if worker_count <= 1:
+        for item in pending_items:
+            ticker, row_records = _yahoo_record_for_item(
+                item,
+                date=date,
+                min_dollar_volume=min_dollar_volume,
+                max_retries=max_retries,
+                timeout=timeout,
+                provider=provider,
             )
-        if request_delay > 0:
-            time_module.sleep(request_delay)
+            records.extend(row_records)
+            done_tickers.add(ticker)
+            batch_count += 1
+            flush_if_needed()
+            if request_delay > 0:
+                time_module.sleep(request_delay)
+    else:
+        item_iter = iter(pending_items)
+
+        def next_item() -> dict[str, Any] | None:
+            try:
+                return next(item_iter)
+            except StopIteration:
+                return None
+
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            in_flight: dict[Any, dict[str, Any]] = {}
+
+            def submit_one() -> bool:
+                item = next_item()
+                if item is None:
+                    return False
+                future = executor.submit(
+                    _yahoo_record_for_item,
+                    item,
+                    date=date,
+                    min_dollar_volume=min_dollar_volume,
+                    max_retries=max_retries,
+                    timeout=timeout,
+                    provider=provider,
+                )
+                in_flight[future] = item
+                if request_delay > 0:
+                    time_module.sleep(request_delay)
+                return True
+
+            for _ in range(worker_count):
+                if not submit_one():
+                    break
+
+            while in_flight:
+                completed, _ = wait(in_flight.keys(), return_when=FIRST_COMPLETED)
+                for future in completed:
+                    item = in_flight.pop(future)
+                    try:
+                        ticker, row_records = future.result()
+                    except Exception as exc:
+                        ticker = str(item.get("ticker") or _ticker_from_code(item.get("code"))).upper()
+                        row = build_proxy_records(
+                            pd.DataFrame([item]),
+                            [],
+                            date=date,
+                            provider=provider,
+                            min_dollar_volume=min_dollar_volume,
+                            aggregate_errors={ticker: f"Yahoo chart worker failed: {exc}"},
+                        )
+                        row_records = row.to_dict("records")
+                    records.extend(row_records)
+                    done_tickers.add(ticker)
+                    batch_count += 1
+                    flush_if_needed()
+                    submit_one()
+
+    if records:
+        if batch_count:
+            partial = pd.DataFrame(records)
+            written_paths = _write_flow_files(partial, universe, output_dir=output_dir, date=date)
+            _print_yahoo_progress(partial, universe_count=len(universe), latest_path=written_paths["latest"])
 
     result = pd.DataFrame(records)
     _write_flow_files(result, universe, output_dir=output_dir, date=date)
@@ -607,6 +711,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=int(os.environ.get("US_OTC_PROXY_FLOW_BATCH_FLUSH", "100")),
         help="Rows between partial CSV flushes for per-symbol provider scans.",
     )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=int(os.environ.get("US_OTC_PROXY_FLOW_CONCURRENCY", "1")),
+        help="Concurrent per-symbol requests for providers such as yahoo_chart.",
+    )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument(
         "--output-dir",
@@ -653,6 +763,7 @@ def main(argv: list[str] | None = None) -> int:
                 timeout=args.timeout,
                 batch_flush=args.batch_flush,
                 overwrite=args.overwrite,
+                concurrency=args.concurrency,
             )
     except Exception as exc:
         write_failure_status(
