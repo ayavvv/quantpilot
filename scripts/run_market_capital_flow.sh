@@ -42,9 +42,11 @@ FUTU_MARKET_FLOW_MAX_CODES="${FUTU_MARKET_FLOW_MAX_CODES:-0}"
 FUTU_MARKET_FLOW_CODES="${FUTU_MARKET_FLOW_CODES:-}"
 RUN_MAJOR_MONEY_DIGEST_AFTER_SCAN="${RUN_MAJOR_MONEY_DIGEST_AFTER_SCAN:-true}"
 MAJOR_MONEY_DIGEST_SOURCES="${MAJOR_MONEY_DIGEST_SOURCES:-auto}"
-MAJOR_MONEY_EXPECTED_MARKETS="${MAJOR_MONEY_EXPECTED_MARKETS:-A,HK,US}"
+MAJOR_MONEY_EXPECTED_MARKETS="${MAJOR_MONEY_EXPECTED_MARKETS:-A,HK,US,US_OTC}"
 MAJOR_MONEY_DIGEST_JSON="${MAJOR_MONEY_DIGEST_JSON:-$DATA_DIR/output/major_money_digest_latest.json}"
 MAJOR_MONEY_DIGEST_CSV="${MAJOR_MONEY_DIGEST_CSV:-$DATA_DIR/output/major_money_digest_latest.csv}"
+US_OTC_PROXY_FLOW_PROVIDER="${US_OTC_PROXY_FLOW_PROVIDER:-polygon}"
+US_OTC_PROXY_FLOW_OUTPUT_DIR="${US_OTC_PROXY_FLOW_OUTPUT_DIR:-$DATA_DIR/capital_flow/us_otc_proxy}"
 LOCK_DIR="${LOCK_DIR:-$PROJECT_DIR/logs/market_capital_flow_${FUTU_MARKET_FLOW_MARKETS//,/}.lock}"
 
 log() {
@@ -108,6 +110,10 @@ if [ "$RUN_MAJOR_MONEY_DIGEST_AFTER_SCAN" = "true" ]; then
                 MAJOR_MONEY_SOURCE_ARGS+=(--source "$market:$latest_flow:futu")
             fi
         done
+        otc_latest_flow="$US_OTC_PROXY_FLOW_OUTPUT_DIR/US_OTC_latest_flow.csv"
+        if [ -f "$otc_latest_flow" ]; then
+            MAJOR_MONEY_SOURCE_ARGS+=(--source "US_OTC:$otc_latest_flow:${US_OTC_PROXY_FLOW_PROVIDER}_otc_proxy")
+        fi
     fi
     PYTHONPATH="$PYTHONPATH" "$PYTHON_BIN" -m scripts.build_major_money_digest \
         "${MAJOR_MONEY_SOURCE_ARGS[@]}" \

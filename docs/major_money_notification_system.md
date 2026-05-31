@@ -36,6 +36,8 @@ Artifacts:
   - Also consumes HK/US Futu full-market scan artifacts when present:
     - `~/quantpilot_data/capital_flow/futu_market/HK_latest_flow.csv`
     - `~/quantpilot_data/capital_flow/futu_market/US_latest_flow.csv`
+  - Also consumes an optional `US_OTC` proxy artifact when present:
+    - `~/quantpilot_data/capital_flow/us_otc_proxy/US_OTC_latest_flow.csv`
 - `scripts/refresh_eastmoney_fund_flow_rank.py`
   - Refreshes the A-share market-wide Eastmoney rank artifact before the daily
     report.
@@ -51,8 +53,17 @@ Artifacts:
     ok/error/empty counts, coverage ratio, and output paths.
   - Status files also include source/selected/excluded exchange-type counts and
     per-exchange OK/error/empty counts.
+  - Writes `US_latest_source_universe.csv`, preserving the full source universe
+    before scheduled filters such as `US_PINK,N/A` are applied.
   - Use `--max-codes` for smoke tests; omit it only when ready for long full
     scans.
+- `scripts/scan_us_otc_proxy_flow.py`
+  - Optional Polygon/Massive daily aggregate scanner for `US_PINK`.
+  - Produces a `US_OTC` proxy artifact using directional dollar volume from
+    daily OHLCV. This is lower-confidence than vendor capital-flow fields and
+    is labeled as a proxy in the artifact source.
+  - Requires `POLYGON_API_KEY`; without it, the daily digest will keep `US_OTC`
+    visible as missing coverage.
 - `scripts/run_market_capital_flow.sh`
   - Host-side cron wrapper around the Futu scanner.
   - Uses a lock directory so a long full-market scan cannot overlap itself.
@@ -90,9 +101,18 @@ Build the digest from currently available artifacts:
   --min-rows 1000
 
 .venv/bin/python -m scripts.build_major_money_digest \
-  --expected-markets A,HK,US \
+  --expected-markets A,HK,US,US_OTC \
   --output-json ~/quantpilot_data/output/major_money_digest_latest.json \
   --output-csv ~/quantpilot_data/output/major_money_digest_latest.csv
+```
+
+Optional US OTC/Pink proxy flow, if a Polygon/Massive API key is configured:
+
+```bash
+POLYGON_API_KEY=... \
+.venv/bin/python -m scripts.scan_us_otc_proxy_flow \
+  --universe-csv ~/quantpilot_data/capital_flow/futu_market/US_latest_source_universe.csv \
+  --output-dir ~/quantpilot_data/capital_flow/us_otc_proxy
 ```
 
 Smoke-test Futu HK/US scanning without claiming full-market coverage:

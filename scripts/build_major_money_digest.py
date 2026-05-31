@@ -25,6 +25,7 @@ def _default_sources(data_dir: Path) -> list[tuple[str, Path, str]]:
         ("A", data_dir / "output" / "eastmoney_fund_flow_rank_latest.csv", "eastmoney"),
         ("HK", data_dir / "capital_flow" / "futu_market" / "HK_latest_flow.csv", "futu"),
         ("US", data_dir / "capital_flow" / "futu_market" / "US_latest_flow.csv", "futu"),
+        ("US_OTC", data_dir / "capital_flow" / "us_otc_proxy" / "US_OTC_latest_flow.csv", "polygon_otc_proxy"),
     ]
     return [(market, path, source) for market, path, source in candidates if path.exists()]
 
@@ -73,7 +74,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=[],
         help="MARKET:/path/to/file.csv[:source_name]. Defaults to known QuantPilot artifacts.",
     )
-    parser.add_argument("--expected-markets", default=os.environ.get("MAJOR_MONEY_EXPECTED_MARKETS", "A,HK,US"))
+    parser.add_argument("--expected-markets", default=os.environ.get("MAJOR_MONEY_EXPECTED_MARKETS", "A,HK,US,US_OTC"))
     parser.add_argument("--top-n", type=int, default=int(os.environ.get("MAJOR_MONEY_TOP_N", "10")))
     parser.add_argument(
         "--output-json",

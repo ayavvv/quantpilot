@@ -61,9 +61,15 @@ A_SHARE_CAPITAL_FLOW_GATE_RISK_MAX_HIT_RATE="${A_SHARE_CAPITAL_FLOW_GATE_RISK_MA
 A_SHARE_CAPITAL_FLOW_GATE_CONFIRM_MIN_HIT_RATE="${A_SHARE_CAPITAL_FLOW_GATE_CONFIRM_MIN_HIT_RATE:-0.55}"
 ENABLE_MAJOR_MONEY_DIGEST="${ENABLE_MAJOR_MONEY_DIGEST:-true}"
 MAJOR_MONEY_DIGEST_SOURCES="${MAJOR_MONEY_DIGEST_SOURCES:-auto}"
-MAJOR_MONEY_EXPECTED_MARKETS="${MAJOR_MONEY_EXPECTED_MARKETS:-A,HK,US}"
+MAJOR_MONEY_EXPECTED_MARKETS="${MAJOR_MONEY_EXPECTED_MARKETS:-A,HK,US,US_OTC}"
 MAJOR_MONEY_DIGEST_JSON="${MAJOR_MONEY_DIGEST_JSON:-$DATA_DIR/output/major_money_digest_latest.json}"
 MAJOR_MONEY_DIGEST_CSV="${MAJOR_MONEY_DIGEST_CSV:-$DATA_DIR/output/major_money_digest_latest.csv}"
+ENABLE_US_OTC_PROXY_FLOW="${ENABLE_US_OTC_PROXY_FLOW:-false}"
+US_OTC_PROXY_FLOW_PROVIDER="${US_OTC_PROXY_FLOW_PROVIDER:-polygon}"
+US_OTC_PROXY_FLOW_OUTPUT_DIR="${US_OTC_PROXY_FLOW_OUTPUT_DIR:-$DATA_DIR/capital_flow/us_otc_proxy}"
+US_OTC_PROXY_FLOW_UNIVERSE_CSV="${US_OTC_PROXY_FLOW_UNIVERSE_CSV:-$DATA_DIR/capital_flow/futu_market/US_latest_source_universe.csv}"
+US_OTC_PROXY_FLOW_MAX_CODES="${US_OTC_PROXY_FLOW_MAX_CODES:-0}"
+US_OTC_PROXY_FLOW_MIN_DOLLAR_VOLUME="${US_OTC_PROXY_FLOW_MIN_DOLLAR_VOLUME:-0}"
 ENABLE_EASTMONEY_FUND_FLOW_REFRESH="${ENABLE_EASTMONEY_FUND_FLOW_REFRESH:-true}"
 EASTMONEY_FUND_FLOW_RANK_OUTPUT="${EASTMONEY_FUND_FLOW_RANK_OUTPUT:-$DATA_DIR/output/eastmoney_fund_flow_rank_latest.csv}"
 EASTMONEY_FUND_FLOW_ARCHIVE_DIR="${EASTMONEY_FUND_FLOW_ARCHIVE_DIR:-$DATA_DIR/fund_flow/eastmoney}"
@@ -299,6 +305,23 @@ if [ "$ENABLE_MAJOR_MONEY_DIGEST" = "true" ]; then
             log "  WARNING: Eastmoney fund-flow refresh failed; digest will use any existing rank artifact"
         fi
     fi
+    if [ "$ENABLE_US_OTC_PROXY_FLOW" = "true" ]; then
+        log "  Building US OTC/Pink proxy flow..."
+        US_OTC_PROXY_ARGS=(
+            --provider "$US_OTC_PROXY_FLOW_PROVIDER"
+            --universe-csv "$US_OTC_PROXY_FLOW_UNIVERSE_CSV"
+            --output-dir "$US_OTC_PROXY_FLOW_OUTPUT_DIR"
+            --min-dollar-volume "$US_OTC_PROXY_FLOW_MIN_DOLLAR_VOLUME"
+        )
+        if [ "$US_OTC_PROXY_FLOW_MAX_CODES" != "0" ]; then
+            US_OTC_PROXY_ARGS+=(--max-codes "$US_OTC_PROXY_FLOW_MAX_CODES")
+        fi
+        if PYTHONPATH="$PYTHONPATH" "$PYTHON_BIN" -m scripts.scan_us_otc_proxy_flow "${US_OTC_PROXY_ARGS[@]}"; then
+            log "  US OTC/Pink proxy flow complete"
+        else
+            log "  WARNING: US OTC/Pink proxy flow failed; digest will show US_OTC coverage as missing"
+        fi
+    fi
     MAJOR_MONEY_SOURCE_ARGS=()
     if [ "$MAJOR_MONEY_DIGEST_SOURCES" != "auto" ]; then
         IFS=';' read -r -a MAJOR_MONEY_SOURCE_SPECS <<< "$MAJOR_MONEY_DIGEST_SOURCES"
@@ -317,6 +340,10 @@ if [ "$ENABLE_MAJOR_MONEY_DIGEST" = "true" ]; then
                 MAJOR_MONEY_SOURCE_ARGS+=(--source "$market:$latest_flow:futu")
             fi
         done
+        otc_latest_flow="$US_OTC_PROXY_FLOW_OUTPUT_DIR/US_OTC_latest_flow.csv"
+        if [ -f "$otc_latest_flow" ]; then
+            MAJOR_MONEY_SOURCE_ARGS+=(--source "US_OTC:$otc_latest_flow:${US_OTC_PROXY_FLOW_PROVIDER}_otc_proxy")
+        fi
     fi
     if PYTHONPATH="$PYTHONPATH" \
         "$PYTHON_BIN" -m scripts.build_major_money_digest \

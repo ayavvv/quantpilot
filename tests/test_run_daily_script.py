@@ -86,11 +86,15 @@ def test_run_daily_evaluates_archived_capital_flow_overlays():
 def test_run_daily_builds_market_wide_major_money_digest():
     content = RUN_DAILY.read_text()
     assert 'ENABLE_MAJOR_MONEY_DIGEST="${ENABLE_MAJOR_MONEY_DIGEST:-true}"' in content
+    assert 'MAJOR_MONEY_EXPECTED_MARKETS="${MAJOR_MONEY_EXPECTED_MARKETS:-A,HK,US,US_OTC}"' in content
     assert 'ENABLE_EASTMONEY_FUND_FLOW_REFRESH="${ENABLE_EASTMONEY_FUND_FLOW_REFRESH:-true}"' in content
+    assert 'ENABLE_US_OTC_PROXY_FLOW="${ENABLE_US_OTC_PROXY_FLOW:-false}"' in content
     assert '"$PYTHON_BIN" -m scripts.refresh_eastmoney_fund_flow_rank' in content
+    assert '"$PYTHON_BIN" -m scripts.scan_us_otc_proxy_flow' in content
     assert '--output "$EASTMONEY_FUND_FLOW_RANK_OUTPUT"' in content
     assert 'MAJOR_MONEY_SOURCE_ARGS+=(--source "A:$EASTMONEY_FUND_FLOW_RANK_OUTPUT:eastmoney")' in content
     assert 'latest_flow="$DATA_DIR/capital_flow/futu_market/${market}_latest_flow.csv"' in content
+    assert 'MAJOR_MONEY_SOURCE_ARGS+=(--source "US_OTC:$otc_latest_flow:${US_OTC_PROXY_FLOW_PROVIDER}_otc_proxy")' in content
     assert 'MAJOR_MONEY_DIGEST_SOURCES="${MAJOR_MONEY_DIGEST_SOURCES:-auto}"' in content
     assert '"$PYTHON_BIN" -m scripts.build_major_money_digest' in content
     assert '--expected-markets "$MAJOR_MONEY_EXPECTED_MARKETS"' in content

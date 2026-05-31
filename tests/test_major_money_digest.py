@@ -3,6 +3,7 @@ import json
 import pandas as pd
 
 from strategy.major_money_digest import build_digest, build_market_summary, digest_rows
+from strategy.major_money_digest import market_currency, thresholds_for_market
 
 
 def test_build_market_summary_classifies_entry_and_exit():
@@ -62,6 +63,14 @@ def test_build_digest_keeps_missing_expected_markets_visible():
     assert markets["A"]["available"] is False
     assert markets["HK"]["available"] is False
     assert digest["amount_by_currency"]["USD"]["entry_amount"] == 30_000_000
+
+
+def test_us_otc_market_has_usd_currency_and_proxy_thresholds():
+    thresholds = thresholds_for_market("US_OTC")
+
+    assert market_currency("US_OTC") == "USD"
+    assert thresholds.entry_amount == 1_000_000
+    assert thresholds.exit_amount == -1_000_000
 
 
 def test_build_market_summary_carries_source_coverage_metadata():

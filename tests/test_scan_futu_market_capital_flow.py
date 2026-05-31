@@ -56,6 +56,7 @@ def test_scan_market_writes_latest_status(tmp_path):
     assert payload["excluded_exchange_types"] == {}
     assert payload["status_by_exchange_type"] == {"US_NASDAQ": {"ok": 1}, "US_NYSE": {"error": 1}}
     assert payload["unsupported_exchange_types"] == {}
+    assert (tmp_path / "US_latest_universe.csv").exists()
 
 
 def test_scan_market_writes_failed_status_before_raise(tmp_path):

@@ -491,6 +491,16 @@ def analyze_market_money_artifacts(reference_date: str = "") -> dict[str, Any]:
         a_market = digest.get("markets", {}).get("A", {})
         if not a_market.get("available"):
             issues.append("Major-money digest missing available A-share market coverage")
+        unavailable_markets = sorted(
+            market
+            for market, market_status in digest.get("markets", {}).items()
+            if isinstance(market_status, dict) and not market_status.get("available")
+        )
+        if unavailable_markets:
+            issues.append(
+                "Major-money digest missing available expected market coverage: "
+                + ",".join(unavailable_markets)
+            )
         digest_date = str(digest.get("flow_date") or "")
         if reference_date and digest_date and digest_date < reference_date:
             issues.append(

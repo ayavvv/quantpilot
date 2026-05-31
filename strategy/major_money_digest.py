@@ -22,6 +22,7 @@ MARKET_CURRENCIES = {
     "SZ": "CNY",
     "HK": "HKD",
     "US": "USD",
+    "US_OTC": "USD",
 }
 
 
@@ -52,6 +53,12 @@ DEFAULT_THRESHOLDS = {
         watch_entry_amount=5_000_000.0,
         watch_exit_amount=-5_000_000.0,
     ),
+    "US_OTC": FlowThresholds(
+        entry_amount=1_000_000.0,
+        exit_amount=-1_000_000.0,
+        watch_entry_amount=250_000.0,
+        watch_exit_amount=-250_000.0,
+    ),
 }
 
 
@@ -59,6 +66,8 @@ def normalize_market(value: str) -> str:
     normalized = str(value or "").strip().upper()
     if normalized in {"CN", "ASHARE", "A_SHARE", "A-SHARE", "CHINA"}:
         return "A"
+    if normalized in {"USOTC", "US-OTC", "US.PINK", "US_PINK", "OTC", "PINK"}:
+        return "US_OTC"
     return normalized
 
 

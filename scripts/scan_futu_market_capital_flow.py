@@ -129,7 +129,8 @@ def fetch_futu_universe(
     df["market"] = market
     if "delisting" in df.columns:
         df = df[~df["delisting"].fillna(False).astype(bool)].copy()
-    source_exchange_types = _exchange_type_counts(df)
+    source_universe = df.reset_index(drop=True).copy()
+    source_exchange_types = _exchange_type_counts(source_universe)
     if "exchange_type" in df.columns:
         exchange = df["exchange_type"].fillna("").astype(str).str.upper()
         if include_exchange_types:
@@ -146,6 +147,7 @@ def fetch_futu_universe(
     result.attrs["excluded_exchange_types"] = _exchange_type_delta(source_exchange_types, selected_exchange_types)
     result.attrs["include_exchange_types"] = sorted(include_exchange_types or [])
     result.attrs["exclude_exchange_types"] = sorted(exclude_exchange_types or [])
+    result.attrs["source_universe"] = source_universe
     return result
 
 
@@ -270,6 +272,18 @@ def scan_market(
     _write_outputs(result, output_path, latest_path)
     universe_path = output_dir / f"{market}_{date_tag}_universe.csv"
     universe.to_csv(universe_path, index=False)
+    latest_universe_path = output_dir / f"{market}_latest_universe.csv"
+    universe.to_csv(latest_universe_path, index=False)
+    source_universe_path = ""
+    latest_source_universe_path = ""
+    source_universe = universe.attrs.get("source_universe")
+    if isinstance(source_universe, pd.DataFrame) and not source_universe.empty:
+        source_universe_path_obj = output_dir / f"{market}_{date_tag}_source_universe.csv"
+        latest_source_universe_path_obj = output_dir / f"{market}_latest_source_universe.csv"
+        source_universe.to_csv(source_universe_path_obj, index=False)
+        source_universe.to_csv(latest_source_universe_path_obj, index=False)
+        source_universe_path = str(source_universe_path_obj)
+        latest_source_universe_path = str(latest_source_universe_path_obj)
     source_exchange_types = universe.attrs.get("source_exchange_types") or _exchange_type_counts(universe)
     selected_exchange_types = universe.attrs.get("selected_exchange_types") or _exchange_type_counts(work)
     excluded_exchange_types = universe.attrs.get("excluded_exchange_types") or _exchange_type_delta(
@@ -307,6 +321,9 @@ def scan_market(
         "output": str(output_path),
         "latest": str(latest_path),
         "universe": str(universe_path),
+        "latest_universe": str(latest_universe_path),
+        "source_universe": source_universe_path,
+        "latest_source_universe": latest_source_universe_path,
     }
 
     status_paths = _write_status(status_payload, output_dir, market, date_tag)
