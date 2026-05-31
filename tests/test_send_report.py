@@ -215,6 +215,8 @@ def test_check_major_money_digest_status_summarises_markets(tmp_path):
     assert status["major_money_markets"][0]["coverage_note"] == "source coverage note"
     assert status["major_money_markets"][0]["entry_amount"] == "80.0m CNY"
     assert status["major_money_markets"][1]["row_class"] == "coverage-missing"
+    assert status["major_money_markets"][1]["coverage_note"] == "missing"
+    assert "Missing coverage: HK" in status["major_money_message"]
     assert status["major_money_top_entries"][0]["code"] == "SH.600000"
     assert status["major_money_top_exits"][0]["main_flow"] == "-70.0m CNY"
 

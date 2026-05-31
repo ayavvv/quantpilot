@@ -86,6 +86,8 @@ Artifacts:
     top entries, and top exits.
   - Coverage includes the exchange-type breakdown when the source provides it,
     making excluded or unsupported venues visible in the email.
+  - The summary sentence and per-market notes identify missing expected
+    markets, such as `US_OTC`, instead of leaving the table reason blank.
   - Missing HK/US artifacts are shown as missing coverage, not silently treated
     as zero signals.
 - `scripts/run_daily.sh`

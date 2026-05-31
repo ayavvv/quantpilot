@@ -402,6 +402,7 @@ def check_major_money_digest_status(
     market_rows = []
     entry_rows = []
     exit_rows = []
+    missing_markets = []
     for market in markets:
         if not isinstance(market, dict):
             continue
@@ -413,12 +414,18 @@ def check_major_money_digest_status(
         exchange_detail = _format_exchange_types(market.get("exchange_types"))
         if exchange_detail:
             coverage = f"{coverage} ({exchange_detail})"
+        coverage_note = _format_coverage_notes(market.get("coverage_notes"))
+        if not coverage_note and not available:
+            coverage_note = str(market.get("message") or "").strip()
+        market_name = market.get("market", "N/A")
+        if not available:
+            missing_markets.append(str(market_name))
         market_rows.append(
             {
-                "market": market.get("market", "N/A"),
+                "market": market_name,
                 "source": market.get("source") or "missing",
                 "coverage": coverage,
-                "coverage_note": _format_coverage_notes(market.get("coverage_notes")),
+                "coverage_note": coverage_note,
                 "entry_count": _safe_int(market.get("entry_count"), 0),
                 "entry_amount": _format_money_with_currency(market.get("entry_amount"), currency),
                 "exit_count": _safe_int(market.get("exit_count"), 0),
@@ -458,12 +465,14 @@ def check_major_money_digest_status(
     exit_rows = sorted(exit_rows, key=lambda row: float(row.get("main_flow_raw") or 0.0))[:top_n]
     available_count = _safe_int(digest.get("available_market_count"), 0)
     market_count = _safe_int(digest.get("market_count"), len(markets))
+    missing_suffix = f" Missing coverage: {', '.join(missing_markets)}." if missing_markets else ""
     return {
         "major_money_available": available_count > 0,
         "major_money_date": digest.get("flow_date") or "N/A",
         "major_money_message": (
             f"Loaded {available_count}/{market_count} market-wide flow source(s). "
             "Counts use vendor/proxy major-money fields and remain advisory."
+            f"{missing_suffix}"
         ),
         "major_money_markets": market_rows,
         "major_money_top_entries": entry_rows,
