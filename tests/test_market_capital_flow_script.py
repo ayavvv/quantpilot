@@ -17,6 +17,8 @@ def test_run_market_capital_flow_wraps_futu_scanner_and_digest():
     assert '"$PYTHON_BIN" -m scripts.scan_futu_market_capital_flow "${SCAN_ARGS[@]}"' in content
     assert 'US_OTC_PROXY_FLOW_AVAILABLE=false' in content
     assert 'market_list_contains "$FUTU_MARKET_FLOW_MARKETS" "US"' in content
+    assert '[ -z "${POLYGON_API_KEY:-}" ] && [ -z "${POLYGON_API_KEY_FILE:-}" ]' in content
+    assert 'POLYGON_API_KEY or POLYGON_API_KEY_FILE is not set' in content
     assert 'US_OTC_PROXY_FLOW_AVAILABLE=true' in content
     assert '"$PYTHON_BIN" -m scripts.scan_us_otc_proxy_flow "${US_OTC_PROXY_ARGS[@]}"' in content
     assert 'MAJOR_MONEY_DIGEST_SOURCES="${MAJOR_MONEY_DIGEST_SOURCES:-auto}"' in content

@@ -106,8 +106,8 @@ log "market_capital_flow: scan complete"
 US_OTC_PROXY_FLOW_AVAILABLE=false
 if [ "$ENABLE_US_OTC_PROXY_FLOW" = "true" ] && market_list_contains "$FUTU_MARKET_FLOW_MARKETS" "US"; then
     log "market_capital_flow: building US OTC/Pink proxy flow"
-    if [ "$US_OTC_PROXY_FLOW_PROVIDER" = "polygon" ] && [ -z "${POLYGON_API_KEY:-}" ]; then
-        log "market_capital_flow: WARNING: POLYGON_API_KEY is not set; US_OTC will remain missing"
+    if [ "$US_OTC_PROXY_FLOW_PROVIDER" = "polygon" ] && [ -z "${POLYGON_API_KEY:-}" ] && [ -z "${POLYGON_API_KEY_FILE:-}" ]; then
+        log "market_capital_flow: WARNING: POLYGON_API_KEY or POLYGON_API_KEY_FILE is not set; US_OTC will remain missing"
     else
         US_OTC_PROXY_ARGS=(
             --provider "$US_OTC_PROXY_FLOW_PROVIDER"
