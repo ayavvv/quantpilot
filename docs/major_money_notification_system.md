@@ -101,6 +101,8 @@ Artifacts:
   - Warns when A-share fund-flow rank, major-money digest, or HK/US full-market
     Futu scan status files are missing, stale, unreadable, or below coverage
     thresholds.
+  - Warns when available major-money sources exceed
+    `HEALTHCHECK_MAJOR_MONEY_MAX_NON_OK_RATIO` for vendor empty/error rows.
   - Checks `MAJOR_MONEY_EXPECTED_MARKETS` explicitly and reports whether
     `US_OTC` is missing because the proxy is disabled, the provider key is
     absent, the universe is missing, or the proxy scan/status is unhealthy.

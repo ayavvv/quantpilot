@@ -472,6 +472,37 @@ def test_analyze_market_money_artifacts_flags_unavailable_expected_market(monkey
     assert any("US_OTC" in issue for issue in status["issues"])
 
 
+def test_analyze_market_money_artifacts_flags_partial_digest_coverage(monkeypatch, tmp_path):
+    rank = tmp_path / "eastmoney_rank.csv"
+    rank.write_text("code,main_net_inflow\nSH.600000,100\n", encoding="utf-8")
+    digest = tmp_path / "major_money_digest.json"
+    digest.write_text(
+        '{"flow_date":"2026-04-09","available_market_count":2,"market_count":2,'
+        '"markets":[{"market":"A","available":true,"ok_rows":1,"total_rows":1},'
+        '{"market":"HK","available":true,"ok_rows":8,"total_rows":10,'
+        '"empty_rows":2,"error_rows":0,"non_ok_rows":2}]}',
+        encoding="utf-8",
+    )
+    flow_dir = tmp_path / "futu_market"
+    flow_dir.mkdir()
+    monkeypatch.setattr(daily_healthcheck, "HEALTHCHECK_MARKET_MONEY_ENABLED", True)
+    monkeypatch.setattr(daily_healthcheck, "HEALTHCHECK_MAJOR_MONEY_MAX_NON_OK_RATIO", 0.05)
+    monkeypatch.setattr(daily_healthcheck, "EASTMONEY_FUND_FLOW_RANK_PATH", rank)
+    monkeypatch.setattr(daily_healthcheck, "EASTMONEY_FUND_FLOW_MIN_ROWS", 1)
+    monkeypatch.setattr(daily_healthcheck, "MAJOR_MONEY_DIGEST_PATH", digest)
+    monkeypatch.setattr(daily_healthcheck, "MARKET_CAPITAL_FLOW_DIR", flow_dir)
+    monkeypatch.setattr(daily_healthcheck, "MARKET_CAPITAL_FLOW_MARKETS", [])
+    monkeypatch.setattr(daily_healthcheck, "MAJOR_MONEY_EXPECTED_MARKETS", ["A", "HK"])
+
+    status = daily_healthcheck.analyze_market_money_artifacts(reference_date="2026-04-09")
+
+    assert any(
+        "Major-money digest partial source coverage: market=HK non_ok=2/10 (20.0%) empty=2 error=0 max=5.0%"
+        in issue
+        for issue in status["issues"]
+    )
+
+
 def test_analyze_market_money_artifacts_flags_missing_expected_market_row(monkeypatch, tmp_path):
     rank = tmp_path / "eastmoney_rank.csv"
     rank.write_text("code,main_net_inflow\nSH.600000,100\n", encoding="utf-8")

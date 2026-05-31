@@ -83,6 +83,7 @@ MARKET_CAPITAL_FLOW_MARKETS = [
     if item.strip()
 ]
 HEALTHCHECK_MARKET_FLOW_MIN_OK_RATIO = float(os.environ.get("HEALTHCHECK_MARKET_FLOW_MIN_OK_RATIO", "0.5"))
+HEALTHCHECK_MAJOR_MONEY_MAX_NON_OK_RATIO = float(os.environ.get("HEALTHCHECK_MAJOR_MONEY_MAX_NON_OK_RATIO", "0.05"))
 MAJOR_MONEY_EXPECTED_MARKETS = [
     item.strip().upper()
     for item in os.environ.get("MAJOR_MONEY_EXPECTED_MARKETS", "A,HK,US,US_OTC").split(",")
@@ -407,6 +408,9 @@ def _read_major_money_digest_status(path: Path) -> dict[str, Any]:
                     "available": bool(item.get("available")),
                     "ok_rows": int(item.get("ok_rows") or 0),
                     "total_rows": int(item.get("total_rows") or 0),
+                    "empty_rows": int(item.get("empty_rows") or 0),
+                    "error_rows": int(item.get("error_rows") or 0),
+                    "non_ok_rows": int(item.get("non_ok_rows") or 0),
                     "flow_date": str(item.get("flow_date") or ""),
                     "source": str(item.get("source") or ""),
                 }
@@ -616,6 +620,22 @@ def analyze_market_money_artifacts(reference_date: str = "") -> dict[str, Any]:
                 "Major-money digest missing available expected market coverage: "
                 + ",".join(unavailable_markets)
             )
+        for market, market_status in sorted(digest.get("markets", {}).items()):
+            if not isinstance(market_status, dict) or not market_status.get("available"):
+                continue
+            total_rows = int(market_status.get("total_rows") or 0)
+            non_ok_rows = int(market_status.get("non_ok_rows") or 0)
+            if total_rows <= 0 or non_ok_rows <= 0:
+                continue
+            non_ok_ratio = non_ok_rows / total_rows
+            if non_ok_ratio > HEALTHCHECK_MAJOR_MONEY_MAX_NON_OK_RATIO:
+                issues.append(
+                    "Major-money digest partial source coverage: "
+                    f"market={market} non_ok={non_ok_rows}/{total_rows} ({non_ok_ratio:.1%}) "
+                    f"empty={int(market_status.get('empty_rows') or 0)} "
+                    f"error={int(market_status.get('error_rows') or 0)} "
+                    f"max={HEALTHCHECK_MAJOR_MONEY_MAX_NON_OK_RATIO:.1%}"
+                )
         digest_date = str(digest.get("flow_date") or "")
         if reference_date and digest_date and digest_date < reference_date:
             issues.append(
