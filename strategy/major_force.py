@@ -67,7 +67,7 @@ def _safe_ratio(num: float, den: float, default: float = np.nan) -> float:
 
 
 def _limit_up_threshold_pct(code: str) -> float:
-    if code.startswith("SZ.300") or code.startswith("SH.688"):
+    if code.startswith(("SZ.300", "SZ.301", "SH.688")):
         return 19.5
     return 9.5
 
@@ -91,8 +91,8 @@ def _prepare_stock_frame(df: pd.DataFrame, as_of_date: str | None, cfg: MajorFor
     result = result.replace([np.inf, -np.inf], np.nan)
     if as_of_date:
         result = result.loc[:as_of_date]
-    result = result.tail(cfg.lookback_days)
-    return result.dropna(subset=["open", "high", "low", "close", "amount"])
+    result = result.dropna(subset=["open", "high", "low", "close", "amount"])
+    return result.tail(cfg.lookback_days)
 
 
 def compute_major_force_metrics(

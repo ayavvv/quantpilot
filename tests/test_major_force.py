@@ -1,6 +1,7 @@
 import pandas as pd
 
 from converter.incremental import QlibDirectWriter
+from strategy.major_force_eval import MajorForceEvalConfig, evaluate_major_force_forward_returns
 from strategy.major_force import MajorForceConfig, scan_major_force
 
 
@@ -82,3 +83,28 @@ def test_scan_major_force_excludes_st_by_default(tmp_path):
     )
 
     assert result.empty
+
+
+def test_evaluate_major_force_forward_returns_outputs_summary(tmp_path):
+    qlib_dir = tmp_path / "qlib"
+    writer = QlibDirectWriter(qlib_dir)
+    dates = pd.bdate_range("2026-01-01", periods=90)
+    writer.write_stock_records("SH.600000", _records(dates, "accumulation"))
+    writer.write_stock_records("SZ.000001", _records(dates, "weak"))
+    writer.flush()
+
+    summary, daily, picks = evaluate_major_force_forward_returns(
+        qlib_dir,
+        start_date=dates[65].strftime("%Y-%m-%d"),
+        end_date=dates[75].strftime("%Y-%m-%d"),
+        scan_config=MajorForceConfig(min_amount=0, min_history=40, lookback_days=50, exclude_limit_up=False),
+        eval_config=MajorForceEvalConfig(top_ns=(1,), horizons=(5,), entry_lag_days=1, min_active_stocks=1),
+    )
+
+    assert not summary.empty
+    assert not daily.empty
+    assert not picks.empty
+    row = summary.iloc[0]
+    assert row["top_n"] == 1
+    assert row["horizon"] == 5
+    assert row["avg_return"] > row["avg_universe_return"]
