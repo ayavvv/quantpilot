@@ -38,6 +38,9 @@ Artifacts:
     - `~/quantpilot_data/capital_flow/futu_market/US_latest_flow.csv`
   - Also consumes an optional `US_OTC` proxy artifact when present:
     - `~/quantpilot_data/capital_flow/us_otc_proxy/US_OTC_latest_flow.csv`
+  - The default source discovery only includes `US_OTC` when
+    `US_OTC_latest_status.json` is healthy, so stale proxy files do not silently
+    satisfy market coverage.
 - `scripts/refresh_eastmoney_fund_flow_rank.py`
   - Refreshes the A-share market-wide Eastmoney rank artifact before the daily
     report.

@@ -244,6 +244,48 @@ def _write_status(status: dict[str, Any], output_dir: Path, date_tag: str) -> di
     return {"status": dated_path, "latest_status": latest_path}
 
 
+def write_failure_status(
+    *,
+    output_dir: Path,
+    date: str,
+    provider: str,
+    message: str,
+    universe: pd.DataFrame | None = None,
+    min_dollar_volume: float = 0.0,
+) -> dict[str, Any]:
+    date_tag = _date_tag(date)
+    universe_count = int(len(universe)) if universe is not None else 0
+    status_payload = {
+        "status": "failed",
+        "message": message,
+        "market": "US_OTC",
+        "provider": provider,
+        "source": f"{provider}_otc_proxy",
+        "proxy_method": "directional_dollar_volume",
+        "date": date,
+        "date_tag": date_tag,
+        "finished_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "universe_count": universe_count,
+        "selected_count": universe_count,
+        "attempted_count": universe_count,
+        "ok_count": 0,
+        "error_count": universe_count,
+        "empty_count": 0,
+        "ok_ratio": 0.0,
+        "min_dollar_volume": min_dollar_volume,
+        "source_exchange_types": _exchange_type_counts(universe) if universe is not None else {},
+        "selected_exchange_types": _exchange_type_counts(universe) if universe is not None else {},
+        "excluded_exchange_types": {},
+        "output": "",
+        "latest": str(output_dir / "US_OTC_latest_flow.csv"),
+        "universe": "",
+        "latest_universe": str(output_dir / "US_OTC_latest_universe.csv"),
+    }
+    status_paths = _write_status(status_payload, output_dir, date_tag)
+    status_payload.update({key: str(path) for key, path in status_paths.items()})
+    return status_payload
+
+
 def write_outputs(
     rows: pd.DataFrame,
     *,
@@ -342,7 +384,18 @@ def main(argv: list[str] | None = None) -> int:
         exchange_types=_split_csv(args.exchange_types),
         max_codes=args.max_codes,
     )
-    aggregates = fetch_polygon_grouped_daily(api_key=api_key, date=args.date, include_otc=True)
+    try:
+        aggregates = fetch_polygon_grouped_daily(api_key=api_key, date=args.date, include_otc=True)
+    except Exception as exc:
+        write_failure_status(
+            output_dir=Path(args.output_dir).expanduser(),
+            date=args.date,
+            provider=provider,
+            message=str(exc),
+            universe=universe,
+            min_dollar_volume=args.min_dollar_volume,
+        )
+        raise
     rows = build_proxy_records(
         universe,
         aggregates,

@@ -3,6 +3,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import pytest
 
 from scripts import scan_us_otc_proxy_flow as scanner
 
@@ -87,3 +88,38 @@ def test_resolve_api_key_accepts_secret_file(tmp_path):
 
     assert scanner.resolve_api_key("", key_file) == "file-secret"
     assert scanner.resolve_api_key("direct-secret", key_file) == "direct-secret"
+
+
+def test_main_writes_failed_status_when_provider_fetch_fails(monkeypatch, tmp_path):
+    universe = tmp_path / "source_universe.csv"
+    pd.DataFrame([{"code": "US.AABB", "name": "Asia Broadband", "exchange_type": "US_PINK"}]).to_csv(
+        universe,
+        index=False,
+    )
+
+    def fail_fetch(**kwargs):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr(scanner, "fetch_polygon_grouped_daily", fail_fetch)
+
+    with pytest.raises(RuntimeError, match="provider down"):
+        scanner.main(
+            [
+                "--api-key",
+                "secret",
+                "--date",
+                "2026-05-29",
+                "--universe-csv",
+                str(universe),
+                "--output-dir",
+                str(tmp_path),
+            ]
+        )
+
+    payload = json.loads((tmp_path / "US_OTC_latest_status.json").read_text(encoding="utf-8"))
+    assert payload["status"] == "failed"
+    assert payload["message"] == "provider down"
+    assert payload["ok_count"] == 0
+    assert payload["error_count"] == 1
+    assert payload["source_exchange_types"] == {"US_PINK": 1}
+    assert not (tmp_path / "US_OTC_latest_flow.csv").exists()

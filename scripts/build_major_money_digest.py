@@ -20,14 +20,41 @@ from strategy.major_money_digest import (
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(Path.home() / "quantpilot_data")))
 
 
+def _status_for_source(path: Path, market: str) -> dict:
+    candidates = [
+        path.with_name(f"{market}_latest_status.json"),
+        path.with_name(path.name.replace("_flow.csv", "_status.json")),
+    ]
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return {}
+
+
+def _healthy_otc_proxy_source(path: Path) -> bool:
+    status = _status_for_source(path, "US_OTC")
+    if not status:
+        return False
+    return str(status.get("status") or "").lower() == "ok" and int(status.get("ok_count") or 0) > 0
+
+
 def _default_sources(data_dir: Path) -> list[tuple[str, Path, str]]:
     candidates = [
         ("A", data_dir / "output" / "eastmoney_fund_flow_rank_latest.csv", "eastmoney"),
         ("HK", data_dir / "capital_flow" / "futu_market" / "HK_latest_flow.csv", "futu"),
         ("US", data_dir / "capital_flow" / "futu_market" / "US_latest_flow.csv", "futu"),
-        ("US_OTC", data_dir / "capital_flow" / "us_otc_proxy" / "US_OTC_latest_flow.csv", "polygon_otc_proxy"),
     ]
-    return [(market, path, source) for market, path, source in candidates if path.exists()]
+    sources = [(market, path, source) for market, path, source in candidates if path.exists()]
+    otc_path = data_dir / "capital_flow" / "us_otc_proxy" / "US_OTC_latest_flow.csv"
+    if otc_path.exists() and _healthy_otc_proxy_source(otc_path):
+        sources.append(("US_OTC", otc_path, "polygon_otc_proxy"))
+    return sources
 
 
 def _parse_source(value: str) -> tuple[str, Path, str]:
@@ -46,23 +73,6 @@ def _parse_markets(value: str) -> list[str]:
 
 def _snapshot_date(path: Path) -> str:
     return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d")
-
-
-def _status_for_source(path: Path, market: str) -> dict:
-    candidates = [
-        path.with_name(f"{market}_latest_status.json"),
-        path.with_name(path.name.replace("_flow.csv", "_status.json")),
-    ]
-    for candidate in candidates:
-        if not candidate.exists():
-            continue
-        try:
-            payload = json.loads(candidate.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        if isinstance(payload, dict):
-            return payload
-    return {}
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
