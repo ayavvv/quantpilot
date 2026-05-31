@@ -135,14 +135,14 @@ tr:nth-child(even) { background-color: #f8f9fa; }
 </tr>
 {% endfor %}
 </table>
-<p><strong>Top Entries:</strong></p>
+<p><strong>Top Entries by Market:</strong></p>
 <table>
 <tr><th>Market</th><th>Code</th><th>Name</th><th>Main Flow</th></tr>
 {% for row in major_money_top_entries %}
 <tr class="flow-confirm"><td>{{ row.market }}</td><td>{{ row.code }}</td><td>{{ row.name }}</td><td>{{ row.main_flow }}</td></tr>
 {% endfor %}
 </table>
-<p><strong>Top Exits:</strong></p>
+<p><strong>Top Exits by Market:</strong></p>
 <table>
 <tr><th>Market</th><th>Code</th><th>Name</th><th>Main Flow</th></tr>
 {% for row in major_money_top_exits %}
@@ -441,7 +441,7 @@ def check_major_money_digest_status(
         top_entries = market.get("top_entries")
         if not isinstance(top_entries, list):
             top_entries = []
-        for row in top_entries:
+        for row in top_entries[:top_n]:
             entry_rows.append(
                 {
                     "market": market.get("market", "N/A"),
@@ -454,7 +454,7 @@ def check_major_money_digest_status(
         top_exits = market.get("top_exits")
         if not isinstance(top_exits, list):
             top_exits = []
-        for row in top_exits:
+        for row in top_exits[:top_n]:
             exit_rows.append(
                 {
                     "market": market.get("market", "N/A"),
@@ -465,8 +465,6 @@ def check_major_money_digest_status(
                 }
             )
 
-    entry_rows = sorted(entry_rows, key=lambda row: float(row.get("main_flow_raw") or 0.0), reverse=True)[:top_n]
-    exit_rows = sorted(exit_rows, key=lambda row: float(row.get("main_flow_raw") or 0.0))[:top_n]
     available_count = _safe_int(digest.get("available_market_count"), 0)
     market_count = _safe_int(digest.get("market_count"), len(markets))
     missing_suffix = f" Missing coverage: {', '.join(missing_markets)}." if missing_markets else ""

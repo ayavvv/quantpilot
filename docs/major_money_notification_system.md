@@ -88,7 +88,8 @@ Artifacts:
   - Adds a top summary with total major-entry/major-exit counts and
     entry/exit/net amounts by currency.
   - Shows market coverage, entry count/amount, exit count/amount, net amount,
-    top entries, and top exits.
+    and top entries/exits per market so CNY/HKD/USD names are not mixed by raw
+    amount.
   - Coverage includes the exchange-type breakdown when the source provides it,
     making excluded or unsupported venues visible in the email.
   - Coverage notes include vendor empty/error row counts so partial scans are

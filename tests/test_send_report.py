@@ -230,6 +230,55 @@ def test_check_major_money_digest_status_summarises_markets(tmp_path):
     assert status["major_money_top_exits"][0]["main_flow"] == "-70.0m CNY"
 
 
+def test_check_major_money_digest_status_keeps_top_rows_per_market(tmp_path):
+    digest = {
+        "flow_date": "2026-05-29",
+        "market_count": 2,
+        "available_market_count": 2,
+        "markets": [
+            {
+                "market": "A",
+                "source": "eastmoney",
+                "currency": "CNY",
+                "available": True,
+                "total_rows": 2,
+                "ok_rows": 2,
+                "top_entries": [
+                    {"code": "SH.A1", "name": "A Entry 1", "main_flow": 100},
+                    {"code": "SH.A2", "name": "A Entry 2", "main_flow": 90},
+                ],
+                "top_exits": [
+                    {"code": "SH.X1", "name": "A Exit 1", "main_flow": -100},
+                    {"code": "SH.X2", "name": "A Exit 2", "main_flow": -90},
+                ],
+            },
+            {
+                "market": "US",
+                "source": "futu",
+                "currency": "USD",
+                "available": True,
+                "total_rows": 2,
+                "ok_rows": 2,
+                "top_entries": [
+                    {"code": "US.U1", "name": "US Entry 1", "main_flow": 10},
+                    {"code": "US.U2", "name": "US Entry 2", "main_flow": 9},
+                ],
+                "top_exits": [
+                    {"code": "US.Y1", "name": "US Exit 1", "main_flow": -10},
+                    {"code": "US.Y2", "name": "US Exit 2", "main_flow": -9},
+                ],
+            },
+        ],
+    }
+    path = tmp_path / "major_money_digest.json"
+    path.write_text(send_report.json.dumps(digest), encoding="utf-8")
+
+    status = send_report.check_major_money_digest_status(digest_json=path, top_n=1)
+
+    assert [row["code"] for row in status["major_money_top_entries"]] == ["SH.A1", "US.U1"]
+    assert [row["code"] for row in status["major_money_top_exits"]] == ["SH.X1", "US.Y1"]
+
+
 def test_check_major_money_digest_status_missing_file_degrades(tmp_path):
     status = send_report.check_major_money_digest_status(digest_json=tmp_path / "missing.json")
 
