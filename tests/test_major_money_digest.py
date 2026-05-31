@@ -8,9 +8,27 @@ from strategy.major_money_digest import build_digest, build_market_summary, dige
 def test_build_market_summary_classifies_entry_and_exit():
     df = pd.DataFrame(
         [
-            {"code": "SH.600000", "name": "Entry", "main_net_inflow": 80_000_000, "update_time": "2026-05-29"},
-            {"code": "SZ.000001", "name": "Exit", "main_net_inflow": -70_000_000, "update_time": "2026-05-29"},
-            {"code": "SZ.000002", "name": "Neutral", "main_net_inflow": 3_000_000, "update_time": "2026-05-29"},
+            {
+                "code": "SH.600000",
+                "name": "Entry",
+                "main_net_inflow": 80_000_000,
+                "update_time": "2026-05-29",
+                "exchange_type": "SSE",
+            },
+            {
+                "code": "SZ.000001",
+                "name": "Exit",
+                "main_net_inflow": -70_000_000,
+                "update_time": "2026-05-29",
+                "exchange_type": "SZSE",
+            },
+            {
+                "code": "SZ.000002",
+                "name": "Neutral",
+                "main_net_inflow": 3_000_000,
+                "update_time": "2026-05-29",
+                "exchange_type": "SZSE",
+            },
         ]
     )
 
@@ -23,6 +41,7 @@ def test_build_market_summary_classifies_entry_and_exit():
     assert summary["entry_amount"] == 80_000_000
     assert summary["exit_count"] == 1
     assert summary["exit_amount"] == 70_000_000
+    assert summary["exchange_types"] == {"SSE": 1, "SZSE": 2}
     assert summary["top_entries"][0]["code"] == "SH.600000"
     assert summary["top_exits"][0]["code"] == "SZ.000001"
 
@@ -47,7 +66,16 @@ def test_build_digest_keeps_missing_expected_markets_visible():
 
 def test_digest_rows_writes_flat_summary_shape(tmp_path):
     summary = build_market_summary(
-        pd.DataFrame([{"code": "HK.00700", "latest_main_in_flow": 60_000_000, "capital_flow_latest_date": "2026-05-29"}]),
+        pd.DataFrame(
+            [
+                {
+                    "code": "HK.00700",
+                    "latest_main_in_flow": 60_000_000,
+                    "capital_flow_latest_date": "2026-05-29",
+                    "exchange_type": "HK_MAIN",
+                }
+            ]
+        ),
         market="HK",
         source="futu",
     )
@@ -59,3 +87,4 @@ def test_digest_rows_writes_flat_summary_shape(tmp_path):
 
     assert rows.iloc[0]["market"] == "HK"
     assert rows.iloc[0]["entry_count"] == 1
+    assert rows.iloc[0]["exchange_types"] == '{"HK_MAIN": 1}'

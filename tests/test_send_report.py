@@ -191,6 +191,7 @@ def test_check_major_money_digest_status_summarises_markets(tmp_path):
                 "flow_date": "2026-05-29",
                 "total_rows": 2,
                 "ok_rows": 2,
+                "exchange_types": {"SSE": 1, "SZSE": 1},
                 "entry_count": 1,
                 "entry_amount": 80_000_000,
                 "exit_count": 1,
@@ -209,7 +210,7 @@ def test_check_major_money_digest_status_summarises_markets(tmp_path):
 
     assert status["major_money_available"] is True
     assert status["major_money_date"] == "2026-05-29"
-    assert status["major_money_markets"][0]["coverage"] == "2/2"
+    assert status["major_money_markets"][0]["coverage"] == "2/2 (SSE=1, SZSE=1)"
     assert status["major_money_markets"][0]["entry_amount"] == "80.0m CNY"
     assert status["major_money_markets"][1]["row_class"] == "coverage-missing"
     assert status["major_money_top_entries"][0]["code"] == "SH.600000"

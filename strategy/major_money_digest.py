@@ -7,6 +7,7 @@ US/HK/A-share markets, while keeping coverage explicit in the output.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -228,6 +229,14 @@ def _top_rows(df: pd.DataFrame, *, ascending: bool, limit: int) -> list[dict[str
     return rows
 
 
+def _exchange_type_counts(df: pd.DataFrame) -> dict[str, int]:
+    if "exchange_type" not in df.columns:
+        return {}
+    values = df["exchange_type"].fillna("").astype(str).str.strip()
+    counts = values[values != ""].value_counts().sort_index()
+    return {str(exchange): int(count) for exchange, count in counts.items()}
+
+
 def unavailable_market_summary(market: str, *, reason: str) -> dict[str, Any]:
     normalized_market = normalize_market(market)
     return {
@@ -241,6 +250,7 @@ def unavailable_market_summary(market: str, *, reason: str) -> dict[str, Any]:
         "ok_rows": 0,
         "error_rows": 0,
         "missing_rows": 0,
+        "exchange_types": {},
         "entry_count": 0,
         "entry_amount": 0.0,
         "exit_count": 0,
@@ -294,6 +304,7 @@ def build_market_summary(
         "ok_rows": ok_count,
         "error_rows": int((~ok_mask).sum()),
         "missing_rows": int(ok_rows["main_flow"].isna().sum()),
+        "exchange_types": _exchange_type_counts(rows),
         "entry_count": int(len(entry_rows)),
         "entry_amount": float(pd.to_numeric(entry_rows["main_flow"], errors="coerce").dropna().sum()),
         "exit_count": int(len(exit_rows)),
@@ -361,6 +372,7 @@ def digest_rows(digest: dict[str, Any]) -> pd.DataFrame:
                 "flow_date": market.get("flow_date", ""),
                 "total_rows": market.get("total_rows", 0),
                 "ok_rows": market.get("ok_rows", 0),
+                "exchange_types": json.dumps(market.get("exchange_types") or {}, ensure_ascii=False, sort_keys=True),
                 "entry_count": market.get("entry_count", 0),
                 "entry_amount": market.get("entry_amount", 0.0),
                 "exit_count": market.get("exit_count", 0),

@@ -339,6 +339,18 @@ def _format_percent(value) -> str:
         return "N/A"
 
 
+def _format_exchange_types(exchange_types) -> str:
+    if not isinstance(exchange_types, dict) or not exchange_types:
+        return ""
+    parts = []
+    for exchange, count in sorted(exchange_types.items()):
+        exchange_name = str(exchange).strip()
+        if not exchange_name:
+            continue
+        parts.append(f"{exchange_name}={_safe_int(count, 0)}")
+    return ", ".join(parts)
+
+
 def check_major_money_digest_status(
     digest_json: Path | None = None,
     top_n: int = 8,
@@ -388,11 +400,15 @@ def check_major_money_digest_status(
         available = bool(market.get("available"))
         ok_rows = _safe_int(market.get("ok_rows"), 0)
         total_rows = _safe_int(market.get("total_rows"), 0)
+        coverage = f"{ok_rows}/{total_rows}" if total_rows else "missing"
+        exchange_detail = _format_exchange_types(market.get("exchange_types"))
+        if exchange_detail:
+            coverage = f"{coverage} ({exchange_detail})"
         market_rows.append(
             {
                 "market": market.get("market", "N/A"),
                 "source": market.get("source") or "missing",
-                "coverage": f"{ok_rows}/{total_rows}" if total_rows else "missing",
+                "coverage": coverage,
                 "entry_count": _safe_int(market.get("entry_count"), 0),
                 "entry_amount": _format_money_with_currency(market.get("entry_amount"), currency),
                 "exit_count": _safe_int(market.get("exit_count"), 0),

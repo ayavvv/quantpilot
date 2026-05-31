@@ -55,10 +55,15 @@ Artifacts:
   - Host-side cron wrapper around the Futu scanner.
   - Uses a lock directory so a long full-market scan cannot overlap itself.
   - Rebuilds the digest after a scan by default.
+  - Defaults to excluding `US_PINK,N/A`, so the scheduled US job covers
+    exchange-listed NYSE/NASDAQ/AMEX names unless
+    `FUTU_MARKET_FLOW_EXCLUDE_EXCHANGE_TYPES` is overridden.
 - `reporter/send_report.py`
   - Adds a "Market-Wide Major Money" section to the daily email.
   - Shows market coverage, entry count/amount, exit count/amount, net amount,
     top entries, and top exits.
+  - Coverage includes the exchange-type breakdown when the source provides it,
+    making excluded or unsupported venues visible in the email.
   - Missing HK/US artifacts are shown as missing coverage, not silently treated
     as zero signals.
 - `scripts/run_daily.sh`
