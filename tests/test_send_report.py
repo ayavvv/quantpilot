@@ -319,3 +319,45 @@ def test_check_capital_flow_status_missing_file_degrades(tmp_path):
     assert status["capital_flow_counts"] == []
     assert status["capital_flow_top"] == []
     assert "No Futu capital-flow overlay found" in status["capital_flow_message"]
+
+
+def test_check_capital_flow_eval_status_summarises_summary(tmp_path):
+    summary = tmp_path / "summary.csv"
+    summary.write_text(
+        "\n".join(
+            [
+                "capital_flow_label,horizon,date_count,avg_return,avg_alpha,avg_hit_rate",
+                "capital_flow_confirm,1,3,0.0123,0.0045,0.6667",
+                "risk_flag_main_outflow,1,3,-0.021,-0.0301,0.3333",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    status = send_report.check_capital_flow_eval_status(summary_csv=summary, top_n=2)
+
+    assert status["capital_flow_eval_available"] is True
+    assert status["capital_flow_eval_message"] == (
+        "Loaded 2 validation row(s); use this before promoting advisory labels to trade rules."
+    )
+    assert status["capital_flow_eval_rows"][0] == {
+        "label": "capital_flow_confirm",
+        "horizon": 1,
+        "date_count": 3,
+        "avg_return": "1.23%",
+        "avg_alpha": "0.45%",
+        "avg_hit_rate": "66.67%",
+        "row_class": "flow-confirm",
+    }
+    assert status["capital_flow_eval_rows"][1]["row_class"] == "flow-risk"
+
+
+def test_check_capital_flow_eval_status_empty_file_degrades(tmp_path):
+    summary = tmp_path / "summary.csv"
+    summary.write_text("", encoding="utf-8")
+
+    status = send_report.check_capital_flow_eval_status(summary_csv=summary)
+
+    assert status["capital_flow_eval_available"] is False
+    assert status["capital_flow_eval_rows"] == []
+    assert status["capital_flow_eval_message"] == "Capital-flow validation has no forward-return samples yet."

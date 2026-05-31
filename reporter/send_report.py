@@ -30,6 +30,12 @@ CAPITAL_FLOW_OVERLAY_CSV = Path(
         str(SIGNAL_DIR.parent / "output" / "futu_capital_flow_signal_overlay_latest.csv"),
     )
 )
+CAPITAL_FLOW_EVAL_SUMMARY_CSV = Path(
+    os.environ.get(
+        "CAPITAL_FLOW_EVAL_SUMMARY_CSV",
+        str(SIGNAL_DIR.parent / "output" / "futu_capital_flow_eval_latest" / "summary.csv"),
+    )
+)
 TRADE_START_TIME = time(14, 50)
 
 REPORT_TEMPLATE = """
@@ -118,7 +124,27 @@ tr:nth-child(even) { background-color: #f8f9fa; }
 <p class="warn">{{ capital_flow_message }}</p>
 {% endif %}
 
-<h2>4. Trading Status</h2>
+<h2>4. Capital Flow Validation</h2>
+{% if capital_flow_eval_available %}
+<p class="muted">{{ capital_flow_eval_message }}</p>
+<table>
+<tr><th>Label</th><th>Horizon</th><th>Dates</th><th>Avg Return</th><th>Alpha</th><th>Hit Rate</th></tr>
+{% for row in capital_flow_eval_rows %}
+<tr class="{{ row.row_class }}">
+    <td>{{ row.label }}</td>
+    <td>{{ row.horizon }}</td>
+    <td>{{ row.date_count }}</td>
+    <td>{{ row.avg_return }}</td>
+    <td>{{ row.avg_alpha }}</td>
+    <td>{{ row.avg_hit_rate }}</td>
+</tr>
+{% endfor %}
+</table>
+{% else %}
+<p class="warn">{{ capital_flow_eval_message }}</p>
+{% endif %}
+
+<h2>5. Trading Status</h2>
 <p>{{ trade_status }}</p>
 
 <hr>
@@ -241,6 +267,15 @@ def _safe_int(value, fallback: int) -> int:
         return fallback
 
 
+def _format_percent(value) -> str:
+    if value is None or pd.isna(value):
+        return "N/A"
+    try:
+        return f"{float(value):.2%}"
+    except (TypeError, ValueError):
+        return "N/A"
+
+
 def check_capital_flow_status(
     overlay_csv: Path | None = None,
     top_n: int = 10,
@@ -317,6 +352,69 @@ def check_capital_flow_status(
         "capital_flow_message": f"Loaded {len(df)} model candidate(s); capital flow is advisory and not an auto-trade rule.",
         "capital_flow_counts": counts,
         "capital_flow_top": top_rows,
+    }
+
+
+def check_capital_flow_eval_status(
+    summary_csv: Path | None = None,
+    top_n: int = 12,
+):
+    """Summarise archived Futu capital-flow forward-return validation."""
+    target = summary_csv or Path(
+        os.environ.get("CAPITAL_FLOW_EVAL_SUMMARY_CSV", str(CAPITAL_FLOW_EVAL_SUMMARY_CSV))
+    )
+    if not target.exists():
+        return {
+            "capital_flow_eval_available": False,
+            "capital_flow_eval_message": f"No capital-flow validation summary found at {target}.",
+            "capital_flow_eval_rows": [],
+        }
+
+    try:
+        df = pd.read_csv(target)
+    except pd.errors.EmptyDataError:
+        return {
+            "capital_flow_eval_available": False,
+            "capital_flow_eval_message": "Capital-flow validation has no forward-return samples yet.",
+            "capital_flow_eval_rows": [],
+        }
+    except Exception as exc:
+        return {
+            "capital_flow_eval_available": False,
+            "capital_flow_eval_message": f"Could not read capital-flow validation summary: {exc}",
+            "capital_flow_eval_rows": [],
+        }
+
+    required = {"capital_flow_label", "horizon", "date_count", "avg_return", "avg_alpha", "avg_hit_rate"}
+    if df.empty or not required.issubset(df.columns):
+        return {
+            "capital_flow_eval_available": False,
+            "capital_flow_eval_message": "Capital-flow validation has no forward-return samples yet.",
+            "capital_flow_eval_rows": [],
+        }
+
+    rows = []
+    ranked = df.sort_values(["horizon", "capital_flow_label"], kind="stable").head(top_n)
+    for _, row in ranked.iterrows():
+        label = str(row.get("capital_flow_label", "unknown"))
+        rows.append(
+            {
+                "label": label,
+                "horizon": _safe_int(row.get("horizon"), 0),
+                "date_count": _safe_int(row.get("date_count"), 0),
+                "avg_return": _format_percent(row.get("avg_return")),
+                "avg_alpha": _format_percent(row.get("avg_alpha")),
+                "avg_hit_rate": _format_percent(row.get("avg_hit_rate")),
+                "row_class": _flow_row_class(label),
+            }
+        )
+
+    return {
+        "capital_flow_eval_available": True,
+        "capital_flow_eval_message": (
+            f"Loaded {len(df)} validation row(s); use this before promoting advisory labels to trade rules."
+        ),
+        "capital_flow_eval_rows": rows,
     }
 
 
@@ -695,6 +793,7 @@ def main():
     data_info = check_data_status()
     signal_info = check_signal_status()
     capital_flow_info = check_capital_flow_status()
+    capital_flow_eval_info = check_capital_flow_eval_status()
 
     trade_log_env = os.environ.get("TRADE_LOG", "").strip()
     trade_log = Path(trade_log_env) if trade_log_env else Path.home() / "quantpilot/logs/trade.log"
@@ -708,6 +807,7 @@ def main():
         **data_info,
         **signal_info,
         **capital_flow_info,
+        **capital_flow_eval_info,
     )
 
     subject = f"QuantPilot Daily Report - {today}"

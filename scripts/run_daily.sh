@@ -50,6 +50,9 @@ A_SHARE_CAPITAL_FLOW_HOST="${A_SHARE_CAPITAL_FLOW_HOST:-${FUTU_HOST:-127.0.0.1}}
 A_SHARE_CAPITAL_FLOW_PORT="${A_SHARE_CAPITAL_FLOW_PORT:-${FUTU_PORT:-11111}}"
 A_SHARE_CAPITAL_FLOW_ARCHIVE_DIR="${A_SHARE_CAPITAL_FLOW_ARCHIVE_DIR:-$DATA_DIR/capital_flow/futu}"
 A_SHARE_CAPITAL_FLOW_CONNECT_TIMEOUT="${A_SHARE_CAPITAL_FLOW_CONNECT_TIMEOUT:-8}"
+ENABLE_A_SHARE_CAPITAL_FLOW_EVAL="${ENABLE_A_SHARE_CAPITAL_FLOW_EVAL:-true}"
+A_SHARE_CAPITAL_FLOW_EVAL_HORIZONS="${A_SHARE_CAPITAL_FLOW_EVAL_HORIZONS:-1,3,5}"
+A_SHARE_CAPITAL_FLOW_EVAL_OUTPUT_DIR="${A_SHARE_CAPITAL_FLOW_EVAL_OUTPUT_DIR:-$DATA_DIR/output/futu_capital_flow_eval_latest}"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
@@ -237,6 +240,23 @@ else
     log "Step 2b: Skipped Futu capital-flow overlay"
 fi
 
+# Step 2c: Re-evaluate archived Futu capital-flow overlays as future closes arrive.
+if [ "$ENABLE_A_SHARE_CAPITAL_FLOW_EVAL" = "true" ]; then
+    log "Step 2c: Evaluating Futu capital-flow forward returns..."
+    if PYTHONPATH="$PYTHONPATH" \
+        "$PYTHON_BIN" -m scripts.evaluate_futu_capital_flow_overlay \
+            --qlib-dir "$DATA_DIR/qlib_data" \
+            --archive-dir "$A_SHARE_CAPITAL_FLOW_ARCHIVE_DIR" \
+            --horizons "$A_SHARE_CAPITAL_FLOW_EVAL_HORIZONS" \
+            --output-dir "$A_SHARE_CAPITAL_FLOW_EVAL_OUTPUT_DIR"; then
+        log "  Futu capital-flow evaluation complete"
+    else
+        log "  WARNING: Futu capital-flow evaluation failed; continuing daily pipeline"
+    fi
+else
+    log "Step 2c: Skipped Futu capital-flow evaluation"
+fi
+
 # Step 3: Run reporter natively so Mail.app fallback is available on macOS host
 log "Step 3: Running reporter..."
 log "  Working directory: $PROJECT_DIR"
@@ -246,6 +266,7 @@ if REPORTER_ENV_FILE="$PROJECT_DIR/reporter/.env" \
     REPORT_DIR="$DATA_DIR/reports" \
     SIGNAL_DIR="$DATA_DIR/signals" \
     QLIB_DATA_DIR="$DATA_DIR/qlib_data" \
+    CAPITAL_FLOW_EVAL_SUMMARY_CSV="$A_SHARE_CAPITAL_FLOW_EVAL_OUTPUT_DIR/summary.csv" \
     TRADE_LOG="$PROJECT_DIR/logs/trade.log" \
     PYTHONPATH="$PYTHONPATH" \
     "$PYTHON_BIN" -m reporter.send_report; then

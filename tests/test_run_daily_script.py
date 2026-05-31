@@ -49,6 +49,7 @@ def test_run_daily_runs_reporter_natively_with_reporter_env():
     content = RUN_DAILY.read_text()
     assert 'REPORTER_ENV_FILE="$PROJECT_DIR/reporter/.env"' in content
     assert '"$PYTHON_BIN" -m reporter.send_report' in content
+    assert 'CAPITAL_FLOW_EVAL_SUMMARY_CSV="$A_SHARE_CAPITAL_FLOW_EVAL_OUTPUT_DIR/summary.csv"' in content
     assert 'TRADE_LOG="$PROJECT_DIR/logs/trade.log"' in content
 
 
@@ -66,6 +67,15 @@ def test_run_daily_sets_signal_output_tag_from_target_date():
     assert 'SIGNAL_OUTPUT_TAG_VALUE="${SIGNAL_OUTPUT_TAG_OVERRIDE:-}"' in content
     assert 'SIGNAL_OUTPUT_TAG_VALUE="$(resolve_signal_output_tag "${SYNC_TARGET_A_SHARE_DATE:-${TARGET_A_SHARE_DATE:-}}")"' in content
     assert 'SIGNAL_OUTPUT_TAG="$SIGNAL_OUTPUT_TAG_VALUE"' in content
+
+
+def test_run_daily_evaluates_archived_capital_flow_overlays():
+    content = RUN_DAILY.read_text()
+    assert 'ENABLE_A_SHARE_CAPITAL_FLOW_EVAL="${ENABLE_A_SHARE_CAPITAL_FLOW_EVAL:-true}"' in content
+    assert 'A_SHARE_CAPITAL_FLOW_EVAL_HORIZONS="${A_SHARE_CAPITAL_FLOW_EVAL_HORIZONS:-1,3,5}"' in content
+    assert '"$PYTHON_BIN" -m scripts.evaluate_futu_capital_flow_overlay' in content
+    assert '--archive-dir "$A_SHARE_CAPITAL_FLOW_ARCHIVE_DIR"' in content
+    assert '--output-dir "$A_SHARE_CAPITAL_FLOW_EVAL_OUTPUT_DIR"' in content
 
 
 def test_run_daily_when_ready_replays_target_date():
