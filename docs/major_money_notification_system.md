@@ -108,6 +108,9 @@ Artifacts:
   - Warns when A-share fund-flow rank, major-money digest, or HK/US full-market
     Futu scan status files are missing, stale, unreadable, or below coverage
     thresholds.
+  - Verifies the dated major-money digest archive JSON/CSV exists for the
+    digest `flow_date` and that the archived JSON matches the latest digest
+    date.
   - Warns when available major-money sources exceed
     `HEALTHCHECK_MAJOR_MONEY_MAX_NON_OK_RATIO` for vendor empty/error rows.
   - Checks `MAJOR_MONEY_EXPECTED_MARKETS` explicitly and reports whether
@@ -118,7 +121,7 @@ Artifacts:
 - `scripts/major_money_readiness.py`
   - End-to-end readiness check for the notification system.
   - Checks daily/HK/US cron entries, reporter email configuration, major-money
-    digest coverage, and `US_OTC` proxy state.
+    digest coverage, dated digest archive output, and `US_OTC` proxy state.
   - Uses `HEALTHCHECK_MAJOR_MONEY_MAX_NON_OK_RATIO` to flag available markets
     whose vendor empty/error rows are too high.
   - Exits non-zero until every expected market, including `US_OTC`, is covered.

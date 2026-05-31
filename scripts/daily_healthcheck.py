@@ -70,6 +70,15 @@ HEALTHCHECK_MAJOR_MONEY_READINESS_ENABLED = (
 MAJOR_MONEY_DIGEST_PATH = Path(
     os.environ.get("MAJOR_MONEY_DIGEST_JSON", str(DATA_DIR / "output" / "major_money_digest_latest.json"))
 )
+MAJOR_MONEY_DIGEST_ARCHIVE_DIR_VALUE = os.environ.get(
+    "MAJOR_MONEY_DIGEST_ARCHIVE_DIR",
+    str(DATA_DIR / "output" / "major_money_digest"),
+).strip()
+MAJOR_MONEY_DIGEST_ARCHIVE_DIR = (
+    Path(MAJOR_MONEY_DIGEST_ARCHIVE_DIR_VALUE).expanduser()
+    if MAJOR_MONEY_DIGEST_ARCHIVE_DIR_VALUE
+    else None
+)
 EASTMONEY_FUND_FLOW_RANK_PATH = Path(
     os.environ.get("EASTMONEY_FUND_FLOW_RANK_OUTPUT", str(DATA_DIR / "output" / "eastmoney_fund_flow_rank_latest.csv"))
 )
@@ -356,6 +365,13 @@ def _file_mtime_date(path: Path) -> str:
     return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d")
 
 
+def _date_tag(value: str) -> str:
+    text = str(value or "")[:10]
+    if len(text) == 10 and text[4] == "-" and text[7] == "-" and text.replace("-", "").isdigit():
+        return text.replace("-", "")
+    return ""
+
+
 def _read_csv_artifact_status(path: Path) -> dict[str, Any]:
     status: dict[str, Any] = {
         "path": str(path),
@@ -424,6 +440,65 @@ def _read_major_money_digest_status(path: Path) -> dict[str, Any]:
             "markets": market_status,
         }
     )
+    return status
+
+
+def _read_major_money_digest_archive_status(archive_dir: Path | None, *, flow_date: str) -> dict[str, Any]:
+    enabled = archive_dir is not None
+    date_tag = _date_tag(flow_date)
+    json_path = archive_dir / f"{date_tag}_major_money_digest.json" if enabled and date_tag else Path("")
+    csv_path = archive_dir / f"{date_tag}_major_money_digest.csv" if enabled and date_tag else Path("")
+    status: dict[str, Any] = {
+        "enabled": enabled,
+        "path": str(archive_dir) if archive_dir is not None else "",
+        "exists": archive_dir.exists() if archive_dir is not None else False,
+        "ok": False,
+        "flow_date": flow_date,
+        "date_tag": date_tag,
+        "json_path": str(json_path) if date_tag else "",
+        "json_exists": json_path.exists() if date_tag else False,
+        "json_flow_date": "",
+        "csv_path": str(csv_path) if date_tag else "",
+        "csv_exists": csv_path.exists() if date_tag else False,
+        "error": "",
+        "issues": [],
+    }
+    if not enabled:
+        status["ok"] = True
+        return status
+
+    issues: list[str] = []
+    if not date_tag:
+        issues.append("Major-money digest archive date unavailable: digest flow_date missing")
+    elif not archive_dir.exists():
+        issues.append(f"Major-money digest archive directory missing: {archive_dir}")
+    else:
+        if not json_path.exists():
+            issues.append(f"Major-money digest archive JSON missing: {json_path}")
+        else:
+            try:
+                payload = json.loads(json_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                status["error"] = str(exc)
+                issues.append(f"Major-money digest archive JSON unreadable: {exc}")
+            else:
+                if not isinstance(payload, dict):
+                    status["error"] = "not a JSON object"
+                    issues.append("Major-money digest archive JSON unreadable: not a JSON object")
+                else:
+                    status["json_flow_date"] = str(payload.get("flow_date") or "")
+                    if status["json_flow_date"] != flow_date:
+                        issues.append(
+                            "Major-money digest archive JSON flow_date mismatch: "
+                            f"archive={status['json_flow_date'] or 'N/A'} digest={flow_date}"
+                        )
+        if not csv_path.exists():
+            issues.append(f"Major-money digest archive CSV missing: {csv_path}")
+        elif csv_path.stat().st_size <= 0:
+            issues.append(f"Major-money digest archive CSV empty: {csv_path}")
+
+    status["ok"] = not issues
+    status["issues"] = issues
     return status
 
 
@@ -559,6 +634,7 @@ def analyze_market_money_artifacts(reference_date: str = "") -> dict[str, Any]:
         "expected_markets": MAJOR_MONEY_EXPECTED_MARKETS,
         "a_share_rank": {},
         "digest": {},
+        "digest_archive": {},
         "market_scans": {},
         "us_otc_proxy": {},
         "issues": [],
@@ -569,8 +645,19 @@ def analyze_market_money_artifacts(reference_date: str = "") -> dict[str, Any]:
     issues: list[str] = []
     a_share_rank = _read_csv_artifact_status(EASTMONEY_FUND_FLOW_RANK_PATH)
     digest = _read_major_money_digest_status(MAJOR_MONEY_DIGEST_PATH)
+    digest_archive = _read_major_money_digest_archive_status(
+        MAJOR_MONEY_DIGEST_ARCHIVE_DIR,
+        flow_date=str(digest.get("flow_date") or ""),
+    )
     us_otc_proxy = _read_us_otc_proxy_status() if "US_OTC" in MAJOR_MONEY_EXPECTED_MARKETS else {}
-    status.update({"a_share_rank": a_share_rank, "digest": digest, "us_otc_proxy": us_otc_proxy})
+    status.update(
+        {
+            "a_share_rank": a_share_rank,
+            "digest": digest,
+            "digest_archive": digest_archive,
+            "us_otc_proxy": us_otc_proxy,
+        }
+    )
 
     if not a_share_rank["exists"]:
         issues.append(f"Eastmoney A-share fund-flow rank missing: {a_share_rank['path']}")
@@ -647,6 +734,7 @@ def analyze_market_money_artifacts(reference_date: str = "") -> dict[str, Any]:
                 "Major-money digest file stale: "
                 f"mtime_date={digest['mtime_date']} reference={reference_date}"
             )
+        issues.extend(digest_archive.get("issues") or [])
 
     if "US_OTC" in MAJOR_MONEY_EXPECTED_MARKETS:
         if not us_otc_proxy.get("enabled"):
@@ -1041,10 +1129,12 @@ def render_snapshot_html(snapshot: dict[str, Any]) -> str:
     daily_overlay = capital_flow.get("daily_overlay", {}) if isinstance(capital_flow, dict) else {}
     pretrade_overlay = capital_flow.get("pretrade_overlay", {}) if isinstance(capital_flow, dict) else {}
     digest = market_money.get("digest", {}) if isinstance(market_money, dict) else {}
+    digest_archive = market_money.get("digest_archive", {}) if isinstance(market_money, dict) else {}
     a_share_rank = market_money.get("a_share_rank", {}) if isinstance(market_money, dict) else {}
     readiness_checks = readiness.get("checks", {}) if isinstance(readiness, dict) else {}
     cron_readiness = readiness_checks.get("cron", {}) if isinstance(readiness_checks, dict) else {}
     email_readiness = readiness_checks.get("email", {}) if isinstance(readiness_checks, dict) else {}
+    archive_readiness = readiness_checks.get("digest_archive", {}) if isinstance(readiness_checks, dict) else {}
     otc_readiness = readiness_checks.get("us_otc_proxy", {}) if isinstance(readiness_checks, dict) else {}
     disk = local.get(
         "disk",
@@ -1083,11 +1173,12 @@ def render_snapshot_html(snapshot: dict[str, Any]) -> str:
       <h2>Market-Wide Major Money</h2>
       <p>enabled={market_money.get('enabled', False)}<br>
       digest_date={digest.get('flow_date') or 'N/A'} available_markets={digest.get('available_market_count', 0)}/{digest.get('market_count', 0)}<br>
+      digest_archive_enabled={digest_archive.get('enabled', False)} digest_archive_ok={digest_archive.get('ok', False)} archive_date={digest_archive.get('date_tag') or 'N/A'}<br>
       eastmoney_rows={a_share_rank.get('row_count', 0)} mtime={a_share_rank.get('mtime_date') or 'N/A'}</p>
       <h2>Major-Money Notification Readiness</h2>
       <p>enabled={readiness.get('enabled', False)} ok={readiness.get('ok', False)}<br>
       expected_markets={','.join(readiness.get('expected_markets') or []) or 'N/A'}<br>
-      cron_ok={cron_readiness.get('ok', False)} email_ok={email_readiness.get('ok', False)}<br>
+      cron_ok={cron_readiness.get('ok', False)} email_ok={email_readiness.get('ok', False)} archive_ok={archive_readiness.get('ok', False)}<br>
       us_otc_enabled={otc_readiness.get('enabled', False)} us_otc_ok={otc_readiness.get('ok', False)}<br>
       us_otc_status={otc_readiness.get('status') or 'N/A'} us_otc_ok_count={otc_readiness.get('ok_count', 0)}</p>
     </body>

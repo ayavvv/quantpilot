@@ -162,6 +162,13 @@ def _read_json(path: Path) -> tuple[dict[str, Any], str]:
     return payload, ""
 
 
+def _date_tag(value: str) -> str:
+    text = str(value or "")[:10]
+    if len(text) == 10 and text[4] == "-" and text[7] == "-" and text.replace("-", "").isdigit():
+        return text.replace("-", "")
+    return ""
+
+
 def check_digest(path: Path, *, expected_markets: list[str], max_non_ok_ratio: float = 0.05) -> dict[str, Any]:
     payload, error = _read_json(path)
     markets = payload.get("markets") if isinstance(payload, dict) else []
@@ -201,6 +208,8 @@ def check_digest(path: Path, *, expected_markets: list[str], max_non_ok_ratio: f
         "ok": not issues,
         "path": str(path),
         "exists": path.exists(),
+        "readable": path.exists() and not error,
+        "error": error,
         "flow_date": str(payload.get("flow_date") or "") if payload else "",
         "market_count": int(payload.get("market_count") or len(by_market)) if payload else 0,
         "available_market_count": int(payload.get("available_market_count") or 0) if payload else 0,
@@ -218,6 +227,55 @@ def check_digest(path: Path, *, expected_markets: list[str], max_non_ok_ratio: f
             }
             for market, row in by_market.items()
         },
+        "issues": issues,
+    }
+
+
+def check_digest_archive(archive_dir_value: str, *, digest: dict[str, Any]) -> dict[str, Any]:
+    enabled = bool(str(archive_dir_value or "").strip())
+    archive_dir = Path(archive_dir_value).expanduser() if enabled else Path("")
+    flow_date = str(digest.get("flow_date") or "")
+    date_tag = _date_tag(flow_date)
+    json_path = archive_dir / f"{date_tag}_major_money_digest.json" if date_tag else Path("")
+    csv_path = archive_dir / f"{date_tag}_major_money_digest.csv" if date_tag else Path("")
+    issues: list[str] = []
+    json_payload: dict[str, Any] = {}
+    json_error = ""
+
+    if enabled and digest.get("readable"):
+        if not date_tag:
+            issues.append("Major-money digest archive date unavailable: digest flow_date missing")
+        elif not archive_dir.exists():
+            issues.append(f"Major-money digest archive directory missing: {archive_dir}")
+        else:
+            if not json_path.exists():
+                issues.append(f"Major-money digest archive JSON missing: {json_path}")
+            else:
+                json_payload, json_error = _read_json(json_path)
+                if json_error:
+                    issues.append(f"Major-money digest archive JSON unreadable: {json_error}")
+                elif str(json_payload.get("flow_date") or "") != flow_date:
+                    issues.append(
+                        "Major-money digest archive JSON flow_date mismatch: "
+                        f"archive={json_payload.get('flow_date') or 'N/A'} digest={flow_date}"
+                    )
+            if not csv_path.exists():
+                issues.append(f"Major-money digest archive CSV missing: {csv_path}")
+            elif csv_path.stat().st_size <= 0:
+                issues.append(f"Major-money digest archive CSV empty: {csv_path}")
+
+    return {
+        "ok": not issues,
+        "enabled": enabled,
+        "path": str(archive_dir) if enabled else "",
+        "exists": archive_dir.exists() if enabled else False,
+        "flow_date": flow_date,
+        "date_tag": date_tag,
+        "json_path": str(json_path) if date_tag else "",
+        "json_exists": json_path.exists() if date_tag else False,
+        "json_flow_date": str(json_payload.get("flow_date") or "") if json_payload else "",
+        "csv_path": str(csv_path) if date_tag else "",
+        "csv_exists": csv_path.exists() if date_tag else False,
         "issues": issues,
     }
 
@@ -305,15 +363,20 @@ def build_readiness_snapshot(
     digest_path = Path(
         merged_env.get("MAJOR_MONEY_DIGEST_JSON", str(data_dir / "output" / "major_money_digest_latest.json"))
     ).expanduser()
+    digest_archive_dir_value = str(
+        merged_env.get("MAJOR_MONEY_DIGEST_ARCHIVE_DIR", str(data_dir / "output" / "major_money_digest"))
+    ).strip()
 
     cron_error = ""
     if crontab_text is None:
         crontab_text, cron_error = read_crontab()
 
+    digest_check = check_digest(digest_path, expected_markets=expected_markets, max_non_ok_ratio=max_non_ok_ratio)
     checks = {
         "cron": check_cron(crontab_text or "", project_dir=project_dir),
         "email": check_email_config(email_env, reporter_env_path=reporter_env_path),
-        "digest": check_digest(digest_path, expected_markets=expected_markets, max_non_ok_ratio=max_non_ok_ratio),
+        "digest": digest_check,
+        "digest_archive": check_digest_archive(digest_archive_dir_value, digest=digest_check),
         "us_otc_proxy": check_us_otc_proxy(merged_env, data_dir=data_dir, expected_markets=expected_markets),
     }
     issues = []

@@ -3,6 +3,19 @@ from datetime import datetime
 from scripts import daily_healthcheck
 
 
+def _write_major_money_digest_archive(archive_dir, *, flow_date: str = "2026-04-09"):
+    date_tag = flow_date.replace("-", "")
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    (archive_dir / f"{date_tag}_major_money_digest.json").write_text(
+        f'{{"flow_date":"{flow_date}"}}',
+        encoding="utf-8",
+    )
+    (archive_dir / f"{date_tag}_major_money_digest.csv").write_text(
+        "market,available,total_rows,ok_rows\nA,true,1,1\n",
+        encoding="utf-8",
+    )
+
+
 def test_secret_present_accepts_secret_file(tmp_path):
     key_file = tmp_path / "polygon.key"
     key_file.write_text(" file-secret \n", encoding="utf-8")
@@ -402,6 +415,8 @@ def test_analyze_market_money_artifacts_accepts_healthy_sources(monkeypatch, tmp
     )
     flow_dir = tmp_path / "futu_market"
     flow_dir.mkdir()
+    archive_dir = tmp_path / "major_money_digest_archive"
+    _write_major_money_digest_archive(archive_dir)
     for market, ok_count in {"HK": 1, "US": 2}.items():
         (flow_dir / f"{market}_latest_status.json").write_text(
             '{"status":"ok","market":"%s","attempted_count":%s,"ok_count":%s,'
@@ -413,6 +428,7 @@ def test_analyze_market_money_artifacts_accepts_healthy_sources(monkeypatch, tmp
     monkeypatch.setattr(daily_healthcheck, "EASTMONEY_FUND_FLOW_RANK_PATH", rank)
     monkeypatch.setattr(daily_healthcheck, "EASTMONEY_FUND_FLOW_MIN_ROWS", 2)
     monkeypatch.setattr(daily_healthcheck, "MAJOR_MONEY_DIGEST_PATH", digest)
+    monkeypatch.setattr(daily_healthcheck, "MAJOR_MONEY_DIGEST_ARCHIVE_DIR", archive_dir)
     monkeypatch.setattr(daily_healthcheck, "MARKET_CAPITAL_FLOW_DIR", flow_dir)
     monkeypatch.setattr(daily_healthcheck, "MARKET_CAPITAL_FLOW_MARKETS", ["HK", "US"])
     monkeypatch.setattr(daily_healthcheck, "MAJOR_MONEY_EXPECTED_MARKETS", ["A", "HK", "US"])
@@ -422,7 +438,32 @@ def test_analyze_market_money_artifacts_accepts_healthy_sources(monkeypatch, tmp
     assert status["issues"] == []
     assert status["a_share_rank"]["row_count"] == 2
     assert status["digest"]["available_market_count"] == 3
+    assert status["digest_archive"]["ok"] is True
     assert status["market_scans"]["US"]["ok_count"] == 2
+
+
+def test_analyze_market_money_artifacts_flags_missing_digest_archive(monkeypatch, tmp_path):
+    rank = tmp_path / "eastmoney_rank.csv"
+    rank.write_text("code,main_net_inflow\nSH.600000,100\n", encoding="utf-8")
+    digest = tmp_path / "major_money_digest.json"
+    digest.write_text(
+        '{"flow_date":"2026-04-09","available_market_count":1,"market_count":1,'
+        '"markets":[{"market":"A","available":true,"ok_rows":1,"total_rows":1}]}',
+        encoding="utf-8",
+    )
+    archive_dir = tmp_path / "major_money_digest_archive"
+    monkeypatch.setattr(daily_healthcheck, "HEALTHCHECK_MARKET_MONEY_ENABLED", True)
+    monkeypatch.setattr(daily_healthcheck, "EASTMONEY_FUND_FLOW_RANK_PATH", rank)
+    monkeypatch.setattr(daily_healthcheck, "EASTMONEY_FUND_FLOW_MIN_ROWS", 1)
+    monkeypatch.setattr(daily_healthcheck, "MAJOR_MONEY_DIGEST_PATH", digest)
+    monkeypatch.setattr(daily_healthcheck, "MAJOR_MONEY_DIGEST_ARCHIVE_DIR", archive_dir)
+    monkeypatch.setattr(daily_healthcheck, "MARKET_CAPITAL_FLOW_MARKETS", [])
+    monkeypatch.setattr(daily_healthcheck, "MAJOR_MONEY_EXPECTED_MARKETS", ["A"])
+
+    status = daily_healthcheck.analyze_market_money_artifacts(reference_date="2026-04-09")
+
+    assert status["digest_archive"]["date_tag"] == "20260409"
+    assert any("Major-money digest archive directory missing" in issue for issue in status["issues"])
 
 
 def test_analyze_market_money_artifacts_flags_missing_market_scan(monkeypatch, tmp_path):

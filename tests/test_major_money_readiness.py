@@ -23,7 +23,7 @@ def _write_reporter_env(path: Path):
     )
 
 
-def _write_digest(path: Path, *, us_otc_available: bool):
+def _write_digest(path: Path, *, us_otc_available: bool, archive_dir: Path | None = None):
     path.parent.mkdir(parents=True, exist_ok=True)
     markets = [
         {"market": "A", "source": "eastmoney", "available": True, "ok_rows": 2, "total_rows": 2},
@@ -44,6 +44,13 @@ def _write_digest(path: Path, *, us_otc_available: bool):
         "markets": markets,
     }
     path.write_text(json.dumps(payload), encoding="utf-8")
+    if archive_dir is not None:
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        (archive_dir / "20260529_major_money_digest.json").write_text(json.dumps(payload), encoding="utf-8")
+        (archive_dir / "20260529_major_money_digest.csv").write_text(
+            "market,available,total_rows,ok_rows\nA,true,2,2\n",
+            encoding="utf-8",
+        )
 
 
 def _cron(project_dir: Path) -> str:
@@ -61,6 +68,7 @@ def test_build_readiness_snapshot_accepts_ready_system(tmp_path):
     data_dir = tmp_path / "data"
     reporter_env = project_dir / "reporter" / ".env"
     digest = data_dir / "output" / "major_money_digest_latest.json"
+    archive_dir = data_dir / "output" / "major_money_digest"
     otc_dir = data_dir / "capital_flow" / "us_otc_proxy"
     universe = data_dir / "capital_flow" / "futu_market" / "US_latest_source_universe.csv"
     universe.parent.mkdir(parents=True)
@@ -72,7 +80,7 @@ def test_build_readiness_snapshot_accepts_ready_system(tmp_path):
         encoding="utf-8",
     )
     _write_reporter_env(reporter_env)
-    _write_digest(digest, us_otc_available=True)
+    _write_digest(digest, us_otc_available=True, archive_dir=archive_dir)
 
     snapshot = readiness.build_readiness_snapshot(
         project_dir=project_dir,
@@ -81,6 +89,7 @@ def test_build_readiness_snapshot_accepts_ready_system(tmp_path):
             "DATA_DIR": str(data_dir),
             "REPORTER_ENV_FILE": str(reporter_env),
             "MAJOR_MONEY_DIGEST_JSON": str(digest),
+            "MAJOR_MONEY_DIGEST_ARCHIVE_DIR": str(archive_dir),
             "MAJOR_MONEY_EXPECTED_MARKETS": "A,HK,US,US_OTC",
             "ENABLE_US_OTC_PROXY_FLOW": "true",
             "POLYGON_API_KEY": "secret",
@@ -90,6 +99,7 @@ def test_build_readiness_snapshot_accepts_ready_system(tmp_path):
     assert snapshot["ok"] is True
     assert snapshot["issues"] == []
     assert snapshot["checks"]["digest"]["markets"]["US_OTC"]["available"] is True
+    assert snapshot["checks"]["digest_archive"]["ok"] is True
 
 
 def test_build_readiness_snapshot_accepts_polygon_key_file(tmp_path):
@@ -97,6 +107,7 @@ def test_build_readiness_snapshot_accepts_polygon_key_file(tmp_path):
     data_dir = tmp_path / "data"
     reporter_env = project_dir / "reporter" / ".env"
     digest = data_dir / "output" / "major_money_digest_latest.json"
+    archive_dir = data_dir / "output" / "major_money_digest"
     otc_dir = data_dir / "capital_flow" / "us_otc_proxy"
     universe = data_dir / "capital_flow" / "futu_market" / "US_latest_source_universe.csv"
     key_file = tmp_path / "polygon.key"
@@ -110,7 +121,7 @@ def test_build_readiness_snapshot_accepts_polygon_key_file(tmp_path):
         encoding="utf-8",
     )
     _write_reporter_env(reporter_env)
-    _write_digest(digest, us_otc_available=True)
+    _write_digest(digest, us_otc_available=True, archive_dir=archive_dir)
 
     snapshot = readiness.build_readiness_snapshot(
         project_dir=project_dir,
@@ -119,6 +130,7 @@ def test_build_readiness_snapshot_accepts_polygon_key_file(tmp_path):
             "DATA_DIR": str(data_dir),
             "REPORTER_ENV_FILE": str(reporter_env),
             "MAJOR_MONEY_DIGEST_JSON": str(digest),
+            "MAJOR_MONEY_DIGEST_ARCHIVE_DIR": str(archive_dir),
             "MAJOR_MONEY_EXPECTED_MARKETS": "A,HK,US,US_OTC",
             "ENABLE_US_OTC_PROXY_FLOW": "true",
             "POLYGON_API_KEY_FILE": str(key_file),
@@ -128,6 +140,33 @@ def test_build_readiness_snapshot_accepts_polygon_key_file(tmp_path):
     assert snapshot["ok"] is True
     assert snapshot["checks"]["us_otc_proxy"]["api_key_present"] is True
     assert snapshot["checks"]["us_otc_proxy"]["api_key_file"] == str(key_file)
+
+
+def test_build_readiness_snapshot_flags_missing_digest_archive(tmp_path):
+    project_dir = tmp_path / "project"
+    data_dir = tmp_path / "data"
+    reporter_env = project_dir / "reporter" / ".env"
+    digest = data_dir / "output" / "major_money_digest_latest.json"
+    archive_dir = data_dir / "output" / "major_money_digest"
+    _write_reporter_env(reporter_env)
+    _write_digest(digest, us_otc_available=True)
+
+    snapshot = readiness.build_readiness_snapshot(
+        project_dir=project_dir,
+        crontab_text=_cron(project_dir),
+        env={
+            "DATA_DIR": str(data_dir),
+            "REPORTER_ENV_FILE": str(reporter_env),
+            "MAJOR_MONEY_DIGEST_JSON": str(digest),
+            "MAJOR_MONEY_DIGEST_ARCHIVE_DIR": str(archive_dir),
+            "MAJOR_MONEY_EXPECTED_MARKETS": "A",
+            "ENABLE_US_OTC_PROXY_FLOW": "false",
+        },
+    )
+
+    assert snapshot["ok"] is False
+    assert any("Major-money digest archive directory missing" in issue for issue in snapshot["issues"])
+    assert snapshot["checks"]["digest_archive"]["date_tag"] == "20260529"
 
 
 def test_build_readiness_snapshot_flags_missing_us_otc_proxy(tmp_path):
