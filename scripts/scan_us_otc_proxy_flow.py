@@ -428,6 +428,9 @@ def _load_resume(path: Path, *, overwrite: bool) -> tuple[pd.DataFrame, set[str]
     if overwrite or not path.exists():
         return pd.DataFrame(), set()
     existing = _normalize_resume_statuses(pd.read_csv(path))
+    if "capital_flow_status" in existing.columns:
+        statuses = existing["capital_flow_status"].fillna("").astype(str).str.lower()
+        existing = existing[~statuses.eq("error")].copy()
     if "ticker" in existing.columns:
         tickers = set(existing["ticker"].dropna().astype(str).str.upper().tolist())
     elif "code" in existing.columns:

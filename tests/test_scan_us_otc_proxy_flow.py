@@ -294,7 +294,7 @@ def test_yahoo_chart_scan_resumes_existing_dated_output(monkeypatch, tmp_path):
     assert output["code"].tolist() == ["US.AABB", "US.AACAY"]
 
 
-def test_yahoo_chart_scan_normalizes_old_resume_fetch_failures(monkeypatch, tmp_path):
+def test_yahoo_chart_scan_retries_old_resume_fetch_failures(monkeypatch, tmp_path):
     universe = pd.DataFrame(
         [
             {"code": "US.AABB", "ticker": "AABB", "name": "Asia Broadband", "exchange_type": "US_PINK"},
@@ -327,9 +327,9 @@ def test_yahoo_chart_scan_normalizes_old_resume_fetch_failures(monkeypatch, tmp_
     )
 
     output = pd.read_csv(tmp_path / "US_OTC_latest_flow.csv")
-    assert calls == ["AACAY"]
-    assert rows.loc[rows["code"] == "US.AABB", "capital_flow_status"].iloc[0] == "error"
-    assert output.loc[output["code"] == "US.AABB", "capital_flow_status"].iloc[0] == "error"
+    assert calls == ["AABB", "AACAY"]
+    assert rows.loc[rows["code"] == "US.AABB", "capital_flow_status"].iloc[0] == "ok"
+    assert output.loc[output["code"] == "US.AABB", "capital_flow_status"].iloc[0] == "ok"
 
 
 def test_latest_completed_us_session_date_skips_weekend_before_monday_close():
