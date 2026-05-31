@@ -155,6 +155,57 @@ def test_build_readiness_snapshot_flags_missing_us_otc_proxy(tmp_path):
     assert any("US OTC/Pink proxy disabled" in issue for issue in snapshot["issues"])
 
 
+def test_build_readiness_snapshot_flags_partial_digest_coverage(tmp_path):
+    project_dir = tmp_path / "project"
+    data_dir = tmp_path / "data"
+    reporter_env = project_dir / "reporter" / ".env"
+    digest = data_dir / "output" / "major_money_digest_latest.json"
+    _write_reporter_env(reporter_env)
+    digest.parent.mkdir(parents=True)
+    digest.write_text(
+        json.dumps(
+            {
+                "flow_date": "2026-05-29",
+                "market_count": 2,
+                "available_market_count": 2,
+                "markets": [
+                    {"market": "A", "available": True, "ok_rows": 1, "total_rows": 1},
+                    {
+                        "market": "HK",
+                        "available": True,
+                        "ok_rows": 8,
+                        "total_rows": 10,
+                        "empty_rows": 2,
+                        "error_rows": 0,
+                        "non_ok_rows": 2,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    snapshot = readiness.build_readiness_snapshot(
+        project_dir=project_dir,
+        crontab_text=_cron(project_dir),
+        env={
+            "DATA_DIR": str(data_dir),
+            "REPORTER_ENV_FILE": str(reporter_env),
+            "MAJOR_MONEY_DIGEST_JSON": str(digest),
+            "MAJOR_MONEY_EXPECTED_MARKETS": "A,HK",
+            "HEALTHCHECK_MAJOR_MONEY_MAX_NON_OK_RATIO": "0.05",
+        },
+    )
+
+    assert snapshot["ok"] is False
+    assert any(
+        "Major-money digest partial source coverage: market=HK non_ok=2/10 (20.0%) empty=2 error=0 max=5.0%"
+        in issue
+        for issue in snapshot["issues"]
+    )
+    assert snapshot["checks"]["digest"]["markets"]["HK"]["non_ok_rows"] == 2
+
+
 def test_check_cron_ignores_disabled_lines(tmp_path):
     project_dir = tmp_path / "project"
     status = readiness.check_cron(

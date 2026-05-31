@@ -117,6 +117,8 @@ Artifacts:
   - End-to-end readiness check for the notification system.
   - Checks daily/HK/US cron entries, reporter email configuration, major-money
     digest coverage, and `US_OTC` proxy state.
+  - Uses `HEALTHCHECK_MAJOR_MONEY_MAX_NON_OK_RATIO` to flag available markets
+    whose vendor empty/error rows are too high.
   - Exits non-zero until every expected market, including `US_OTC`, is covered.
 
 ## Daily Commands
