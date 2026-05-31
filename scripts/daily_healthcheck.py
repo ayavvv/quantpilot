@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
-os.environ.setdefault("REPORT_DIR", str(PROJECT_DIR / "logs" / "reports"))
 
 from reporter.send_report import send_email
 from scripts import a_share_readiness
@@ -23,6 +22,7 @@ DATA_DIR = Path(os.environ.get("DATA_DIR", str(Path.home() / "quantpilot_data"))
 QLIB_DIR = DATA_DIR / "qlib_data"
 SIGNAL_DIR = DATA_DIR / "signals"
 LOGS_DIR = PROJECT_DIR / "logs"
+HEALTH_REPORT_DIR = Path(os.environ.get("HEALTHCHECK_REPORT_DIR", os.environ.get("REPORT_DIR", str(LOGS_DIR / "reports"))))
 HEALTH_DIR = Path(os.environ.get("HEALTHCHECK_DIR", str(LOGS_DIR / "health")))
 TRADE_LOG = Path(os.environ.get("TRADE_LOG", str(LOGS_DIR / "trade.log")))
 DAILY_LOG = Path(os.environ.get("DAILY_LOG", str(LOGS_DIR / "daily.log")))
@@ -52,6 +52,23 @@ CAPITAL_FLOW_ARCHIVE_DIR = Path(
 CAPITAL_FLOW_GATE_PATH = Path(
     os.environ.get("CAPITAL_FLOW_GATE_JSON", str(DATA_DIR / "output" / "futu_capital_flow_eval_latest" / "gate.json"))
 )
+HEALTHCHECK_MARKET_MONEY_ENABLED = os.environ.get("HEALTHCHECK_MARKET_MONEY_ENABLED", "true").lower() == "true"
+MAJOR_MONEY_DIGEST_PATH = Path(
+    os.environ.get("MAJOR_MONEY_DIGEST_JSON", str(DATA_DIR / "output" / "major_money_digest_latest.json"))
+)
+EASTMONEY_FUND_FLOW_RANK_PATH = Path(
+    os.environ.get("EASTMONEY_FUND_FLOW_RANK_OUTPUT", str(DATA_DIR / "output" / "eastmoney_fund_flow_rank_latest.csv"))
+)
+EASTMONEY_FUND_FLOW_MIN_ROWS = int(os.environ.get("EASTMONEY_FUND_FLOW_MIN_ROWS", "1000"))
+MARKET_CAPITAL_FLOW_DIR = Path(
+    os.environ.get("FUTU_MARKET_FLOW_OUTPUT_DIR", str(DATA_DIR / "capital_flow" / "futu_market"))
+)
+MARKET_CAPITAL_FLOW_MARKETS = [
+    item.strip().upper()
+    for item in os.environ.get("HEALTHCHECK_MARKET_FLOW_MARKETS", "HK,US").split(",")
+    if item.strip()
+]
+HEALTHCHECK_MARKET_FLOW_MIN_OK_RATIO = float(os.environ.get("HEALTHCHECK_MARKET_FLOW_MIN_OK_RATIO", "0.5"))
 
 LEVEL_ORDER = {"ok": 0, "warn": 1, "error": 2}
 
@@ -284,6 +301,216 @@ def _read_capital_flow_gate_status(path: Path) -> dict[str, Any]:
     return status
 
 
+def _file_mtime_date(path: Path) -> str:
+    if not path.exists():
+        return ""
+    return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d")
+
+
+def _read_csv_artifact_status(path: Path) -> dict[str, Any]:
+    status: dict[str, Any] = {
+        "path": str(path),
+        "exists": path.exists(),
+        "ok": False,
+        "row_count": 0,
+        "mtime_date": _file_mtime_date(path),
+        "error": "",
+    }
+    if not path.exists():
+        return status
+    try:
+        import pandas as pd
+
+        df = pd.read_csv(path)
+    except Exception as exc:
+        status["error"] = str(exc)
+        return status
+    status["row_count"] = int(len(df))
+    status["ok"] = True
+    return status
+
+
+def _read_major_money_digest_status(path: Path) -> dict[str, Any]:
+    status: dict[str, Any] = {
+        "path": str(path),
+        "exists": path.exists(),
+        "ok": False,
+        "flow_date": "",
+        "available_market_count": 0,
+        "market_count": 0,
+        "markets": {},
+        "mtime_date": _file_mtime_date(path),
+        "error": "",
+    }
+    if not path.exists():
+        return status
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        status["error"] = str(exc)
+        return status
+
+    markets = payload.get("markets", [])
+    market_status: dict[str, Any] = {}
+    if isinstance(markets, list):
+        for item in markets:
+            if isinstance(item, dict) and item.get("market"):
+                market_status[str(item.get("market"))] = {
+                    "available": bool(item.get("available")),
+                    "ok_rows": int(item.get("ok_rows") or 0),
+                    "total_rows": int(item.get("total_rows") or 0),
+                    "flow_date": str(item.get("flow_date") or ""),
+                    "source": str(item.get("source") or ""),
+                }
+
+    status.update(
+        {
+            "ok": True,
+            "flow_date": str(payload.get("flow_date") or ""),
+            "available_market_count": int(payload.get("available_market_count") or 0),
+            "market_count": int(payload.get("market_count") or len(market_status)),
+            "markets": market_status,
+        }
+    )
+    return status
+
+
+def _read_market_scan_status(path: Path) -> dict[str, Any]:
+    status: dict[str, Any] = {
+        "path": str(path),
+        "exists": path.exists(),
+        "ok": False,
+        "status": "",
+        "market": "",
+        "attempted_count": 0,
+        "ok_count": 0,
+        "error_count": 0,
+        "empty_count": 0,
+        "ok_ratio": 0.0,
+        "finished_at": "",
+        "finished_date": "",
+        "mtime_date": _file_mtime_date(path),
+        "error": "",
+    }
+    if not path.exists():
+        return status
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        status["error"] = str(exc)
+        return status
+
+    status_value = str(payload.get("status") or "")
+    ok_count = int(payload.get("ok_count") or 0)
+    attempted_count = int(payload.get("attempted_count") or 0)
+    status.update(
+        {
+            "ok": status_value == "ok" and ok_count > 0,
+            "status": status_value,
+            "market": str(payload.get("market") or ""),
+            "attempted_count": attempted_count,
+            "ok_count": ok_count,
+            "error_count": int(payload.get("error_count") or 0),
+            "empty_count": int(payload.get("empty_count") or 0),
+            "ok_ratio": float(payload.get("ok_ratio") or 0.0),
+            "finished_at": str(payload.get("finished_at") or ""),
+            "finished_date": str(payload.get("finished_at") or "")[:10],
+            "message": str(payload.get("message") or ""),
+            "output": str(payload.get("output") or ""),
+            "latest": str(payload.get("latest") or ""),
+        }
+    )
+    return status
+
+
+def analyze_market_money_artifacts(reference_date: str = "") -> dict[str, Any]:
+    status: dict[str, Any] = {
+        "enabled": HEALTHCHECK_MARKET_MONEY_ENABLED,
+        "reference_date": reference_date,
+        "a_share_rank": {},
+        "digest": {},
+        "market_scans": {},
+        "issues": [],
+    }
+    if not HEALTHCHECK_MARKET_MONEY_ENABLED:
+        return status
+
+    issues: list[str] = []
+    a_share_rank = _read_csv_artifact_status(EASTMONEY_FUND_FLOW_RANK_PATH)
+    digest = _read_major_money_digest_status(MAJOR_MONEY_DIGEST_PATH)
+    status.update({"a_share_rank": a_share_rank, "digest": digest})
+
+    if not a_share_rank["exists"]:
+        issues.append(f"Eastmoney A-share fund-flow rank missing: {a_share_rank['path']}")
+    elif not a_share_rank["ok"]:
+        issues.append(
+            "Eastmoney A-share fund-flow rank unreadable: "
+            f"path={a_share_rank['path']} error={a_share_rank.get('error') or 'unknown'}"
+        )
+    elif a_share_rank["row_count"] < EASTMONEY_FUND_FLOW_MIN_ROWS:
+        issues.append(
+            "Eastmoney A-share fund-flow rank too small: "
+            f"rows={a_share_rank['row_count']} min={EASTMONEY_FUND_FLOW_MIN_ROWS}"
+        )
+    elif reference_date and a_share_rank.get("mtime_date") and a_share_rank["mtime_date"] < reference_date:
+        issues.append(
+            "Eastmoney A-share fund-flow rank stale: "
+            f"mtime_date={a_share_rank['mtime_date']} reference={reference_date}"
+        )
+
+    if not digest["exists"]:
+        issues.append(f"Major-money digest missing: {digest['path']}")
+    elif not digest["ok"]:
+        issues.append(
+            "Major-money digest unreadable: "
+            f"path={digest['path']} error={digest.get('error') or 'unknown'}"
+        )
+    else:
+        a_market = digest.get("markets", {}).get("A", {})
+        if not a_market.get("available"):
+            issues.append("Major-money digest missing available A-share market coverage")
+        digest_date = str(digest.get("flow_date") or "")
+        if reference_date and digest_date and digest_date < reference_date:
+            issues.append(
+                "Major-money digest stale: "
+                f"flow_date={digest_date} reference={reference_date}"
+            )
+        elif reference_date and digest.get("mtime_date") and digest["mtime_date"] < reference_date:
+            issues.append(
+                "Major-money digest file stale: "
+                f"mtime_date={digest['mtime_date']} reference={reference_date}"
+            )
+
+    market_scans: dict[str, Any] = {}
+    for market in MARKET_CAPITAL_FLOW_MARKETS:
+        scan_status = _read_market_scan_status(MARKET_CAPITAL_FLOW_DIR / f"{market}_latest_status.json")
+        market_scans[market] = scan_status
+        if not scan_status["exists"]:
+            issues.append(f"Futu market-wide capital-flow status missing for {market}: {scan_status['path']}")
+        elif not scan_status["ok"]:
+            issues.append(
+                "Futu market-wide capital-flow scan not healthy: "
+                f"market={market} status={scan_status.get('status') or 'N/A'} "
+                f"ok={scan_status.get('ok_count', 0)}/{scan_status.get('attempted_count', 0)} "
+                f"message={scan_status.get('message') or scan_status.get('error') or 'N/A'}"
+            )
+        elif reference_date and (scan_status.get("finished_date") or scan_status.get("mtime_date")) < reference_date:
+            issues.append(
+                "Futu market-wide capital-flow scan stale: "
+                f"market={market} finished_date={scan_status.get('finished_date') or 'N/A'} "
+                f"mtime_date={scan_status.get('mtime_date') or 'N/A'} reference={reference_date}"
+            )
+        elif scan_status.get("ok_ratio", 0.0) < HEALTHCHECK_MARKET_FLOW_MIN_OK_RATIO:
+            issues.append(
+                "Futu market-wide capital-flow scan coverage too low: "
+                f"market={market} ok_ratio={scan_status.get('ok_ratio', 0.0):.1%} "
+                f"min={HEALTHCHECK_MARKET_FLOW_MIN_OK_RATIO:.1%}"
+            )
+    status["market_scans"] = market_scans
+    status["issues"] = issues
+    return status
+
+
 def analyze_capital_flow_artifacts(phase: str, reference_date: str = "") -> dict[str, Any]:
     status: dict[str, Any] = {
         "enabled": HEALTHCHECK_CAPITAL_FLOW_ENABLED,
@@ -382,6 +609,9 @@ def build_snapshot(
     }
     capital_flow = analyze_capital_flow_artifacts(
         phase,
+        reference_date=target_a_share_date or expected_signal_date or signal_date or local_latest,
+    )
+    market_money = analyze_market_money_artifacts(
         reference_date=target_a_share_date or expected_signal_date or signal_date or local_latest,
     )
 
@@ -513,6 +743,10 @@ def build_snapshot(
         overall = _bump_level(overall, "warn")
         issues.append(issue)
 
+    for issue in market_money.get("issues", []):
+        overall = _bump_level(overall, "warn")
+        issues.append(issue)
+
     if not issues:
         issues.append("All monitored checks passed")
 
@@ -541,6 +775,7 @@ def build_snapshot(
         "nightly": nightly_logs,
         "trade": trade,
         "capital_flow": capital_flow,
+        "market_money": market_money,
     }
 
 
@@ -563,9 +798,12 @@ def render_snapshot_html(snapshot: dict[str, Any]) -> str:
     nas = snapshot["nas"]
     trade = snapshot["trade"]
     capital_flow = snapshot.get("capital_flow", {})
+    market_money = snapshot.get("market_money", {})
     gate = capital_flow.get("gate", {}) if isinstance(capital_flow, dict) else {}
     daily_overlay = capital_flow.get("daily_overlay", {}) if isinstance(capital_flow, dict) else {}
     pretrade_overlay = capital_flow.get("pretrade_overlay", {}) if isinstance(capital_flow, dict) else {}
+    digest = market_money.get("digest", {}) if isinstance(market_money, dict) else {}
+    a_share_rank = market_money.get("a_share_rank", {}) if isinstance(market_money, dict) else {}
     disk = local.get(
         "disk",
         {"path": str(DATA_DIR), "used_ratio": 0.0},
@@ -600,6 +838,10 @@ def render_snapshot_html(snapshot: dict[str, Any]) -> str:
       daily_overlay_date={daily_overlay.get('signal_date') or 'N/A'} rows={daily_overlay.get('row_count', 0)}<br>
       pretrade_overlay_date={pretrade_overlay.get('signal_date') or 'N/A'} rows={pretrade_overlay.get('row_count', 0)}<br>
       gate_action={gate.get('overall_action') or 'N/A'}</p>
+      <h2>Market-Wide Major Money</h2>
+      <p>enabled={market_money.get('enabled', False)}<br>
+      digest_date={digest.get('flow_date') or 'N/A'} available_markets={digest.get('available_market_count', 0)}/{digest.get('market_count', 0)}<br>
+      eastmoney_rows={a_share_rank.get('row_count', 0)} mtime={a_share_rank.get('mtime_date') or 'N/A'}</p>
     </body>
     </html>
     """
@@ -628,7 +870,7 @@ def maybe_send_alert(snapshot: dict[str, Any], threshold: str) -> bool:
         return False
 
     subject = f"QuantPilot Alert [{snapshot['overall_status'].upper()}] {snapshot['phase']} {snapshot['date']}"
-    send_email(render_snapshot_html(snapshot), subject)
+    send_email(render_snapshot_html(snapshot), subject, report_dir=HEALTH_REPORT_DIR)
     stamp.write_text(snapshot["timestamp"], encoding="utf-8")
     return True
 

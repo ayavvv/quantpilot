@@ -1,0 +1,85 @@
+import json
+
+import pandas as pd
+import pytest
+
+from scripts.scan_futu_market_capital_flow import scan_market
+
+
+class FakeFutuClient:
+    def get_capital_flow(self, code, period_type="DAY", start=None, end=None):
+        if code == "US.BAD":
+            raise RuntimeError("no permission")
+        return [
+            {"code": code, "date": "2026-05-29", "main_in_flow": 10.0, "super_in_flow": 6.0, "big_in_flow": 4.0}
+        ]
+
+    def get_capital_distribution(self, code):
+        return {}
+
+
+def test_scan_market_writes_latest_status(tmp_path):
+    universe = pd.DataFrame(
+        [
+            {"code": "US.AAPL", "name": "Apple", "exchange_type": "US_NASDAQ"},
+            {"code": "US.BAD", "name": "Bad", "exchange_type": "US_NYSE"},
+        ]
+    )
+
+    stats = scan_market(
+        FakeFutuClient(),
+        universe,
+        market="US",
+        output_dir=tmp_path,
+        start="2026-05-01",
+        end="2026-05-31",
+        period="DAY",
+        include_distribution=False,
+        max_codes=0,
+        batch_flush=50,
+        overwrite=True,
+        pause_seconds=0,
+        min_ok_ratio=0.0,
+    )
+
+    assert stats["ok_count"] == 1
+    assert (tmp_path / "US_latest_flow.csv").exists()
+    latest_status = tmp_path / "US_latest_status.json"
+    assert latest_status.exists()
+    payload = json.loads(latest_status.read_text(encoding="utf-8"))
+    assert payload["status"] == "ok"
+    assert payload["attempted_count"] == 2
+    assert payload["ok_count"] == 1
+    assert payload["error_count"] == 1
+
+
+def test_scan_market_writes_failed_status_before_raise(tmp_path):
+    universe = pd.DataFrame(
+        [
+            {"code": "US.AAPL", "name": "Apple", "exchange_type": "US_NASDAQ"},
+            {"code": "US.BAD", "name": "Bad", "exchange_type": "US_NYSE"},
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="ok_ratio too low"):
+        scan_market(
+            FakeFutuClient(),
+            universe,
+            market="US",
+            output_dir=tmp_path,
+            start="2026-05-01",
+            end="2026-05-31",
+            period="DAY",
+            include_distribution=False,
+            max_codes=0,
+            batch_flush=50,
+            overwrite=True,
+            pause_seconds=0,
+            min_ok_ratio=0.75,
+        )
+
+    payload = json.loads((tmp_path / "US_latest_status.json").read_text(encoding="utf-8"))
+    assert payload["status"] == "failed"
+    assert payload["attempted_count"] == 2
+    assert payload["ok_count"] == 1
+    assert payload["error_count"] == 1

@@ -8,6 +8,7 @@ smoke tests and keep the output coverage fields visible in downstream reports.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import time
 from datetime import datetime, timedelta
@@ -110,6 +111,16 @@ def _write_outputs(df: pd.DataFrame, output_path: Path, latest_path: Path) -> No
     df.to_csv(latest_path, index=False)
 
 
+def _write_status(status: dict[str, Any], output_dir: Path, market: str, date_tag: str) -> dict[str, Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    dated_path = output_dir / f"{market}_{date_tag}_status.json"
+    latest_path = output_dir / f"{market}_latest_status.json"
+    content = json.dumps(status, ensure_ascii=False, indent=2) + "\n"
+    dated_path.write_text(content, encoding="utf-8")
+    latest_path.write_text(content, encoding="utf-8")
+    return {"status": dated_path, "latest_status": latest_path}
+
+
 def scan_market(
     client: FutuClient,
     universe: pd.DataFrame,
@@ -126,6 +137,7 @@ def scan_market(
     pause_seconds: float,
     min_ok_ratio: float,
 ) -> dict[str, Any]:
+    started_at = datetime.now().astimezone().isoformat(timespec="seconds")
     date_tag = _date_tag(end)
     output_path = output_dir / f"{market}_{date_tag}_flow.csv"
     latest_path = output_dir / f"{market}_latest_flow.csv"
@@ -171,15 +183,55 @@ def scan_market(
             time.sleep(pause_seconds)
 
     result = pd.DataFrame(records)
-    ok_count = int((result.get("capital_flow_status", pd.Series(dtype=str)).astype(str) == "ok").sum())
+    statuses = result.get("capital_flow_status", pd.Series(dtype=str)).fillna("").astype(str)
+    ok_count = int((statuses == "ok").sum())
+    error_count = int((statuses == "error").sum())
+    empty_count = int((statuses == "empty").sum())
     attempted = len(result)
     ok_ratio = ok_count / attempted if attempted else 0.0
-    if attempted and ok_ratio < min_ok_ratio:
-        raise RuntimeError(f"{market} Futu capital-flow ok_ratio too low: {ok_ratio:.1%} < {min_ok_ratio:.1%}")
+    status_value = "ok"
+    status_message = "ok"
+    if not attempted:
+        status_value = "empty"
+        status_message = "No symbols were scanned."
+    elif ok_ratio < min_ok_ratio:
+        status_value = "failed"
+        status_message = f"ok_ratio too low: {ok_ratio:.1%} < {min_ok_ratio:.1%}"
 
+    finished_at = datetime.now().astimezone().isoformat(timespec="seconds")
     _write_outputs(result, output_path, latest_path)
     universe_path = output_dir / f"{market}_{date_tag}_universe.csv"
     universe.to_csv(universe_path, index=False)
+
+    status_payload = {
+        "status": status_value,
+        "message": status_message,
+        "market": market,
+        "period": period,
+        "start": start,
+        "end": end,
+        "date_tag": date_tag,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "include_distribution": include_distribution,
+        "max_codes": max_codes,
+        "universe_count": int(len(universe)),
+        "selected_count": int(total),
+        "attempted_count": int(attempted),
+        "ok_count": ok_count,
+        "error_count": error_count,
+        "empty_count": empty_count,
+        "ok_ratio": ok_ratio,
+        "min_ok_ratio": min_ok_ratio,
+        "output": str(output_path),
+        "latest": str(latest_path),
+        "universe": str(universe_path),
+    }
+
+    status_paths = _write_status(status_payload, output_dir, market, date_tag)
+    if attempted and ok_ratio < min_ok_ratio:
+        raise RuntimeError(f"{market} Futu capital-flow ok_ratio too low: {ok_ratio:.1%} < {min_ok_ratio:.1%}")
+
     return {
         "market": market,
         "universe_count": len(universe),
@@ -189,6 +241,8 @@ def scan_market(
         "output": str(output_path),
         "latest": str(latest_path),
         "universe": str(universe_path),
+        "status": str(status_paths["status"]),
+        "latest_status": str(status_paths["latest_status"]),
     }
 
 
