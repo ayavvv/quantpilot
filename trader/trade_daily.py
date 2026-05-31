@@ -78,6 +78,11 @@ SELL_PRICE_SLIPPAGE = 0.99   # 卖出价下浮 1% 确保成交
 DEFAULT_PRICE_TICK = 0.01
 DRY_RUN = os.environ.get("DRY_RUN", "false").lower() == "true"
 ALLOW_STALE_SIGNAL = os.environ.get("ALLOW_STALE_SIGNAL", "false").lower() == "true"
+ENABLE_CAPITAL_FLOW_ADVISORY = os.environ.get("ENABLE_CAPITAL_FLOW_ADVISORY", "true").lower() == "true"
+CAPITAL_FLOW_OVERLAY_CSV = os.environ.get(
+    "CAPITAL_FLOW_OVERLAY_CSV",
+    str(SIGNAL_DIR.parent / "output" / "pretrade_futu_capital_flow_signal_overlay_latest.csv"),
+).strip()
 CN_TZ = ZoneInfo("Asia/Shanghai")
 A_SHARE_TRADING_SESSIONS = (
     (dt_time(9, 30), dt_time(11, 30)),
@@ -415,6 +420,119 @@ def load_signal_day_changes(signal_date: str, codes: list[str]) -> dict[str, flo
     return changes
 
 
+# ─── 主力资金提示（advisory only）────────────────────────
+
+def _format_flow_amount(value: object) -> str:
+    if value is None or pd.isna(value):
+        return "N/A"
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return "N/A"
+
+    abs_amount = abs(amount)
+    if abs_amount >= 100_000_000:
+        return f"{amount / 100_000_000:.2f}亿"
+    if abs_amount >= 10_000:
+        return f"{amount / 10_000:.0f}万"
+    return f"{amount:.0f}"
+
+
+def load_capital_flow_advisory(
+    overlay_csv: str | os.PathLike[str] | Path | None,
+    signal_date: str,
+) -> dict[str, dict[str, object]]:
+    """Load pre-trade Futu capital-flow labels keyed by code.
+
+    This is deliberately advisory: stale or malformed data is ignored instead of
+    changing trading decisions.
+    """
+
+    if not ENABLE_CAPITAL_FLOW_ADVISORY:
+        return {}
+    if not overlay_csv:
+        return {}
+
+    path = Path(overlay_csv).expanduser()
+    if not path.exists():
+        log.info(f"主力资金提示: overlay 不存在，跳过 ({path})")
+        return {}
+
+    try:
+        df = pd.read_csv(path)
+    except Exception as exc:
+        log.warning(f"主力资金提示: overlay 读取失败，跳过 ({path}): {exc}")
+        return {}
+
+    required = {"code", "capital_flow_label"}
+    if df.empty or not required.issubset(df.columns):
+        log.warning(f"主力资金提示: overlay 为空或缺字段，跳过 ({path})")
+        return {}
+
+    if signal_date and "signal_date" in df.columns:
+        dates = df["signal_date"].where(df["signal_date"].notna(), "").astype(str).str[:10]
+        mask = dates == signal_date
+        if mask.any():
+            df = df.loc[mask].copy()
+        else:
+            available = sorted(date for date in dates.unique().tolist() if date)
+            log.warning(
+                "主力资金提示: overlay 信号日不匹配，跳过 "
+                f"(signal={signal_date}, available={available[-3:]})"
+            )
+            return {}
+
+    advisory = {}
+    for _, row in df.iterrows():
+        code = str(row.get("code", "")).upper()
+        if not code:
+            continue
+        advisory[code] = row.to_dict()
+
+    log.info(f"主力资金提示: 已加载 {len(advisory)} 条 ({path})")
+    return advisory
+
+
+def capital_flow_advisory_groups(
+    codes: list[str],
+    advisory: dict[str, dict[str, object]],
+) -> dict[str, list[str]]:
+    groups = {"risk": [], "confirm": [], "watch": []}
+    for code in codes:
+        row = advisory.get(code)
+        if not row:
+            continue
+        label = str(row.get("capital_flow_label", ""))
+        item = (
+            f"{code} {label} "
+            f"latest={_format_flow_amount(row.get('latest_main_in_flow'))} "
+            f"5d={_format_flow_amount(row.get('main_5d_sum'))}"
+        )
+        if label.startswith("risk_flag"):
+            groups["risk"].append(item)
+        elif label == "capital_flow_confirm":
+            groups["confirm"].append(item)
+        elif label == "capital_flow_watch":
+            groups["watch"].append(item)
+    return groups
+
+
+def log_capital_flow_advisory(
+    codes: list[str],
+    advisory: dict[str, dict[str, object]],
+) -> None:
+    if not codes or not advisory:
+        return
+
+    groups = capital_flow_advisory_groups(codes, advisory)
+    if groups["risk"]:
+        log.warning("主力资金风险提示(不自动过滤): " + "; ".join(groups["risk"]))
+    if groups["confirm"]:
+        log.info("主力资金确认: " + "; ".join(groups["confirm"]))
+    if groups["watch"]:
+        log.info("主力资金观察: " + "; ".join(groups["watch"]))
+
+
 # ─── 交易执行 ───────────────────────────────────────────
 
 def _positions_from_frame(data: pd.DataFrame) -> dict[str, dict]:
@@ -508,6 +626,7 @@ def run_trade(
     signals_df: pd.DataFrame,
     signal_day_changes: dict[str, float],
     dry_run: bool = False,
+    capital_flow_advisory: dict[str, dict[str, object]] | None = None,
 ):
     """执行换仓 — 与 backtest.py 完全一致。"""
 
@@ -552,6 +671,7 @@ def run_trade(
 
     target_set = set(eligible[:TOP_N])
     log.info(f"目标持仓 Top-{TOP_N}: {eligible[:TOP_N]}")
+    log_capital_flow_advisory(eligible[:TOP_N], capital_flow_advisory or {})
 
     if not target_set and current_codes and len(snapshots) < len(query_codes) * 0.5:
         log.warning(f"行情异常保护: 仅 {len(snapshots)}/{len(query_codes)} 行情成功，保持现有持仓不动")
@@ -739,6 +859,8 @@ def main():
     else:
         log.warning(f"Qlib 数据不可用: {QLIB_DATA_DIR}")
 
+    capital_flow_advisory = load_capital_flow_advisory(CAPITAL_FLOW_OVERLAY_CSV, sig_date)
+
     # 保存信号快照
     SIGNAL_DIR.mkdir(parents=True, exist_ok=True)
     sig_file = SIGNAL_DIR / f"signal_{sig_date}.csv"
@@ -814,6 +936,7 @@ def main():
             signals_df,
             signal_changes,
             dry_run=dry_run,
+            capital_flow_advisory=capital_flow_advisory,
         )
         log.info("完成")
 

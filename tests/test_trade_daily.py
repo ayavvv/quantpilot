@@ -1,4 +1,5 @@
 import pickle
+import logging
 import pandas as pd
 from zoneinfo import ZoneInfo
 
@@ -226,6 +227,83 @@ def test_latest_a_share_date_uses_model_prefixes_for_freshness(tmp_path, monkeyp
     monkeypatch.setattr(trade_daily, "A_SHARE_MODEL_PREFIXES", ("SH.", "SZ."))
 
     assert trade_daily._latest_a_share_date() == "2026-04-11"
+
+
+def test_load_capital_flow_advisory_filters_to_signal_date(tmp_path, monkeypatch):
+    overlay = tmp_path / "pretrade_overlay.csv"
+    overlay.write_text(
+        "\n".join(
+            [
+                "code,signal_date,capital_flow_label,latest_main_in_flow,main_5d_sum",
+                "SH.600000,2026-05-28,risk_flag_main_outflow,-1000000,-2000000",
+                "SH.600001,2026-05-29,capital_flow_confirm,50000000,90000000",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(trade_daily, "ENABLE_CAPITAL_FLOW_ADVISORY", True)
+
+    advisory = trade_daily.load_capital_flow_advisory(overlay, "2026-05-29")
+
+    assert list(advisory) == ["SH.600001"]
+    assert advisory["SH.600001"]["capital_flow_label"] == "capital_flow_confirm"
+
+
+def test_run_trade_logs_capital_flow_risk_without_filtering(monkeypatch, caplog):
+    class FakeTradeContext:
+        def __init__(self):
+            self.order_calls = []
+
+        def accinfo_query(self, **kwargs):
+            return trade_daily.RET_OK, pd.DataFrame(
+                [{"total_assets": 100000, "cash": 100000, "market_val": 0}]
+            )
+
+        def position_list_query(self, **kwargs):
+            return trade_daily.RET_OK, pd.DataFrame([])
+
+        def place_order(self, **kwargs):
+            self.order_calls.append(kwargs)
+            return trade_daily.RET_OK, "ok"
+
+    monkeypatch.setattr(trade_daily, "TOP_N", 1)
+    monkeypatch.setattr(trade_daily, "HOLD_BONUS", 0.0)
+
+    quote_ctx = _QuoteCtx(
+        {
+            "SH.600000": {
+                "last_price": 10.0,
+                "change_rate": 0.0,
+                "lower_limit_price": 9.0,
+                "upper_limit_price": 11.0,
+                "lot_size": 100,
+            },
+        }
+    )
+    signals_df = pd.DataFrame([{"code": "SH.600000", "score": 1.0}])
+    advisory = {
+        "SH.600000": {
+            "capital_flow_label": "risk_flag_main_outflow",
+            "latest_main_in_flow": -50_000_000,
+            "main_5d_sum": -120_000_000,
+        }
+    }
+
+    trd_ctx = FakeTradeContext()
+    with caplog.at_level(logging.WARNING, logger="trader"):
+        trade_daily.run_trade(
+            trd_ctx,
+            quote_ctx=quote_ctx,
+            acc_id=3523785,
+            signals_df=signals_df,
+            signal_day_changes={},
+            dry_run=False,
+            capital_flow_advisory=advisory,
+        )
+
+    assert "主力资金风险提示(不自动过滤)" in caplog.text
+    buy_codes = [call["code"] for call in trd_ctx.order_calls if call["trd_side"] == trade_daily.TrdSide.BUY]
+    assert buy_codes == ["SH.600000"]
 
 
 def test_run_trade_continues_buy_after_sell_failure(monkeypatch):

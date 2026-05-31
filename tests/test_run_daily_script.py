@@ -90,6 +90,15 @@ def test_run_trade_runs_healthcheck_after_trade():
     assert 'if FUTU_HOST="${FUTU_HOST:-192.168.100.248}" \\' in content
 
 
+def test_run_trade_builds_pretrade_capital_flow_advisory():
+    content = RUN_TRADE.read_text()
+    assert 'ENABLE_PRETRADE_CAPITAL_FLOW_CHECK="${ENABLE_PRETRADE_CAPITAL_FLOW_CHECK:-true}"' in content
+    assert '"$PYTHON_BIN" -m scripts.build_futu_capital_flow_overlay' in content
+    assert '--signal-top-n "$PRETRADE_CAPITAL_FLOW_TOP_N"' in content
+    assert 'CAPITAL_FLOW_OVERLAY_CSV="$PRETRADE_CAPITAL_FLOW_OVERLAY_CSV"' in content
+    assert 'ENABLE_CAPITAL_FLOW_ADVISORY="$ENABLE_CAPITAL_FLOW_ADVISORY"' in content
+
+
 def test_sync_data_syncs_and_promotes_metadata():
     content = SYNC_DATA.read_text()
     assert 'tar cf - calendars instruments features metadata' in content
