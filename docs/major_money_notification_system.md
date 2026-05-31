@@ -47,6 +47,8 @@ Artifacts:
   - Resumable Futu scanner for HK/US/SH/SZ stock universes.
   - Writes dated and latest flow CSVs under
     `~/quantpilot_data/capital_flow/futu_market/`.
+  - Writes `{MARKET}_latest_status.json` with scan status, attempted count,
+    ok/error/empty counts, coverage ratio, and output paths.
   - Use `--max-codes` for smoke tests; omit it only when ready for long full
     scans.
 - `scripts/run_market_capital_flow.sh`
@@ -61,6 +63,10 @@ Artifacts:
     as zero signals.
 - `scripts/run_daily.sh`
   - Adds Step 2d to build the digest before sending the daily report.
+- `scripts/daily_healthcheck.py`
+  - Warns when A-share fund-flow rank, major-money digest, or HK/US full-market
+    Futu scan status files are missing, stale, unreadable, or below coverage
+    thresholds.
 
 ## Daily Commands
 
