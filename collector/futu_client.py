@@ -378,6 +378,161 @@ class FutuClient:
             raise
 
     # -------------------------------------------------------------------------
+    # Capital flow / distribution
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _number_or_none(value: Any) -> float | None:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if pd.notna(parsed) else None
+
+    @staticmethod
+    def _resolve_period_type(period_type: str | Any):
+        if not isinstance(period_type, str):
+            return period_type
+        from futu import PeriodType
+
+        normalized = period_type.strip().upper()
+        if not normalized:
+            return PeriodType.DAY
+        if not hasattr(PeriodType, normalized):
+            valid = [name for name in ("INTRADAY", "DAY", "WEEK", "MONTH") if hasattr(PeriodType, name)]
+            raise ValueError(f"Unsupported Futu capital-flow period_type={period_type!r}, valid={valid}")
+        return getattr(PeriodType, normalized)
+
+    def get_capital_flow(
+        self,
+        code: str,
+        period_type: str | Any = "DAY",
+        start: str = None,
+        end: str = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get stock capital flow data.
+
+        For DAY/WEEK/MONTH periods, Futu returns main/super/big/mid/small
+        inflow fields that are directly useful as a real "major money" signal.
+        INTRADAY usually only has minute-level net inflow fields.
+        """
+        if not self.ctx:
+            raise RuntimeError("Client not connected, call connect() first")
+
+        resolved_period = self._resolve_period_type(period_type)
+        logger.info(f"Fetching {code} capital flow (period={period_type}, start={start}, end={end})")
+
+        try:
+            def _request():
+                return self.ctx.get_capital_flow(
+                    code,
+                    period_type=resolved_period,
+                    start=start,
+                    end=end,
+                )
+
+            ret, data = self._retry_wrapper(_request)
+        except Exception as e:
+            logger.error(f"Capital flow error for {code}: {e}")
+            raise
+
+        if ret == RET_ERROR:
+            error_msg = f"Failed to get capital flow for {code}: {data}"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+
+        if data is None or len(data) == 0:
+            logger.warning(f"{code} capital flow is empty")
+            return []
+
+        results: list[dict[str, Any]] = []
+        fields = [
+            "in_flow",
+            "main_in_flow",
+            "super_in_flow",
+            "big_in_flow",
+            "mid_in_flow",
+            "sml_in_flow",
+        ]
+        for _, row in data.iterrows():
+            time_value = row.get("capital_flow_item_time", row.get("time", row.get("capital_flow_time", "")))
+            record: dict[str, Any] = {
+                "code": code,
+                "time": str(time_value) if pd.notna(time_value) else "",
+            }
+            record["date"] = record["time"][:10] if record["time"] else ""
+            for field in fields:
+                if field in row:
+                    record[field] = self._number_or_none(row.get(field))
+            if "last_valid_time" in row:
+                last_valid = row.get("last_valid_time")
+                record["last_valid_time"] = str(last_valid) if pd.notna(last_valid) else ""
+            results.append(record)
+
+        logger.info(f"Capital flow: {code} {len(results)} records")
+        return results
+
+    def get_capital_distribution(self, code: str) -> Dict[str, Any]:
+        """
+        Get current capital distribution by order size.
+
+        Futu derives these buckets from historical tick-by-tick transactions.
+        The net super/big order fields are a practical proxy for "major money".
+        """
+        if not self.ctx:
+            raise RuntimeError("Client not connected, call connect() first")
+
+        logger.info(f"Fetching {code} capital distribution")
+
+        try:
+            def _request():
+                return self.ctx.get_capital_distribution(code)
+
+            ret, data = self._retry_wrapper(_request)
+        except Exception as e:
+            logger.error(f"Capital distribution error for {code}: {e}")
+            raise
+
+        if ret == RET_ERROR:
+            error_msg = f"Failed to get capital distribution for {code}: {data}"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+
+        if data is None or len(data) == 0:
+            logger.warning(f"{code} capital distribution is empty")
+            return {}
+
+        row = data.iloc[0] if isinstance(data, pd.DataFrame) else pd.Series(data)
+        result: dict[str, Any] = {"code": code}
+        for field in [
+            "capital_in_super",
+            "capital_in_big",
+            "capital_in_mid",
+            "capital_in_small",
+            "capital_out_super",
+            "capital_out_big",
+            "capital_out_mid",
+            "capital_out_small",
+        ]:
+            if field in row:
+                result[field] = self._number_or_none(row.get(field))
+
+        update_time = row.get("update_time", row.get("updateTime", ""))
+        result["update_time"] = str(update_time) if pd.notna(update_time) else ""
+
+        for size in ["super", "big", "mid", "small"]:
+            in_value = result.get(f"capital_in_{size}") or 0.0
+            out_value = result.get(f"capital_out_{size}") or 0.0
+            result[f"net_{size}"] = in_value - out_value
+        result["net_main"] = result.get("net_super", 0.0) + result.get("net_big", 0.0)
+        result["capital_in_main"] = (result.get("capital_in_super") or 0.0) + (result.get("capital_in_big") or 0.0)
+        result["capital_out_main"] = (result.get("capital_out_super") or 0.0) + (result.get("capital_out_big") or 0.0)
+
+        logger.info(f"Capital distribution: {code} update_time={result.get('update_time') or 'N/A'}")
+        return result
+
+    # -------------------------------------------------------------------------
     # Fundamentals snapshot
     # -------------------------------------------------------------------------
 
