@@ -104,6 +104,43 @@ def test_build_market_summary_carries_source_coverage_metadata():
     assert any("US_PINK/OTC is excluded" in note for note in summary["coverage_notes"])
 
 
+def test_build_market_summary_reports_vendor_empty_and_error_rows():
+    summary = build_market_summary(
+        pd.DataFrame(
+            [
+                {
+                    "code": "HK.00700",
+                    "latest_main_in_flow": 60_000_000,
+                    "capital_flow_latest_date": "2026-05-29",
+                    "exchange_type": "HK_MAINBOARD",
+                    "capital_flow_status": "ok",
+                },
+                {
+                    "code": "HK.00001",
+                    "capital_flow_latest_date": "2026-05-29",
+                    "exchange_type": "HK_MAINBOARD",
+                    "capital_flow_status": "empty",
+                },
+                {
+                    "code": "HK.BAD",
+                    "capital_flow_latest_date": "2026-05-29",
+                    "exchange_type": "HK_GEMBOARD",
+                    "capital_flow_status": "error",
+                },
+            ]
+        ),
+        market="HK",
+        source="futu",
+    )
+
+    assert summary["ok_rows"] == 1
+    assert summary["empty_rows"] == 1
+    assert summary["error_rows"] == 1
+    assert summary["non_ok_rows"] == 2
+    assert any("empty major-money flow for 1 symbol" in note for note in summary["coverage_notes"])
+    assert any("major-money errors for 1 symbol" in note for note in summary["coverage_notes"])
+
+
 def test_digest_rows_writes_flat_summary_shape(tmp_path):
     summary = build_market_summary(
         pd.DataFrame(
@@ -127,5 +164,8 @@ def test_digest_rows_writes_flat_summary_shape(tmp_path):
 
     assert rows.iloc[0]["market"] == "HK"
     assert rows.iloc[0]["entry_count"] == 1
+    assert rows.iloc[0]["empty_rows"] == 0
+    assert rows.iloc[0]["error_rows"] == 0
+    assert rows.iloc[0]["non_ok_rows"] == 0
     assert rows.iloc[0]["exchange_types"] == '{"HK_MAIN": 1}'
     assert rows.iloc[0]["excluded_exchange_types"] == "{}"

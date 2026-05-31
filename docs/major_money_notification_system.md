@@ -89,6 +89,8 @@ Artifacts:
     top entries, and top exits.
   - Coverage includes the exchange-type breakdown when the source provides it,
     making excluded or unsupported venues visible in the email.
+  - Coverage notes include vendor empty/error row counts so partial scans are
+    visible, not just the final entry/exit counts.
   - The summary sentence and per-market notes identify missing expected
     markets, such as `US_OTC`, instead of leaving the table reason blank.
   - Missing HK/US artifacts are shown as missing coverage, not silently treated

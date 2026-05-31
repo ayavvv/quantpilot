@@ -291,6 +291,27 @@ def _nested_int_counts(value: Any) -> dict[str, dict[str, int]]:
     return result
 
 
+def _status_totals_from_rows(df: pd.DataFrame) -> dict[str, int]:
+    if "status" not in df.columns:
+        return {}
+    statuses = df["status"].fillna("").astype(str).str.strip().str.lower()
+    counts = statuses[statuses != ""].value_counts().sort_index()
+    return {str(status): int(count) for status, count in counts.items()}
+
+
+def _status_totals_from_exchange(status_by_exchange_type: dict[str, dict[str, int]]) -> dict[str, int]:
+    totals: dict[str, int] = {}
+    for counts in status_by_exchange_type.values():
+        if not isinstance(counts, dict):
+            continue
+        for status, count in counts.items():
+            name = str(status).strip().lower()
+            if not name:
+                continue
+            totals[name] = totals.get(name, 0) + int(count)
+    return totals
+
+
 def _exchange_type_delta(source: dict[str, int], selected: dict[str, int]) -> dict[str, int]:
     result: dict[str, int] = {}
     for exchange, source_count in source.items():
@@ -307,8 +328,23 @@ def _coverage_notes(
     excluded_exchange_types: dict[str, int],
     unsupported_exchange_types: dict[str, int],
     exchange_types: dict[str, int],
+    status_totals: dict[str, int],
 ) -> list[str]:
     notes: list[str] = []
+    empty_rows = int(status_totals.get("empty") or 0)
+    error_rows = int(status_totals.get("error") or 0)
+    other_status_rows = {
+        status: count
+        for status, count in status_totals.items()
+        if status not in {"ok", "empty", "error"} and count
+    }
+    if empty_rows:
+        notes.append(f"Vendor returned empty major-money flow for {empty_rows} symbol(s).")
+    if error_rows:
+        notes.append(f"Vendor returned major-money errors for {error_rows} symbol(s).")
+    if other_status_rows:
+        formatted = ", ".join(f"{key}={value}" for key, value in sorted(other_status_rows.items()))
+        notes.append(f"Vendor returned other non-ok statuses: {formatted}.")
     if excluded_exchange_types:
         formatted = ", ".join(f"{key}={value}" for key, value in sorted(excluded_exchange_types.items()))
         notes.append(f"Excluded exchange types: {formatted}.")
@@ -338,7 +374,9 @@ def unavailable_market_summary(market: str, *, reason: str) -> dict[str, Any]:
         "flow_date": "",
         "total_rows": 0,
         "ok_rows": 0,
+        "empty_rows": 0,
         "error_rows": 0,
+        "non_ok_rows": 0,
         "missing_rows": 0,
         "exchange_types": {},
         "source_exchange_types": {},
@@ -404,6 +442,7 @@ def build_market_summary(
         selected_exchange_types,
     )
     status_by_exchange_type = _nested_int_counts(source_status.get("status_by_exchange_type")) or _status_counts_by_exchange_type(rows)
+    status_totals = _status_totals_from_exchange(status_by_exchange_type) or _status_totals_from_rows(rows)
     unsupported_exchange_types = _int_counts(source_status.get("unsupported_exchange_types"))
     coverage_notes = _coverage_notes(
         market=normalized_market,
@@ -411,7 +450,10 @@ def build_market_summary(
         excluded_exchange_types=excluded_exchange_types,
         unsupported_exchange_types=unsupported_exchange_types,
         exchange_types=exchange_types,
+        status_totals=status_totals,
     )
+    empty_count = int(status_totals.get("empty") or 0)
+    error_count = int(status_totals.get("error") or 0)
 
     return {
         "market": normalized_market,
@@ -422,7 +464,9 @@ def build_market_summary(
         "flow_date": _latest_date(rows["flow_date"]) if "flow_date" in rows.columns else "",
         "total_rows": int(len(rows)),
         "ok_rows": ok_count,
-        "error_rows": int((~ok_mask).sum()),
+        "empty_rows": empty_count,
+        "error_rows": error_count,
+        "non_ok_rows": int(len(rows) - ok_count),
         "missing_rows": int(ok_rows["main_flow"].isna().sum()),
         "exchange_types": exchange_types,
         "source_exchange_types": source_exchange_types,
@@ -500,6 +544,9 @@ def digest_rows(digest: dict[str, Any]) -> pd.DataFrame:
                 "flow_date": market.get("flow_date", ""),
                 "total_rows": market.get("total_rows", 0),
                 "ok_rows": market.get("ok_rows", 0),
+                "empty_rows": market.get("empty_rows", 0),
+                "error_rows": market.get("error_rows", 0),
+                "non_ok_rows": market.get("non_ok_rows", 0),
                 "exchange_types": json.dumps(market.get("exchange_types") or {}, ensure_ascii=False, sort_keys=True),
                 "source_exchange_types": json.dumps(
                     market.get("source_exchange_types") or {},
