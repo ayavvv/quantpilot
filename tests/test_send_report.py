@@ -182,6 +182,11 @@ def test_check_major_money_digest_status_summarises_markets(tmp_path):
         "flow_date": "2026-05-29",
         "market_count": 3,
         "available_market_count": 1,
+        "entry_count": 1,
+        "exit_count": 1,
+        "amount_by_currency": {
+            "CNY": {"entry_amount": 80_000_000, "exit_amount": 70_000_000, "net_amount": 10_000_000}
+        },
         "markets": [
             {
                 "market": "A",
@@ -217,6 +222,10 @@ def test_check_major_money_digest_status_summarises_markets(tmp_path):
     assert status["major_money_markets"][1]["row_class"] == "coverage-missing"
     assert status["major_money_markets"][1]["coverage_note"] == "missing"
     assert "Missing coverage: HK" in status["major_money_message"]
+    assert status["major_money_summary"] == (
+        "Major entries: 1; major exits: 1. "
+        "Amounts by currency: CNY: entry 80.0m, exit 70.0m, net 10.0m."
+    )
     assert status["major_money_top_entries"][0]["code"] == "SH.600000"
     assert status["major_money_top_exits"][0]["main_flow"] == "-70.0m CNY"
 

@@ -85,6 +85,8 @@ Artifacts:
     than silently counted as zero flow.
 - `reporter/send_report.py`
   - Adds a "Market-Wide Major Money" section to the daily email.
+  - Adds a top summary with total major-entry/major-exit counts and
+    entry/exit/net amounts by currency.
   - Shows market coverage, entry count/amount, exit count/amount, net amount,
     top entries, and top exits.
   - Coverage includes the exchange-type breakdown when the source provides it,

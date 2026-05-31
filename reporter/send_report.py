@@ -118,6 +118,7 @@ tr:nth-child(even) { background-color: #f8f9fa; }
 <h2>3. Market-Wide Major Money ({{ major_money_date }})</h2>
 {% if major_money_available %}
 <p class="muted">{{ major_money_message }}</p>
+<p><strong>Summary:</strong> {{ major_money_summary }}</p>
 <table>
 <tr><th>Market</th><th>Source</th><th>Coverage</th><th>Notes</th><th>Entry</th><th>Entry Amount</th><th>Exit</th><th>Exit Amount</th><th>Net</th></tr>
 {% for row in major_money_markets %}
@@ -371,6 +372,7 @@ def check_major_money_digest_status(
             "major_money_available": False,
             "major_money_date": "N/A",
             "major_money_message": f"No market-wide major-money digest found at {target}.",
+            "major_money_summary": "",
             "major_money_markets": [],
             "major_money_top_entries": [],
             "major_money_top_exits": [],
@@ -383,6 +385,7 @@ def check_major_money_digest_status(
             "major_money_available": False,
             "major_money_date": "N/A",
             "major_money_message": f"Could not read market-wide major-money digest: {exc}",
+            "major_money_summary": "",
             "major_money_markets": [],
             "major_money_top_entries": [],
             "major_money_top_exits": [],
@@ -394,6 +397,7 @@ def check_major_money_digest_status(
             "major_money_available": False,
             "major_money_date": "N/A",
             "major_money_message": "Market-wide major-money digest is empty.",
+            "major_money_summary": "",
             "major_money_markets": [],
             "major_money_top_entries": [],
             "major_money_top_exits": [],
@@ -466,6 +470,19 @@ def check_major_money_digest_status(
     available_count = _safe_int(digest.get("available_market_count"), 0)
     market_count = _safe_int(digest.get("market_count"), len(markets))
     missing_suffix = f" Missing coverage: {', '.join(missing_markets)}." if missing_markets else ""
+    amount_parts = []
+    amount_by_currency = digest.get("amount_by_currency")
+    if isinstance(amount_by_currency, dict):
+        for currency, bucket in sorted(amount_by_currency.items()):
+            if not isinstance(bucket, dict):
+                continue
+            currency_name = str(currency or "N/A")
+            amount_parts.append(
+                f"{currency_name}: entry {_format_money(bucket.get('entry_amount'))}, "
+                f"exit {_format_money(bucket.get('exit_amount'))}, "
+                f"net {_format_money(bucket.get('net_amount'))}"
+            )
+    amount_summary = "; ".join(amount_parts) if amount_parts else "N/A"
     return {
         "major_money_available": available_count > 0,
         "major_money_date": digest.get("flow_date") or "N/A",
@@ -473,6 +490,11 @@ def check_major_money_digest_status(
             f"Loaded {available_count}/{market_count} market-wide flow source(s). "
             "Counts use vendor/proxy major-money fields and remain advisory."
             f"{missing_suffix}"
+        ),
+        "major_money_summary": (
+            f"Major entries: {_safe_int(digest.get('entry_count'), 0)}; "
+            f"major exits: {_safe_int(digest.get('exit_count'), 0)}. "
+            f"Amounts by currency: {amount_summary}."
         ),
         "major_money_markets": market_rows,
         "major_money_top_entries": entry_rows,
