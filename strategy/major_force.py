@@ -34,6 +34,15 @@ DEFAULT_FIELDS = [
     "is_st",
 ]
 
+MARKET_CONTEXT_FIELDS = [
+    "market_return_20",
+    "market_return_60",
+    "market_positive_rate_20",
+    "market_above_ma20_rate",
+    "market_volatility_20",
+    "market_drawdown_20",
+]
+
 
 @dataclass(frozen=True)
 class MajorForceConfig:
@@ -76,6 +85,73 @@ def _pct_rank(series: pd.Series, neutral: float = 0.5) -> pd.Series:
     cleaned = pd.to_numeric(series, errors="coerce")
     ranked = cleaned.rank(pct=True, method="average")
     return ranked.fillna(neutral)
+
+
+def _empty_market_context() -> dict[str, float]:
+    return {field: np.nan for field in MARKET_CONTEXT_FIELDS}
+
+
+def _rate(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
+    result = numerator / denominator.replace(0, np.nan)
+    return result.replace([np.inf, -np.inf], np.nan)
+
+
+def compute_market_context(
+    frames: Iterable[pd.DataFrame],
+    as_of_date: str,
+    *,
+    lookback_days: int = 90,
+) -> dict[str, float]:
+    """Compute broad A-share daily-bar regime features available at as-of date."""
+
+    close_series: list[pd.Series] = []
+    for idx, frame in enumerate(frames):
+        if frame.empty or "close" not in frame.columns:
+            continue
+        close = pd.to_numeric(frame["close"], errors="coerce").dropna()
+        if close.empty:
+            continue
+        close.index = close.index.astype(str).str[:10]
+        close = close[~close.index.duplicated(keep="last")].sort_index()
+        close = close.loc[:as_of_date].tail(max(65, lookback_days))
+        if len(close) < 21:
+            continue
+        close.name = f"stock_{idx}"
+        close_series.append(close)
+
+    if not close_series:
+        return _empty_market_context()
+
+    closes = pd.concat(close_series, axis=1).sort_index().loc[:as_of_date].tail(max(65, lookback_days))
+    if closes.empty:
+        return _empty_market_context()
+
+    returns = closes.pct_change(fill_method=None).replace([np.inf, -np.inf], np.nan)
+    market_daily_return = returns.mean(axis=1, skipna=True)
+    market_index = (1.0 + market_daily_return.fillna(0.0)).cumprod()
+    breadth_count = returns.notna().sum(axis=1)
+    positive_rate = _rate((returns > 0).sum(axis=1), breadth_count)
+    ma20 = closes.rolling(20, min_periods=10).mean()
+    above_ma20_rate = _rate(((closes > ma20) & ma20.notna()).sum(axis=1), ma20.notna().sum(axis=1))
+
+    def trailing_return(days: int) -> float:
+        if len(market_index) <= days:
+            return np.nan
+        current = float(market_index.iloc[-1])
+        previous = float(market_index.iloc[-days - 1])
+        return current / previous - 1.0 if previous else np.nan
+
+    context = {
+        "market_return_20": trailing_return(20),
+        "market_return_60": trailing_return(60),
+        "market_positive_rate_20": float(positive_rate.tail(20).mean()),
+        "market_above_ma20_rate": float(above_ma20_rate.iloc[-1]) if len(above_ma20_rate) else np.nan,
+        "market_volatility_20": float(market_daily_return.tail(20).std()),
+        "market_drawdown_20": (
+            float(market_index.iloc[-1] / market_index.tail(20).max() - 1.0) if len(market_index) >= 20 else np.nan
+        ),
+    }
+    return {key: (value if math.isfinite(value) else np.nan) for key, value in context.items()}
 
 
 def _prepare_stock_frame(df: pd.DataFrame, as_of_date: str | None, cfg: MajorForceConfig) -> pd.DataFrame:
@@ -346,15 +422,21 @@ def scan_major_force(
         return pd.DataFrame()
 
     rows: list[dict[str, object]] = []
+    context_frames: list[pd.DataFrame] = []
     for code, (_, end_date) in sorted(instruments.items()):
         if not code.startswith(prefix_tuple) or end_date < scan_date:
             continue
         stock_df = reader.read_stock(code, DEFAULT_FIELDS)
+        context_frames.append(stock_df)
         metrics = compute_major_force_metrics(code, stock_df, as_of_date=scan_date, config=cfg)
         if metrics is not None:
             rows.append(metrics)
 
     scored = score_major_force_frame(pd.DataFrame(rows))
+    if not scored.empty:
+        market_context = compute_market_context(context_frames, scan_date)
+        for key, value in market_context.items():
+            scored[key] = value
     if top_n is not None and top_n > 0:
         return scored.head(top_n).reset_index(drop=True)
     return scored

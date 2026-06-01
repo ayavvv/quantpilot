@@ -71,6 +71,7 @@ def test_scan_major_force_ranks_accumulation_footprint_first(tmp_path):
     assert scores["SH.600000"] > scores["SZ.000001"]
     assert result.iloc[0]["stage"] in {"accumulation_candidate", "watch"}
     assert "volume_expansion" in result.iloc[0]["reason"]
+    assert "market_positive_rate_20" in result.columns
 
 
 def test_scan_major_force_excludes_st_by_default(tmp_path):
@@ -116,6 +117,8 @@ def test_evaluate_major_force_forward_returns_outputs_summary(tmp_path):
     assert row["top_n"] == 1
     assert row["horizon"] == 5
     assert row["avg_return"] > row["avg_universe_return"]
+    assert "market_return_20" in daily.columns
+    assert "market_positive_rate_20" in picks.columns
 
 
 def test_evaluate_major_force_forward_returns_scores_sell_side(tmp_path):

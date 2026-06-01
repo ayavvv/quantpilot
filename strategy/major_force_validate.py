@@ -75,18 +75,9 @@ def _load_eval_rows(eval_dir: Path) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame()
     result = pd.concat(rows, ignore_index=True)
-    for col in [
-        "rank",
-        "side_score",
-        "score",
-        "distribution_score",
-        "amount_ratio_5_20",
-        "cmf_20",
-        "close_location_10",
-        "breakout_20",
-        "universe_return",
-    ]:
-        if col in result.columns:
+    string_cols = {"code", "date", "eval_date", "signal_side", "stage", "reason"}
+    for col in result.columns:
+        if col not in string_cols:
             result[col] = pd.to_numeric(result[col], errors="coerce")
     return result
 
@@ -96,6 +87,9 @@ def _filter_rows(rows: pd.DataFrame, rule: dict[str, object]) -> pd.DataFrame:
     result = rows[(rows["signal_side"].astype(str).str.lower() == side) & (rows["horizon"] == int(rule["horizon"]))].copy()
     result = result[result["rank"] <= int(rule["rank_n"])]
     result = result[result["side_score"] >= float(rule["min_score"])]
+    stages = rule.get("stages")
+    if isinstance(stages, list) and stages and "stage" in result.columns:
+        result = result[result["stage"].astype(str).isin({str(value) for value in stages})]
     if _num(rule.get("min_amount_ratio_5_20")) > 0:
         result = result[result["amount_ratio_5_20"] >= float(rule["min_amount_ratio_5_20"])]
 
@@ -113,6 +107,19 @@ def _filter_rows(rows: pd.DataFrame, rule: dict[str, object]) -> pd.DataFrame:
             result = result[result["close_location_10"] <= float(rule["max_close_location_10"])]
         if "max_breakout_20" in rule:
             result = result[result["breakout_20"] <= float(rule["max_breakout_20"])]
+
+    skip_keys = {"min_score"}
+    for key, value in rule.items():
+        if key in skip_keys:
+            continue
+        if key.startswith("min_"):
+            field = key[4:]
+            if field in result.columns:
+                result = result[pd.to_numeric(result[field], errors="coerce") >= float(value)]
+        elif key.startswith("max_"):
+            field = key[4:]
+            if field in result.columns:
+                result = result[pd.to_numeric(result[field], errors="coerce") <= float(value)]
     return result
 
 
@@ -166,13 +173,49 @@ def _train_score(metrics: dict[str, float | int]) -> float:
     )
 
 
+def _rule_key(rule: dict[str, object]) -> str:
+    return json.dumps(rule, sort_keys=True, separators=(",", ":"))
+
+
+def _extra_filter_available(extra: dict[str, object], columns: set[str]) -> bool:
+    for key in extra:
+        if key == "stages":
+            if "stage" not in columns:
+                return False
+        elif key.startswith(("min_", "max_")):
+            if key[4:] not in columns:
+                return False
+    return True
+
+
+def _rule_variants(rule: dict[str, object], side: str, columns: set[str]) -> Iterable[dict[str, object]]:
+    yield rule
+    if side == "buy":
+        extras = [
+            {"min_market_above_ma20_rate": 0.45, "min_market_positive_rate_20": 0.50},
+        ]
+    else:
+        extras = [
+            {"stages": ["distribution_risk"]},
+            {"max_market_return_20": 0.02, "max_market_above_ma20_rate": 0.55},
+        ]
+    for extra in extras:
+        if not _extra_filter_available(extra, columns):
+            continue
+        candidate = dict(rule)
+        candidate.update(extra)
+        yield candidate
+
+
 def _rule_candidates(rows: pd.DataFrame) -> Iterable[dict[str, object]]:
     horizons = sorted(pd.to_numeric(rows["horizon"], errors="coerce").dropna().astype(int).unique())
+    columns = set(rows.columns)
+    seen: set[str] = set()
     for horizon in horizons:
         for side in ["buy", "sell"]:
-            for rank_n in [5, 10, 20, 30, 50, 100, 200]:
-                for min_score in [80, 85, 88, 90, 92, 94]:
-                    for min_amount_ratio in [0.0, 1.2, 1.5, 2.0]:
+            for rank_n in [5, 10, 20, 50, 100, 200]:
+                for min_score in [80, 88, 92]:
+                    for min_amount_ratio in [0.0, 1.2]:
                         base = {
                             "side": side,
                             "horizon": int(horizon),
@@ -181,9 +224,9 @@ def _rule_candidates(rows: pd.DataFrame) -> Iterable[dict[str, object]]:
                             "min_amount_ratio_5_20": float(min_amount_ratio),
                         }
                         if side == "buy":
-                            for min_cmf in [None, 0.0, 0.12, 0.2]:
+                            for min_cmf in [None, 0.12, 0.2]:
                                 for min_loc in [None, 0.55, 0.65]:
-                                    for min_breakout in [None, -0.03, 0.0]:
+                                    for min_breakout in [None, 0.0]:
                                         rule = dict(base)
                                         if min_cmf is not None:
                                             rule["min_cmf_20"] = float(min_cmf)
@@ -191,11 +234,15 @@ def _rule_candidates(rows: pd.DataFrame) -> Iterable[dict[str, object]]:
                                             rule["min_close_location_10"] = float(min_loc)
                                         if min_breakout is not None:
                                             rule["min_breakout_20"] = float(min_breakout)
-                                        yield rule
+                                        for candidate in _rule_variants(rule, side, columns):
+                                            key = _rule_key(candidate)
+                                            if key not in seen:
+                                                seen.add(key)
+                                                yield candidate
                         else:
-                            for max_cmf in [None, 0.0, -0.12, -0.2]:
+                            for max_cmf in [None, -0.12, -0.2]:
                                 for max_loc in [None, 0.45, 0.35]:
-                                    for max_breakout in [None, 0.03, 0.0, -0.03]:
+                                    for max_breakout in [None, -0.03]:
                                         rule = dict(base)
                                         if max_cmf is not None:
                                             rule["max_cmf_20"] = float(max_cmf)
@@ -203,7 +250,11 @@ def _rule_candidates(rows: pd.DataFrame) -> Iterable[dict[str, object]]:
                                             rule["max_close_location_10"] = float(max_loc)
                                         if max_breakout is not None:
                                             rule["max_breakout_20"] = float(max_breakout)
-                                        yield rule
+                                        for candidate in _rule_variants(rule, side, columns):
+                                            key = _rule_key(candidate)
+                                            if key not in seen:
+                                                seen.add(key)
+                                                yield candidate
 
 
 def validate_major_force_eval(

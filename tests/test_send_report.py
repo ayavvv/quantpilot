@@ -307,9 +307,11 @@ def test_check_stealth_money_status_summarises_candidates_and_accuracy(tmp_path)
     major_csv.write_text(
         "\n".join(
             [
-                "code,date,score,rank,distribution_score,distribution_rank,stage,amount,reason",
-                "SH.600000,2026-05-29,91,1,20,300,accumulation_candidate,80000000,volume_expansion",
-                "SZ.000001,2026-05-29,45,300,88,2,distribution_risk,90000000,20d_negative_flow",
+                "code,date,score,rank,distribution_score,distribution_rank,stage,amount,market_positive_rate_20,reason",
+                "SH.600000,2026-05-29,91,1,20,300,accumulation_candidate,80000000,0.55,volume_expansion",
+                "SH.600001,2026-05-29,93,2,18,320,accumulation_candidate,70000000,0.40,volume_expansion",
+                "SZ.000001,2026-05-29,45,300,88,2,distribution_risk,90000000,0.45,20d_negative_flow",
+                "SZ.000002,2026-05-29,44,320,90,3,distribution_risk,85000000,0.60,20d_negative_flow",
             ]
         ),
         encoding="utf-8",
@@ -336,6 +338,7 @@ def test_check_stealth_money_status_summarises_candidates_and_accuracy(tmp_path)
                         "horizon": 10,
                         "rank_n": 10,
                         "min_score": 80,
+                        "min_market_positive_rate_20": 0.50,
                         "test": {"avg_hit_rate": 0.6125, "avg_alpha": 0.013, "date_count": 80},
                     },
                     {
@@ -343,6 +346,7 @@ def test_check_stealth_money_status_summarises_candidates_and_accuracy(tmp_path)
                         "horizon": 10,
                         "rank_n": 10,
                         "min_score": 80,
+                        "max_market_positive_rate_20": 0.50,
                         "test": {"avg_hit_rate": 0.55, "avg_alpha": 0.009, "date_count": 80},
                     },
                 ],

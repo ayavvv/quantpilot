@@ -716,6 +716,17 @@ def _apply_stealth_rule(work: pd.DataFrame, rule: dict, *, top_n: int) -> pd.Dat
             result = result[
                 pd.to_numeric(result["breakout_20"], errors="coerce") <= _safe_float(rule.get("max_breakout_20"), 0.0)
             ]
+    for key, value in rule.items():
+        if key == "min_score":
+            continue
+        if key.startswith("min_"):
+            field = key[4:]
+            if field in result.columns:
+                result = result[pd.to_numeric(result[field], errors="coerce") >= _safe_float(value, 0.0)]
+        elif key.startswith("max_"):
+            field = key[4:]
+            if field in result.columns:
+                result = result[pd.to_numeric(result[field], errors="coerce") <= _safe_float(value, 0.0)]
     return result.sort_values([score_col, "amount"], ascending=[False, False]).head(top_n)
 
 

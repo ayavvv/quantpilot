@@ -15,6 +15,7 @@ from converter.incremental import QlibBinReader
 from strategy.major_force import (
     A_SHARE_PREFIXES,
     DEFAULT_FIELDS,
+    MARKET_CONTEXT_FIELDS,
     MajorForceConfig,
     score_major_force_frame,
 )
@@ -119,10 +120,70 @@ def _safe_div_series(num: pd.Series, den: pd.Series) -> pd.Series:
     return result.replace([np.inf, -np.inf], np.nan)
 
 
+def _rate(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
+    result = numerator / denominator.replace(0, np.nan)
+    return result.replace([np.inf, -np.inf], np.nan)
+
+
 def _limit_up_threshold_pct(code: str) -> float:
     if code.startswith(("SZ.300", "SZ.301", "SH.688")):
         return 19.5
     return 9.5
+
+
+def _precompute_market_context_by_date(
+    frames: dict[str, pd.DataFrame],
+    dates: list[str],
+) -> dict[str, dict[str, float]]:
+    if not frames or not dates:
+        return {}
+
+    close_series: list[pd.Series] = []
+    for code, df in frames.items():
+        if df.empty or "close" not in df.columns:
+            continue
+        close = pd.to_numeric(df["close"], errors="coerce").dropna()
+        if close.empty:
+            continue
+        close.index = close.index.astype(str).str[:10]
+        close = close[~close.index.duplicated(keep="last")].sort_index()
+        if len(close) < 21:
+            continue
+        close.name = code
+        close_series.append(close)
+    if not close_series:
+        return {date: {field: np.nan for field in MARKET_CONTEXT_FIELDS} for date in dates}
+
+    closes = pd.concat(close_series, axis=1).sort_index()
+    returns = closes.pct_change(fill_method=None).replace([np.inf, -np.inf], np.nan)
+    market_daily_return = returns.mean(axis=1, skipna=True)
+    market_index = (1.0 + market_daily_return.fillna(0.0)).cumprod()
+    breadth_count = returns.notna().sum(axis=1)
+    positive_rate = _rate((returns > 0).sum(axis=1), breadth_count)
+    ma20 = closes.rolling(20, min_periods=10).mean()
+    above_ma20_rate = _rate(((closes > ma20) & ma20.notna()).sum(axis=1), ma20.notna().sum(axis=1))
+
+    context = pd.DataFrame(index=closes.index)
+    context["market_return_20"] = market_index / market_index.shift(20) - 1.0
+    context["market_return_60"] = market_index / market_index.shift(60) - 1.0
+    context["market_positive_rate_20"] = positive_rate.rolling(20, min_periods=10).mean()
+    context["market_above_ma20_rate"] = above_ma20_rate
+    context["market_volatility_20"] = market_daily_return.rolling(20, min_periods=10).std()
+    context["market_drawdown_20"] = market_index / market_index.rolling(20, min_periods=10).max() - 1.0
+    context = context.replace([np.inf, -np.inf], np.nan)
+
+    result: dict[str, dict[str, float]] = {}
+    for date in dates:
+        if date in context.index:
+            row = context.loc[date]
+        else:
+            prior = context.loc[:date]
+            row = prior.iloc[-1] if not prior.empty else pd.Series(dtype=float)
+        result[date] = {
+            field: float(row[field]) if field in row and pd.notna(row[field]) else np.nan
+            for field in MARKET_CONTEXT_FIELDS
+        }
+    return result
 
 
 def _precompute_metric_rows_for_dates(
@@ -171,6 +232,7 @@ def _precompute_metric_rows_for_dates(
     turnover_fast = turnover.rolling(fw, min_periods=fw).mean()
     turnover_base = turnover.rolling(base_w, min_periods=base_w).mean()
     rolling_high = high.shift(1).rolling(flow_w, min_periods=flow_w).max()
+    rolling_peak_10 = close.rolling(mw, min_periods=mw).max()
 
     metrics = pd.DataFrame(
         {
@@ -202,7 +264,7 @@ def _precompute_metric_rows_for_dates(
             "price_change_10": close / close.shift(mw) - 1.0,
             "price_change_20": close / close.shift(flow_w) - 1.0,
             "breakout_20": _safe_div_series(close, rolling_high) - 1.0,
-            "drawdown_10": np.nan,
+            "drawdown_10": _safe_div_series(close, rolling_peak_10) - 1.0,
             "volatility_20": returns.rolling(flow_w, min_periods=flow_w).std(),
             "avg_range_10": ((high - low) / close.replace(0, np.nan)).rolling(mw, min_periods=mw).mean(),
             "is_limit_up": is_limit_up.astype(bool),
@@ -395,6 +457,7 @@ def evaluate_major_force_forward_returns(
 
     max_top_n = max(eval_cfg.top_ns)
     eval_date_set = set(dates)
+    market_context_by_date = _precompute_market_context_by_date(frames, dates)
     metrics_by_date: dict[str, list[dict[str, object]]] = {date: [] for date in dates}
     for code, df in frames.items():
         for row in _precompute_metric_rows_for_dates(code, df, eval_date_set, scan_cfg):
@@ -415,6 +478,9 @@ def evaluate_major_force_forward_returns(
             if progress:
                 print(f"[major_force_eval] {date_idx}/{len(dates)} {date}: empty universe ranking", flush=True)
             continue
+        market_context = market_context_by_date.get(date, {})
+        for key, value in market_context.items():
+            all_ranked[key] = value
 
         for horizon in eval_cfg.horizons:
             returns_df = _returns_for_ranked(all_ranked, frames, date, horizon, eval_cfg.entry_lag_days)
@@ -470,6 +536,7 @@ def evaluate_major_force_forward_returns(
                             "alpha": _side_alpha(selected_ret, universe_ret, side),
                             "win_day": _side_hit_rate(pd.Series([selected_ret]), side),
                             "hit_rate": _side_hit_rate(selected["fwd_return"], side),
+                            **market_context,
                         }
                     )
                 pick_cols = [
@@ -485,10 +552,24 @@ def evaluate_major_force_forward_returns(
                     "stage",
                     "close",
                     "today_chg_pct",
+                    "cmf_5",
+                    "cmf_10",
                     "amount_ratio_5_20",
+                    "amount_ratio_5_prev20",
+                    "turnover_ratio_5_20",
+                    "cmf_accel_5_20",
                     "cmf_20",
+                    "close_location_today",
                     "close_location_10",
+                    "positive_flow_days_20",
+                    "up_days_10",
+                    "price_change_10",
+                    "price_change_20",
                     "breakout_20",
+                    "drawdown_10",
+                    "volatility_20",
+                    "avg_range_10",
+                    *MARKET_CONTEXT_FIELDS,
                     "reason",
                 ] + [f"fwd_return_{horizon}d"]
                 pick_rows.extend(top_picks[[col for col in pick_cols if col in top_picks.columns]].to_dict("records"))
