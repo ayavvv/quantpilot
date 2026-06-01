@@ -675,7 +675,7 @@ def _apply_stealth_rule(work: pd.DataFrame, rule: dict, *, top_n: int) -> pd.Dat
     else:
         score_col = "score"
         rank_col = "rank"
-        default_stages = {"accumulation_candidate", "watch"}
+        default_stages = {"stealth_accumulation", "accumulation_candidate", "watch"}
     if score_col not in work.columns:
         return pd.DataFrame(columns=work.columns)
     result = work.copy()

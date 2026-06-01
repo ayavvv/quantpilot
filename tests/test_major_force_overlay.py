@@ -26,7 +26,7 @@ def test_overlay_flags_model_candidate_with_major_risk():
                 "code": "SZ.000001",
                 "rank": 10,
                 "score": 90.0,
-                "stage": "accumulation_candidate",
+                "stage": "stealth_accumulation",
                 "reason": "20d_positive_flow,volume_expansion",
                 "cmf_20": 0.3,
                 "amount_ratio_5_20": 1.8,

@@ -69,8 +69,9 @@ def test_scan_major_force_ranks_accumulation_footprint_first(tmp_path):
     assert result["code"].tolist()[0] == "SH.600000"
     scores = dict(zip(result["code"], result["score"]))
     assert scores["SH.600000"] > scores["SZ.000001"]
-    assert result.iloc[0]["stage"] in {"accumulation_candidate", "watch"}
+    assert result.iloc[0]["stage"] in {"stealth_accumulation", "accumulation_candidate", "watch"}
     assert "volume_expansion" in result.iloc[0]["reason"]
+    assert "stealth_score" in result.columns
     assert "market_positive_rate_20" in result.columns
 
 

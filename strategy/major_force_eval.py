@@ -354,7 +354,7 @@ def _rank_for_side(
     else:
         score_col = "score"
         rank_col = "rank"
-        default_stages = {"accumulation_candidate", "watch"}
+        default_stages = {"stealth_accumulation", "accumulation_candidate", "watch"}
 
     if score_col not in result.columns:
         return pd.DataFrame(columns=result.columns)
@@ -547,6 +547,7 @@ def evaluate_major_force_forward_returns(
                     "code",
                     "date",
                     "side_score",
+                    "stealth_score",
                     "score",
                     "distribution_score",
                     "stage",

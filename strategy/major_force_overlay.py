@@ -39,7 +39,7 @@ def classify_overlay(row: pd.Series, confirm_rank: int = 100, confirm_score: flo
     rank_value = row.get("major_rank")
     major_rank = 999999 if pd.isna(rank_value) else int(rank_value)
     if (
-        stage == "accumulation_candidate"
+        stage in {"stealth_accumulation", "accumulation_candidate"}
         and float(row.get("major_score") or 0.0) >= confirm_score
         and major_rank <= confirm_rank
     ):
