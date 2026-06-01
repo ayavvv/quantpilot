@@ -372,6 +372,43 @@ def test_report_data_quality_uses_total_duplicate_sequence_rate():
     assert quality["duplicate_sequence_rate"] == 20 / 300
 
 
+def test_validation_eligibility_summary_exposes_sample_blockers():
+    signals = pd.DataFrame(
+        [
+            {
+                "symbol": "US.AAPL",
+                "side": "accumulation",
+                "side_score": 72,
+                "confidence": "watch",
+                "data_quality_pass": True,
+                "is_final_report": True,
+            },
+            {
+                "symbol": "US.NVDA",
+                "side": "distribution",
+                "side_score": 68,
+                "confidence": "diagnostic",
+                "data_quality_pass": False,
+                "is_final_report": False,
+            },
+        ]
+    )
+
+    summary = report_script._validation_eligibility_summary(signals, min_event_score=70)
+
+    assert summary["validation_eligible_count"] == 1
+    assert summary["validation_eligible_if_final_count"] == 1
+    assert summary["score_pass_count"] == 1
+    assert summary["near_score_count"] == 1
+    assert summary["watch_or_high_count"] == 1
+    assert summary["data_quality_pass_count"] == 1
+    assert summary["final_report_count"] == 1
+    assert summary["blocking_counts"]["score_below_min"] == 1
+    assert summary["blocking_counts"]["not_watch_or_high"] == 1
+    assert summary["blocking_counts"]["data_quality_failed"] == 1
+    assert summary["blocking_counts"]["not_final_report"] == 1
+
+
 def test_signal_scoring_ignores_premarket_rows_when_session_flag_exists():
     minutes = pd.to_datetime(["2026-06-01 12:00:00+00:00", "2026-06-01 13:30:00+00:00"])
     features = pd.DataFrame(
@@ -525,6 +562,9 @@ def test_report_script_writes_warmup_artifacts(tmp_path):
     assert status["validation_progress"]["event_count"] == 12
     assert status["validation_progress"]["forward_return_count"] == 24
     assert status["validation_progress"]["sides"][0]["reason"] == "missing 5d validation metrics"
+    assert "validation_eligibility" in status
+    assert status["validation_eligibility"]["signal_count"] == 1
+    assert status["validation_eligibility"]["validation_eligible_count"] == 0
     assert status["high_count"] == 0
     assert "data_quality" in status
     assert status["data_quality"]["eligible_symbol_count"] == 0
@@ -536,6 +576,7 @@ def test_report_script_writes_warmup_artifacts(tmp_path):
     assert "Data Quality By Symbol" in html_report
     assert "Duplicate audit" in html_report
     assert "Validation Progress By Side" in html_report
+    assert "Validation Event Eligibility" in html_report
     assert "missing 5d validation metrics" in html_report
 
 

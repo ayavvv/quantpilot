@@ -336,6 +336,90 @@ def _validation_progress(validation_gate: dict[str, object]) -> dict[str, object
     }
 
 
+def _validation_min_event_score(validation_gate: dict[str, object]) -> float:
+    criteria = validation_gate.get("criteria", {})
+    if not isinstance(criteria, dict):
+        return 70.0
+    return _number(criteria.get("min_event_score"), 70.0)
+
+
+def _truthy_series(frame: pd.DataFrame, column: str, default: bool = False) -> pd.Series:
+    if column not in frame.columns:
+        return pd.Series(default, index=frame.index)
+    values = frame[column]
+    if values.dtype == bool:
+        return values.fillna(default)
+    return values.astype(str).str.lower().isin({"1", "true", "yes", "y"})
+
+
+def _validation_eligibility_summary(signals: pd.DataFrame, *, min_event_score: float) -> dict[str, object]:
+    if signals.empty:
+        return {
+            "signal_count": 0,
+            "min_event_score": float(min_event_score),
+            "max_side_score": 0.0,
+            "score_pass_count": 0,
+            "near_score_count": 0,
+            "watch_or_high_count": 0,
+            "data_quality_pass_count": 0,
+            "final_report_count": 0,
+            "validation_eligible_count": 0,
+            "validation_eligible_if_final_count": 0,
+            "blocking_counts": {},
+        }
+
+    frame = signals.copy()
+    symbols = frame.get("symbol", pd.Series("", index=frame.index)).astype(str).str.strip()
+    sides = frame.get("side", pd.Series("", index=frame.index)).astype(str).str.lower()
+    side_scores = pd.to_numeric(frame.get("side_score", pd.Series(0.0, index=frame.index)), errors="coerce").fillna(0.0)
+    confidence = frame.get("confidence", pd.Series("", index=frame.index)).astype(str).str.lower()
+    final_report = _truthy_series(frame, "is_final_report", False)
+    data_quality = _truthy_series(frame, "data_quality_pass", False)
+
+    symbol_pass = symbols != ""
+    side_pass = sides.isin({"accumulation", "distribution"})
+    score_pass = side_scores >= float(min_event_score)
+    near_score = (side_scores >= float(min_event_score) - 5.0) & (side_scores < float(min_event_score))
+    confidence_pass = confidence.isin({"watch", "high"})
+    eligible_if_final = symbol_pass & side_pass & score_pass & confidence_pass & data_quality
+    eligible = eligible_if_final & final_report
+    return {
+        "signal_count": int(len(frame)),
+        "min_event_score": float(min_event_score),
+        "max_side_score": float(side_scores.max()) if len(side_scores) else 0.0,
+        "score_pass_count": int(score_pass.sum()),
+        "near_score_count": int(near_score.sum()),
+        "watch_or_high_count": int(confidence_pass.sum()),
+        "data_quality_pass_count": int(data_quality.sum()),
+        "final_report_count": int(final_report.sum()),
+        "validation_eligible_count": int(eligible.sum()),
+        "validation_eligible_if_final_count": int(eligible_if_final.sum()),
+        "blocking_counts": {
+            "missing_symbol": int((~symbol_pass).sum()),
+            "invalid_side": int((~side_pass).sum()),
+            "score_below_min": int((~score_pass).sum()),
+            "not_watch_or_high": int((~confidence_pass).sum()),
+            "data_quality_failed": int((~data_quality).sum()),
+            "not_final_report": int((~final_report).sum()),
+        },
+    }
+
+
+def _eligibility_markdown(summary: dict[str, object]) -> str:
+    blockers = summary.get("blocking_counts", {})
+    if not isinstance(blockers, dict):
+        blockers = {}
+    lines = [
+        f"- Ledger-eligible events now: `{summary.get('validation_eligible_count', 0)}`",
+        f"- Ledger-eligible if this were final: `{summary.get('validation_eligible_if_final_count', 0)}`",
+        f"- Score pass / near score: `{summary.get('score_pass_count', 0)}` / `{summary.get('near_score_count', 0)}`; max score `{_score(summary.get('max_side_score'))}`",
+        f"- Watch-or-high / data-quality-pass / final rows: `{summary.get('watch_or_high_count', 0)}` / `{summary.get('data_quality_pass_count', 0)}` / `{summary.get('final_report_count', 0)}`",
+        "- Blockers: "
+        + ", ".join(f"{key}={value}" for key, value in sorted(blockers.items())),
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def _validation_markdown_table(progress: dict[str, object]) -> str:
     rows = progress.get("sides", [])
     if not isinstance(rows, list) or not rows:
@@ -459,6 +543,10 @@ def render_markdown_report(
     view = _candidate_view(signals, top_n=top_n, min_score=min_score)
     coverage = _coverage_summary(features)
     validation_progress = _validation_progress(validation_gate)
+    eligibility = _validation_eligibility_summary(
+        signals,
+        min_event_score=_validation_min_event_score(validation_gate),
+    )
     high_count = int((signals.get("confidence", pd.Series(dtype=str)) == "high").sum()) if not signals.empty else 0
     state = str(validation_gate.get("state") or "warmup")
     lines = [
@@ -483,6 +571,10 @@ def render_markdown_report(
         "## Validation Progress By Side",
         "",
         _validation_markdown_table(validation_progress),
+        "",
+        "## Validation Event Eligibility",
+        "",
+        _eligibility_markdown(eligibility),
         "",
         "## Data Coverage",
         "",
@@ -618,6 +710,30 @@ def _validation_html_table(progress: dict[str, object]) -> str:
     )
 
 
+def _eligibility_html(summary: dict[str, object]) -> str:
+    blockers = summary.get("blocking_counts", {})
+    if not isinstance(blockers, dict):
+        blockers = {}
+    blocker_text = ", ".join(f"{html.escape(str(key))}={int(value or 0)}" for key, value in sorted(blockers.items()))
+    return (
+        "<div class='gate'><strong>Validation event eligibility:</strong> "
+        "eligible={eligible}; eligible_if_final={eligible_if_final}; "
+        "score_pass={score_pass}; near_score={near_score}; max_score={max_score}; "
+        "watch_or_high={watch}; data_quality_pass={quality}; final_rows={final}; "
+        "blockers={blockers}</div>"
+    ).format(
+        eligible=int(summary.get("validation_eligible_count") or 0),
+        eligible_if_final=int(summary.get("validation_eligible_if_final_count") or 0),
+        score_pass=int(summary.get("score_pass_count") or 0),
+        near_score=int(summary.get("near_score_count") or 0),
+        max_score=_score(summary.get("max_side_score")),
+        watch=int(summary.get("watch_or_high_count") or 0),
+        quality=int(summary.get("data_quality_pass_count") or 0),
+        final=int(summary.get("final_report_count") or 0),
+        blockers=blocker_text,
+    )
+
+
 def render_html_report(
     *,
     date: str,
@@ -632,6 +748,10 @@ def render_html_report(
     view = _candidate_view(signals, top_n=top_n, min_score=min_score)
     coverage = _coverage_summary(features)
     validation_progress = _validation_progress(validation_gate)
+    eligibility = _validation_eligibility_summary(
+        signals,
+        min_event_score=_validation_min_event_score(validation_gate),
+    )
     high_count = int((signals.get("confidence", pd.Series(dtype=str)) == "high").sum()) if not signals.empty else 0
     state = html.escape(str(validation_gate.get("state") or "warmup"))
     reason = html.escape(str(validation_gate.get("reason") or ""))
@@ -667,6 +787,8 @@ tr.sell {{ background: #fff1f2; }}
 <div class="gate"><strong>Duplicate audit:</strong> duplicate_sequence_rows={data_quality.get('duplicate_sequence_count', 0)}/{data_quality.get('raw_trade_count', 0)} ({_pct(data_quality.get('duplicate_sequence_rate'))})</div>
 <h2>Validation Progress By Side</h2>
 {_validation_html_table(validation_progress)}
+<h2>Validation Event Eligibility</h2>
+{_eligibility_html(eligibility)}
 <h2>Data Coverage</h2>
 <p>Raw trades={raw_counts.get('trades', 0)}, order_book={raw_counts.get('order_book', 0)}, quotes={raw_counts.get('quotes', 0)}. Regular trade/book/quote minutes={coverage['regular_trade_minutes']} / {coverage['regular_book_minutes']} / {coverage['regular_quote_minutes']}.</p>
 <h2>Candidates</h2>
@@ -801,6 +923,10 @@ def main(argv: list[str] | None = None) -> int:
     raw_counts = _raw_counts(inputs)
     data_quality = _data_quality_summary(features, signal_cfg)
     validation_progress = _validation_progress(gate)
+    validation_eligibility = _validation_eligibility_summary(
+        signals,
+        min_event_score=_validation_min_event_score(gate),
+    )
     status = {
         "date": args.date,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -814,6 +940,7 @@ def main(argv: list[str] | None = None) -> int:
         "watch_count": int((signals.get("confidence", pd.Series(dtype=str)) == "watch").sum()) if not signals.empty else 0,
         "validation_gate": gate,
         "validation_progress": validation_progress,
+        "validation_eligibility": validation_eligibility,
     }
     markdown = render_markdown_report(
         date=args.date,

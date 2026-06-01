@@ -211,7 +211,13 @@ def test_report_check_flags_high_signals_without_data_quality_gate(tmp_path):
     report_dir = tmp_path / "reports" / "date=2026-06-01"
     _write_json(
         report_dir / "status.json",
-        {"signal_count": 1, "high_count": 1, "watch_count": 0, "data_quality": {"high_confidence_data_quality_ok": False}},
+        {
+            "signal_count": 1,
+            "high_count": 1,
+            "watch_count": 0,
+            "data_quality": {"high_confidence_data_quality_ok": False},
+            "validation_eligibility": {"validation_eligible_count": 0, "score_pass_count": 1},
+        },
     )
     (report_dir / "us_microstructure_flow_report.html").write_text("<html></html>", encoding="utf-8")
     (tmp_path / "reports" / "us_microstructure_flow_report_latest.html").write_text("<html></html>", encoding="utf-8")
@@ -219,6 +225,7 @@ def test_report_check_flags_high_signals_without_data_quality_gate(tmp_path):
     result = readiness.check_report(tmp_path, date="2026-06-01")
 
     assert result["ok"] is False
+    assert result["validation_eligibility"]["score_pass_count"] == 1
     assert any("data-quality gate" in issue for issue in result["issues"])
 
 

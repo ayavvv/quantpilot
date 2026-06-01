@@ -492,7 +492,10 @@ Implemented status as of 2026-06-01:
   validation progress by side, including sample counts, signal-day counts,
   hit-rate, alpha, Wilson lower bound, concentration, and each side's gate
   reason, so warmup reports show exactly why high-confidence language is still
-  withheld. The CSV is also attached to emailed reports for daily audit.
+  withheld. It also records validation event eligibility counts and blockers
+  (`score_below_min`, `not_watch_or_high`, `data_quality_failed`, and
+  `not_final_report`) so sample starvation is visible before the validation
+  ledger stalls. The CSV is also attached to emailed reports for daily audit.
 - `scripts/us_microstructure_readiness.py` checks the latest manifest, price
   feed, validation gate, report artifacts, data-quality gate, and launchd
   services. When run from the daily wrapper it writes dated/latest readiness

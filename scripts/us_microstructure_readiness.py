@@ -177,6 +177,7 @@ def check_report(base_dir: str | Path, *, date: str) -> dict[str, Any]:
         issues.append(f"latest report HTML missing: {latest_html}")
     high_count = int(payload.get("high_count") or 0) if payload else 0
     data_quality = payload.get("data_quality", {}) if payload else {}
+    validation_eligibility = payload.get("validation_eligibility", {}) if payload else {}
     data_quality_ready = bool(isinstance(data_quality, dict) and data_quality.get("high_confidence_data_quality_ok"))
     if high_count > 0 and not (isinstance(data_quality, dict) and data_quality.get("high_confidence_data_quality_ok")):
         issues.append("report has high-confidence signals without a passing data-quality gate")
@@ -190,6 +191,7 @@ def check_report(base_dir: str | Path, *, date: str) -> dict[str, Any]:
         "high_count": high_count,
         "watch_count": int(payload.get("watch_count") or 0) if payload else 0,
         "data_quality": data_quality if isinstance(data_quality, dict) else {},
+        "validation_eligibility": validation_eligibility if isinstance(validation_eligibility, dict) else {},
         "data_quality_ready": data_quality_ready,
         "issues": issues,
     }
