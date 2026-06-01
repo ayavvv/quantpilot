@@ -191,9 +191,12 @@ def check_report(base_dir: str | Path, *, date: str) -> dict[str, Any]:
     high_count = int(payload.get("high_count") or 0) if payload else 0
     data_quality = payload.get("data_quality", {}) if payload else {}
     validation_eligibility = payload.get("validation_eligibility", {}) if payload else {}
+    email_delivery = payload.get("email_delivery", {}) if payload else {}
     data_quality_ready = bool(isinstance(data_quality, dict) and data_quality.get("high_confidence_data_quality_ok"))
     if high_count > 0 and not (isinstance(data_quality, dict) and data_quality.get("high_confidence_data_quality_ok")):
         issues.append("report has high-confidence signals without a passing data-quality gate")
+    if isinstance(email_delivery, dict) and email_delivery.get("requested") and not email_delivery.get("sent"):
+        issues.append(f"report email delivery failed: {email_delivery.get('error') or 'unknown error'}")
     return {
         "ok": not issues,
         "status_path": str(status_path),
@@ -208,6 +211,7 @@ def check_report(base_dir: str | Path, *, date: str) -> dict[str, Any]:
         "watch_count": int(payload.get("watch_count") or 0) if payload else 0,
         "data_quality": data_quality if isinstance(data_quality, dict) else {},
         "validation_eligibility": validation_eligibility if isinstance(validation_eligibility, dict) else {},
+        "email_delivery": email_delivery if isinstance(email_delivery, dict) else {},
         "data_quality_ready": data_quality_ready,
         "issues": issues,
     }

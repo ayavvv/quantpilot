@@ -47,6 +47,9 @@ def test_report_script_updates_prices_before_validation_by_default():
     assert '"$PYTHON_BIN" -m scripts.report_us_microstructure_flow' in content
     assert '"$PYTHON_BIN" -m scripts.replay_us_microstructure_intraday' in content
     assert "--rebuild-features" in content
+    assert "report_exit=0" in content
+    assert "|| report_exit=$?" in content
+    assert "readiness_exit=0" in content
     assert '"$PYTHON_BIN" -m scripts.us_microstructure_readiness' in content
     assert '--nas-host "$US_MICROSTRUCTURE_NAS_HOST"' in content
     assert '--nas-dir "$US_MICROSTRUCTURE_NAS_DIR"' in content

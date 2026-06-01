@@ -529,7 +529,8 @@ Implemented status as of 2026-06-01:
   `not_final_report`) plus the latest intraday replay calibration sample counts
   and 30/60-minute metric rows, so sample starvation is visible before the
   validation ledger stalls. The CSV is also attached to emailed reports for
-  daily audit.
+  daily audit. The status JSON records whether email delivery was requested and
+  whether it succeeded, so launchd/readiness can surface delivery failures.
 - `scripts/us_microstructure_readiness.py` checks the latest manifest, price
   feed, validation gate, report artifacts, data-quality gate, and launchd
   services. When run from the daily wrapper it writes dated/latest readiness
@@ -554,6 +555,8 @@ Implemented status as of 2026-06-01:
   the report date, because validation runs before the current day's final report
   is written; this prevents intraday/manual same-date signal files from entering
   the forward ledger. It sends email only when `US_MICROSTRUCTURE_SEND_EMAIL=true`.
+  If email delivery fails, the wrapper still writes readiness before returning
+  nonzero so launchd logs and readiness JSON both expose the failure.
 - Launchd templates are available for weekday evening collection and
   China-morning report generation. `scripts/install_us_microstructure_launchd.sh`
   renders both templates into `/Library/LaunchDaemons` when passwordless sudo is

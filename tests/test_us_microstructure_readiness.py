@@ -315,6 +315,31 @@ def test_report_check_flags_high_signals_without_data_quality_gate(tmp_path):
     assert any("data-quality gate" in issue for issue in result["issues"])
 
 
+def test_report_check_flags_failed_email_delivery(tmp_path):
+    report_dir = tmp_path / "reports" / "date=2026-06-01"
+    _write_json(
+        report_dir / "status.json",
+        {
+            "signal_count": 1,
+            "high_count": 0,
+            "watch_count": 0,
+            "email_delivery": {
+                "requested": True,
+                "sent": False,
+                "error": "send_email returned false",
+            },
+        },
+    )
+    (report_dir / "us_microstructure_flow_report.html").write_text("<html></html>", encoding="utf-8")
+    (tmp_path / "reports" / "us_microstructure_flow_report_latest.html").write_text("<html></html>", encoding="utf-8")
+
+    result = readiness.check_report(tmp_path, date="2026-06-01")
+
+    assert result["ok"] is False
+    assert result["email_delivery"]["requested"] is True
+    assert any("email delivery failed" in issue for issue in result["issues"])
+
+
 def test_report_check_does_not_require_latest_alias_for_non_final_report(tmp_path):
     report_dir = tmp_path / "reports" / "date=2026-06-01"
     _write_json(

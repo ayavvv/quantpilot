@@ -171,13 +171,24 @@ if [ "$US_MICROSTRUCTURE_RUN_INTRADAY_REPLAY" = "true" ]; then
     fi
     PYTHONPATH="$PYTHONPATH" DATA_DIR="$DATA_DIR" "$PYTHON_BIN" -m scripts.replay_us_microstructure_intraday "${replay_args[@]}"
 fi
-PYTHONPATH="$PYTHONPATH" DATA_DIR="$DATA_DIR" "$PYTHON_BIN" -m scripts.report_us_microstructure_flow "${args[@]}"
+report_exit=0
+PYTHONPATH="$PYTHONPATH" DATA_DIR="$DATA_DIR" "$PYTHON_BIN" -m scripts.report_us_microstructure_flow "${args[@]}" || report_exit=$?
 if [ "$US_MICROSTRUCTURE_RUN_READINESS" = "true" ]; then
+    readiness_exit=0
     PYTHONPATH="$PYTHONPATH" DATA_DIR="$DATA_DIR" "$PYTHON_BIN" -m scripts.us_microstructure_readiness \
         --base-dir "$US_MICROSTRUCTURE_DIR" \
         --date "$US_MICROSTRUCTURE_DATE" \
         --nas-host "$US_MICROSTRUCTURE_NAS_HOST" \
         --nas-dir "$US_MICROSTRUCTURE_NAS_DIR" \
-        --write-json
+        --write-json || readiness_exit=$?
+    if [ "$report_exit" -ne 0 ]; then
+        exit "$report_exit"
+    fi
+    if [ "$readiness_exit" -ne 0 ]; then
+        exit "$readiness_exit"
+    fi
+fi
+if [ "$report_exit" -ne 0 ]; then
+    exit "$report_exit"
 fi
 log "run_us_microstructure_report: done"

@@ -1313,6 +1313,23 @@ def _subject(signals: pd.DataFrame, gate: dict[str, object]) -> str:
     return "US Microstructure Flow - warmup, 0 validated"
 
 
+def _email_delivery_payload(
+    *,
+    requested: bool,
+    subject: str,
+    attachment_paths: Iterable[Path],
+    sent: bool | None = None,
+    error: str = "",
+) -> dict[str, object]:
+    return {
+        "requested": bool(requested),
+        "sent": bool(sent) if sent is not None else None,
+        "subject": subject if requested else "",
+        "attachment_paths": [str(path) for path in attachment_paths] if requested else [],
+        "error": str(error or ""),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     base_dir = Path(args.base_dir).expanduser()
@@ -1350,6 +1367,7 @@ def main(argv: list[str] | None = None) -> int:
         signals,
         min_event_score=_validation_min_event_score(report_gate),
     )
+    email_subject = _subject(signals, report_gate)
     confidence_gap = build_confidence_gap(
         report_gate,
         data_quality=data_quality,
@@ -1376,6 +1394,11 @@ def main(argv: list[str] | None = None) -> int:
         "validation_progress": validation_progress,
         "validation_eligibility": validation_eligibility,
         "confidence_gap": confidence_gap,
+        "email_delivery": _email_delivery_payload(
+            requested=bool(args.send_email),
+            subject=email_subject,
+            attachment_paths=[],
+        ),
     }
     markdown = render_markdown_report(
         date=args.date,
@@ -1425,13 +1448,43 @@ def main(argv: list[str] | None = None) -> int:
     if args.send_email:
         from reporter.send_report import send_email
 
-        send_email(
-            html_report,
-            _subject(signals, report_gate),
-            report_filename=outputs["html"].name,
-            report_dir=outputs["html"].parent,
-            attachment_paths=[outputs["signals"], outputs["data_quality"], outputs["status"]],
+        attachment_paths = [outputs["signals"], outputs["data_quality"], outputs["status"]]
+        status["email_delivery"] = _email_delivery_payload(
+            requested=True,
+            subject=email_subject,
+            attachment_paths=attachment_paths,
+            sent=False,
         )
+        _write_status_outputs(outputs, status)
+        try:
+            email_sent = bool(
+                send_email(
+                    html_report,
+                    email_subject,
+                    report_filename=outputs["html"].name,
+                    report_dir=outputs["html"].parent,
+                    attachment_paths=attachment_paths,
+                )
+            )
+            email_error = "" if email_sent else "send_email returned false"
+        except Exception as exc:
+            email_sent = False
+            email_error = str(exc)
+        status["email_delivery"] = _email_delivery_payload(
+            requested=True,
+            subject=email_subject,
+            attachment_paths=attachment_paths,
+            sent=email_sent,
+            error=email_error,
+        )
+        _write_status_outputs(outputs, status)
+        if not args.no_nas_sync:
+            status_paths = [outputs["status"]]
+            if "status_latest" in outputs:
+                status_paths.append(outputs["status_latest"])
+            _sync_outputs(status_paths, base_dir=base_dir, nas_host=args.nas_host, nas_dir=args.nas_dir)
+        if not email_sent:
+            print(f"Email delivery failed: {email_error}")
 
     print(f"Wrote features: {outputs['features']}")
     print(f"Wrote signals: {outputs['signals']}")
@@ -1439,6 +1492,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Wrote report: {outputs['html']}")
     print(f"Updated latest aliases: {status['latest_alias_updated']}")
     print(f"State={gate.get('state')} high={status['high_count']} watch={status['watch_count']}")
+    email_delivery = status.get("email_delivery", {})
+    if isinstance(email_delivery, dict) and email_delivery.get("requested") and not email_delivery.get("sent"):
+        return 1
     return 0
 
 

@@ -694,6 +694,7 @@ def test_report_script_writes_warmup_artifacts(tmp_path, monkeypatch):
     status = json.loads((tmp_path / "reports/date=2026-06-01/status.json").read_text(encoding="utf-8"))
     assert status["is_final_report"] is False
     assert status["latest_alias_updated"] is False
+    assert status["email_delivery"]["requested"] is False
     assert status["validation_gate"]["state"] == "warmup"
     assert status["validation_progress"]["event_count"] == 12
     assert status["validation_progress"]["forward_return_count"] == 24
@@ -784,6 +785,123 @@ def test_report_script_updates_latest_aliases_for_final_report(tmp_path, monkeyp
     assert status["is_final_report"] is True
     assert status["latest_alias_updated"] is True
     assert latest_status["latest_alias_updated"] is True
+
+
+def test_report_script_records_successful_email_delivery(tmp_path, monkeypatch):
+    _write_raw(
+        tmp_path,
+        "trades",
+        "US.AAPL",
+        [
+            {
+                "symbol": "US.AAPL",
+                "event_time": "2026-06-01 09:30:05.000",
+                "price": 100.0,
+                "volume": 100,
+                "turnover": 10_000.0,
+                "ticker_direction": "BUY",
+                "sequence": 1,
+                "type": "AUTO_MATCH",
+            }
+        ],
+    )
+    _write_raw(
+        tmp_path,
+        "order_book",
+        "US.AAPL",
+        [
+            {
+                "symbol": "US.AAPL",
+                "recv_time": "2026-06-01T13:30:06.000+00:00",
+                "bid_px_1": 100.0,
+                "bid_sz_1": 500,
+                "ask_px_1": 100.1,
+                "ask_sz_1": 250,
+                "mid": 100.05,
+                "spread_bps": 10.0,
+            }
+        ],
+    )
+    _write_json(
+        tmp_path / "validation" / "active_gate.json",
+        {"state": "warmup", "validated": False, "validated_sides": {"accumulation": False, "distribution": False}},
+    )
+    sent = []
+
+    def fake_send_email(html_content, subject, report_filename=None, report_dir=None, attachment_paths=None):
+        sent.append((subject, report_filename, Path(report_dir), [Path(path) for path in attachment_paths]))
+        return True
+
+    monkeypatch.setattr(report_script, "_is_final_report", lambda date: True)
+    monkeypatch.setattr("reporter.send_report.send_email", fake_send_email)
+
+    code = report_script.main(
+        [
+            "--date",
+            "2026-06-01",
+            "--base-dir",
+            str(tmp_path),
+            "--symbols",
+            "AAPL",
+            "--no-nas-sync",
+            "--send-email",
+        ]
+    )
+
+    status = json.loads((tmp_path / "reports/date=2026-06-01/status.json").read_text(encoding="utf-8"))
+    assert code == 0
+    assert len(sent) == 1
+    assert status["email_delivery"]["requested"] is True
+    assert status["email_delivery"]["sent"] is True
+    assert status["email_delivery"]["subject"] == "US Microstructure Flow - warmup, 0 validated"
+    assert len(status["email_delivery"]["attachment_paths"]) == 3
+    assert sent[0][3][-1].name == "status.json"
+
+
+def test_report_script_returns_nonzero_when_email_delivery_fails(tmp_path, monkeypatch):
+    _write_raw(
+        tmp_path,
+        "trades",
+        "US.AAPL",
+        [
+            {
+                "symbol": "US.AAPL",
+                "event_time": "2026-06-01 09:30:05.000",
+                "price": 100.0,
+                "volume": 100,
+                "turnover": 10_000.0,
+                "ticker_direction": "BUY",
+                "sequence": 1,
+                "type": "AUTO_MATCH",
+            }
+        ],
+    )
+    _write_json(
+        tmp_path / "validation" / "active_gate.json",
+        {"state": "warmup", "validated": False, "validated_sides": {"accumulation": False, "distribution": False}},
+    )
+
+    monkeypatch.setattr(report_script, "_is_final_report", lambda date: True)
+    monkeypatch.setattr("reporter.send_report.send_email", lambda *args, **kwargs: False)
+
+    code = report_script.main(
+        [
+            "--date",
+            "2026-06-01",
+            "--base-dir",
+            str(tmp_path),
+            "--symbols",
+            "AAPL",
+            "--no-nas-sync",
+            "--send-email",
+        ]
+    )
+
+    status = json.loads((tmp_path / "reports/date=2026-06-01/status.json").read_text(encoding="utf-8"))
+    assert code == 1
+    assert status["email_delivery"]["requested"] is True
+    assert status["email_delivery"]["sent"] is False
+    assert status["email_delivery"]["error"] == "send_email returned false"
 
 
 def test_read_microstructure_inputs_filters_stale_trades_from_date_partition(tmp_path):
