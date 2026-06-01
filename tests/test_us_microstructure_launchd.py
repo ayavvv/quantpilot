@@ -42,8 +42,12 @@ def test_report_script_updates_prices_before_validation_by_default():
     assert '"$PYTHON_BIN" -m scripts.update_us_microstructure_prices' in content
     assert '"$PYTHON_BIN" -m scripts.validate_us_microstructure_flow' in content
     assert '"$PYTHON_BIN" -m scripts.report_us_microstructure_flow' in content
+    assert '"$PYTHON_BIN" -m scripts.us_microstructure_readiness' in content
+    assert '--nas-host "$US_MICROSTRUCTURE_NAS_HOST"' in content
+    assert '--nas-dir "$US_MICROSTRUCTURE_NAS_DIR"' in content
     assert content.index("scripts.update_us_microstructure_prices") < content.index("scripts.validate_us_microstructure_flow")
     assert content.index("scripts.validate_us_microstructure_flow") < content.index("scripts.report_us_microstructure_flow")
+    assert content.index("scripts.report_us_microstructure_flow") < content.index("scripts.us_microstructure_readiness")
 
 
 def test_us_microstructure_collect_launchd_plist_is_scheduled_weekday_evenings():

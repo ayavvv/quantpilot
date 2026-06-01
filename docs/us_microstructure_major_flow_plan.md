@@ -84,6 +84,7 @@ Mac mini hot cache:
   features_1m/
   signals/
   validation/
+  readiness/
   logs/
 
 NAS authoritative archive:
@@ -94,6 +95,7 @@ NAS authoritative archive:
   features_1m/
   signals/
   validation/
+  readiness/
   logs/
 ```
 
@@ -418,6 +420,7 @@ Build:
 - `scripts/report_us_microstructure_flow.py`
 - `scripts/update_us_microstructure_prices.py`
 - `scripts/validate_us_microstructure_flow.py`
+- `scripts/us_microstructure_readiness.py`
 - `scripts/run_us_microstructure_report.sh`
 - `deploy/launchd/com.quantpilot.us_microstructure.collect.plist`
 - `deploy/launchd/com.quantpilot.us_microstructure.report.plist`
@@ -454,12 +457,18 @@ Implemented status as of 2026-06-01:
   auto-detects `validation/prices/us_daily_prices.csv`.
 - `scripts/report_us_microstructure_flow.py` writes feature parquet, signal CSV,
   status JSON, and Markdown/HTML reports, then mirrors report artifacts to NAS.
+- `scripts/us_microstructure_readiness.py` checks the latest manifest, price
+  feed, validation gate, report artifacts, and launchd services. When run from
+  the daily wrapper it writes dated/latest readiness JSON snapshots locally and
+  mirrors them to the NAS `readiness/` archive.
 - `scripts/run_us_microstructure_report.sh` is the Mac-side entrypoint for cron
-  or launchd. It updates daily prices, updates validation, then generates the
-  report. It sends email only when `US_MICROSTRUCTURE_SEND_EMAIL=true`.
+  or launchd. It updates daily prices, updates validation, generates the
+  report, then writes the readiness snapshot. It sends email only when
+  `US_MICROSTRUCTURE_SEND_EMAIL=true`.
 - Launchd templates are available for weekday evening collection and
   China-morning report generation. `scripts/install_us_microstructure_launchd.sh`
-  renders both templates into `/Library/LaunchDaemons`.
+  renders both templates into `/Library/LaunchDaemons` when passwordless sudo is
+  available, or user `LaunchAgents` otherwise.
 
 Start with a fixed universe file:
 
