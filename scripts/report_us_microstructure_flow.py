@@ -20,6 +20,7 @@ import pandas as pd
 
 from scripts.collect_us_microstructure import _copy_to_nas
 from scripts.us_microstructure_readiness import check_manifest
+from strategy.us_microstructure_confidence import build_confidence_gap
 from strategy.us_microstructure_features import (
     MicrostructureFeatureConfig,
     compute_microstructure_features,
@@ -328,6 +329,19 @@ def _apply_manifest_quality_to_signals(
     result["validation_reason"] = reason
     if "confidence" in result.columns:
         result.loc[result["confidence"].astype(str).str.lower() == "high", "confidence"] = "watch"
+    return result
+
+
+def _apply_final_report_gate_to_signals(signals: pd.DataFrame, *, is_final_report: bool) -> pd.DataFrame:
+    if bool(is_final_report) or signals.empty or "confidence" not in signals.columns:
+        return signals
+    result = signals.copy()
+    high_mask = result["confidence"].astype(str).str.lower() == "high"
+    if not bool(high_mask.any()):
+        return result
+    result.loc[high_mask, "confidence"] = "watch"
+    if "validation_reason" in result.columns:
+        result.loc[high_mask, "validation_reason"] = "not final post-close report"
     return result
 
 
@@ -677,6 +691,56 @@ def _intraday_replay_markdown(summary: dict[str, object]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _confidence_gap_markdown(summary: dict[str, object]) -> str:
+    requirements = summary.get("requirements", {})
+    if not isinstance(requirements, dict):
+        requirements = {}
+    blockers = summary.get("blockers", [])
+    if not isinstance(blockers, list):
+        blockers = []
+    replay = summary.get("cumulative_intraday_replay", {})
+    if not isinstance(replay, dict):
+        replay = {}
+    lines = [
+        f"- High-confidence ready: `{bool(summary.get('ready'))}`",
+        "- Requirements: "
+        + ", ".join(f"{key}={bool(value)}" for key, value in sorted(requirements.items())),
+        f"- Official validation samples: `{summary.get('official_event_count', 0)}` events, `{summary.get('official_forward_return_count', 0)}` forward-return rows",
+        f"- Shadow samples: `{summary.get('shadow_event_count', 0)}` events, `{summary.get('shadow_forward_return_count', 0)}` forward-return rows",
+        f"- Current report eligible samples: `{summary.get('validation_eligible_count', 0)}` now; `{summary.get('validation_eligible_if_final_count', 0)}` if final",
+        f"- Cumulative intraday replay: `{replay.get('date_count', 0)}` dates, `{replay.get('quality_event_count', 0)}` quality events, `{replay.get('quality_return_count', 0)}` quality returns",
+    ]
+    if blockers:
+        lines.append("- Blockers: " + "; ".join(str(item) for item in blockers))
+    rows = summary.get("side_gaps", [])
+    if not isinstance(rows, list) or not rows:
+        return "\n".join(lines) + "\n"
+    lines.extend(
+        [
+            "",
+            "| Side | Validated | Obs Need | Days Need | Alpha Gap | Hit Gap | Recent Hit Gap | Wilson Gap | Concentration Excess |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        lines.append(
+            "| {side} | {validated} | {obs} | {days} | {alpha} | {hit} | {recent} | {wilson} | {concentration} |".format(
+                side=str(row.get("side") or ""),
+                validated="yes" if row.get("validated") else "no",
+                obs=int(row.get("observations_needed") or 0),
+                days=int(row.get("signal_days_needed") or 0),
+                alpha=_pct(row.get("alpha_gap")),
+                hit=_pct(row.get("hit_rate_gap")),
+                recent=_pct(row.get("recent_hit_rate_gap")),
+                wilson=_pct(row.get("wilson_gap")),
+                concentration=_pct(row.get("concentration_excess")),
+            )
+        )
+    return "\n".join(lines) + "\n"
+
+
 def _quality_markdown_table(data_quality: dict[str, object]) -> str:
     rows = data_quality.get("symbols", [])
     if not isinstance(rows, list) or not rows:
@@ -718,6 +782,7 @@ def render_markdown_report(
     validation_gate: dict,
     data_quality: dict[str, object],
     intraday_replay: dict[str, object],
+    confidence_gap: dict[str, object],
     top_n: int,
     min_score: float,
 ) -> str:
@@ -750,6 +815,10 @@ def render_markdown_report(
         f"- NAS raw uploads complete: `{bool(data_quality.get('nas_upload_complete'))}`; manifest rows: `{data_quality.get('manifest_count', 0)}`",
         f"- Median trade/book coverage: `{_pct(data_quality.get('median_trade_coverage_ratio_regular'))}` / `{_pct(data_quality.get('median_book_coverage_ratio_regular'))}`",
         f"- Duplicate sequence rows: `{data_quality.get('duplicate_sequence_count', 0)}` / `{data_quality.get('raw_trade_count', 0)}` (`{_pct(data_quality.get('duplicate_sequence_rate'))}`)",
+        "",
+        "## Confidence Readiness",
+        "",
+        _confidence_gap_markdown(confidence_gap),
         "",
         "## Validation Progress By Side",
         "",
@@ -950,6 +1019,75 @@ def _intraday_metric_table_html(metrics: object) -> str:
     )
 
 
+def _confidence_gap_html(summary: dict[str, object]) -> str:
+    requirements = summary.get("requirements", {})
+    if not isinstance(requirements, dict):
+        requirements = {}
+    blockers = summary.get("blockers", [])
+    if not isinstance(blockers, list):
+        blockers = []
+    replay = summary.get("cumulative_intraday_replay", {})
+    if not isinstance(replay, dict):
+        replay = {}
+    req_text = ", ".join(
+        f"{html.escape(str(key))}={bool(value)}" for key, value in sorted(requirements.items())
+    )
+    blocker_text = "; ".join(html.escape(str(item)) for item in blockers) if blockers else "none"
+    rows = []
+    side_gaps = summary.get("side_gaps", [])
+    if isinstance(side_gaps, list):
+        for row in side_gaps:
+            if not isinstance(row, dict):
+                continue
+            rows.append(
+                "<tr><td>{side}</td><td>{validated}</td><td>{obs}</td><td>{days}</td>"
+                "<td>{alpha}</td><td>{hit}</td><td>{recent}</td><td>{wilson}</td>"
+                "<td>{concentration}</td></tr>".format(
+                    side=html.escape(str(row.get("side") or "")),
+                    validated="yes" if row.get("validated") else "no",
+                    obs=int(row.get("observations_needed") or 0),
+                    days=int(row.get("signal_days_needed") or 0),
+                    alpha=_pct(row.get("alpha_gap")),
+                    hit=_pct(row.get("hit_rate_gap")),
+                    recent=_pct(row.get("recent_hit_rate_gap")),
+                    wilson=_pct(row.get("wilson_gap")),
+                    concentration=_pct(row.get("concentration_excess")),
+                )
+            )
+    table = "<p>No confidence gap rows.</p>"
+    if rows:
+        table = (
+            "<table><tr><th>Side</th><th>Validated</th><th>Obs Need</th><th>Days Need</th>"
+            "<th>Alpha Gap</th><th>Hit Gap</th><th>Recent Hit Gap</th><th>Wilson Gap</th>"
+            "<th>Concentration Excess</th></tr>"
+            + "\n".join(rows)
+            + "</table>"
+        )
+    return (
+        "<div class='gate'><strong>Confidence readiness:</strong> ready={ready}; "
+        "requirements={requirements}; blockers={blockers}</div>"
+        "<div class='gate'><strong>Validation sample gap:</strong> official_events={official_events}; "
+        "official_forward_returns={official_returns}; shadow_events={shadow_events}; "
+        "shadow_forward_returns={shadow_returns}; eligible_now={eligible}; eligible_if_final={eligible_if_final}; "
+        "cumulative_replay_dates={replay_dates}; cumulative_quality_events={replay_events}; "
+        "cumulative_quality_returns={replay_returns}</div>{table}"
+    ).format(
+        ready=bool(summary.get("ready")),
+        requirements=req_text,
+        blockers=blocker_text,
+        official_events=int(summary.get("official_event_count") or 0),
+        official_returns=int(summary.get("official_forward_return_count") or 0),
+        shadow_events=int(summary.get("shadow_event_count") or 0),
+        shadow_returns=int(summary.get("shadow_forward_return_count") or 0),
+        eligible=int(summary.get("validation_eligible_count") or 0),
+        eligible_if_final=int(summary.get("validation_eligible_if_final_count") or 0),
+        replay_dates=int(replay.get("date_count") or 0),
+        replay_events=int(replay.get("quality_event_count") or 0),
+        replay_returns=int(replay.get("quality_return_count") or 0),
+        table=table,
+    )
+
+
 def _intraday_replay_html(summary: dict[str, object]) -> str:
     today_table = _intraday_metric_table_html(summary.get("metrics", []))
     cumulative_table = _intraday_metric_table_html(summary.get("cumulative_metrics", []))
@@ -1003,6 +1141,7 @@ def render_html_report(
     validation_gate: dict,
     data_quality: dict[str, object],
     intraday_replay: dict[str, object],
+    confidence_gap: dict[str, object],
     top_n: int,
     min_score: float,
 ) -> str:
@@ -1047,6 +1186,8 @@ tr.sell {{ background: #fff1f2; }}
 <div class="gate"><strong>Shadow calibration:</strong> events={validation_progress.get('shadow_event_count', 0)}; forward_returns={validation_progress.get('shadow_forward_return_count', 0)}; min_score={_score(validation_progress.get('shadow_min_event_score'))}</div>
 <div class="gate"><strong>Data quality gate:</strong> eligible_symbols={data_quality.get('eligible_symbol_count', 0)}/{data_quality.get('symbol_count', 0)}; median trade/book coverage={_pct(data_quality.get('median_trade_coverage_ratio_regular'))}/{_pct(data_quality.get('median_book_coverage_ratio_regular'))}; nas_upload_complete={bool(data_quality.get('nas_upload_complete'))}; manifest_rows={data_quality.get('manifest_count', 0)}</div>
 <div class="gate"><strong>Duplicate audit:</strong> duplicate_sequence_rows={data_quality.get('duplicate_sequence_count', 0)}/{data_quality.get('raw_trade_count', 0)} ({_pct(data_quality.get('duplicate_sequence_rate'))})</div>
+<h2>Confidence Readiness</h2>
+{_confidence_gap_html(confidence_gap)}
 <h2>Validation Progress By Side</h2>
 {_validation_html_table(validation_progress)}
 <h2>Validation Event Eligibility</h2>
@@ -1200,6 +1341,7 @@ def main(argv: list[str] | None = None) -> int:
     if not signals.empty:
         signals = signals.copy()
         signals["is_final_report"] = bool(is_final_report)
+    signals = _apply_final_report_gate_to_signals(signals, is_final_report=bool(is_final_report))
     raw_counts = _raw_counts(inputs)
     data_quality = _data_quality_summary_with_manifest(features, signal_cfg, manifest_quality=manifest_quality)
     intraday_replay = _load_intraday_replay_summary(base_dir, args.date)
@@ -1207,6 +1349,14 @@ def main(argv: list[str] | None = None) -> int:
     validation_eligibility = _validation_eligibility_summary(
         signals,
         min_event_score=_validation_min_event_score(report_gate),
+    )
+    confidence_gap = build_confidence_gap(
+        report_gate,
+        data_quality=data_quality,
+        validation_eligibility=validation_eligibility,
+        intraday_replay=intraday_replay,
+        manifest_quality=manifest_quality,
+        is_final_report=bool(is_final_report),
     )
     status = {
         "date": args.date,
@@ -1225,6 +1375,7 @@ def main(argv: list[str] | None = None) -> int:
         "validation_gate": report_gate,
         "validation_progress": validation_progress,
         "validation_eligibility": validation_eligibility,
+        "confidence_gap": confidence_gap,
     }
     markdown = render_markdown_report(
         date=args.date,
@@ -1234,6 +1385,7 @@ def main(argv: list[str] | None = None) -> int:
         validation_gate=report_gate,
         data_quality=data_quality,
         intraday_replay=intraday_replay,
+        confidence_gap=confidence_gap,
         top_n=args.top_n,
         min_score=args.min_score,
     )
@@ -1245,6 +1397,7 @@ def main(argv: list[str] | None = None) -> int:
         validation_gate=report_gate,
         data_quality=data_quality,
         intraday_replay=intraday_replay,
+        confidence_gap=confidence_gap,
         top_n=args.top_n,
         min_score=args.min_score,
     )

@@ -438,6 +438,27 @@ def test_manifest_gate_prevents_high_confidence_and_validation_sample():
     assert summary["validation_eligible_count"] == 0
 
 
+def test_final_report_gate_downgrades_intraday_high_confidence():
+    signals = pd.DataFrame(
+        [
+            {
+                "symbol": "US.AAPL",
+                "side": "accumulation",
+                "side_score": 90,
+                "confidence": "high",
+                "data_quality_pass": True,
+                "validation_reason": "validated",
+            }
+        ]
+    )
+
+    adjusted = report_script._apply_final_report_gate_to_signals(signals, is_final_report=False)
+
+    assert adjusted.iloc[0]["confidence"] == "watch"
+    assert bool(adjusted.iloc[0]["data_quality_pass"]) is True
+    assert adjusted.iloc[0]["validation_reason"] == "not final post-close report"
+
+
 def test_intraday_replay_summary_loads_metrics_for_report(tmp_path):
     replay_dir = tmp_path / "validation" / "intraday_replay" / "date=2026-06-01"
     replay_dir.mkdir(parents=True)
@@ -680,6 +701,9 @@ def test_report_script_writes_warmup_artifacts(tmp_path, monkeypatch):
     assert "validation_eligibility" in status
     assert status["validation_eligibility"]["signal_count"] == 1
     assert status["validation_eligibility"]["validation_eligible_count"] == 0
+    assert status["confidence_gap"]["ready"] is False
+    assert status["confidence_gap"]["requirements"]["final_report_complete"] is False
+    assert "report is not a final post-close report" in status["confidence_gap"]["blockers"]
     assert status["high_count"] == 0
     assert "data_quality" in status
     assert status["data_quality"]["eligible_symbol_count"] == 0
@@ -692,6 +716,7 @@ def test_report_script_writes_warmup_artifacts(tmp_path, monkeypatch):
     assert "Duplicate audit" in html_report
     assert "Validation Progress By Side" in html_report
     assert "Validation Event Eligibility" in html_report
+    assert "Confidence Readiness" in html_report
     assert "Intraday Replay Calibration" in html_report
     assert "missing 5d validation metrics" in html_report
 

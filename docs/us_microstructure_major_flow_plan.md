@@ -521,8 +521,10 @@ Implemented status as of 2026-06-01:
   validation ledger as data-quality-passing samples. The report also renders
   validation progress by side, including sample counts, signal-day counts,
   hit-rate, alpha, Wilson lower bound, concentration, and each side's gate
-  reason, so warmup reports show exactly why high-confidence language is still
-  withheld. It also records validation event eligibility counts and blockers
+  reason, plus a confidence-readiness gap summary that shows the exact official
+  sample, signal-day, alpha, hit-rate, Wilson, concentration, data-quality, NAS,
+  and final-report blockers before any high-confidence language is allowed.
+  It also records validation event eligibility counts and blockers
   (`score_below_min`, `not_watch_or_high`, `data_quality_failed`, and
   `not_final_report`) plus the latest intraday replay calibration sample counts
   and 30/60-minute metric rows, so sample starvation is visible before the

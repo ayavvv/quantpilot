@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from scripts.collect_us_microstructure import DEFAULT_NAS_DIR, _copy_to_nas
+from strategy.us_microstructure_confidence import build_confidence_gap
 
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(Path.home() / "quantpilot_data")))
@@ -326,7 +327,16 @@ def build_readiness_snapshot(
     validation_ready = bool(checks["validation_gate"].get("validated"))
     data_quality_ready = bool(checks["report"].get("data_quality_ready"))
     nas_uploads_complete = bool(checks["manifest_full_session"].get("ok"))
-    high_confidence_ready = validation_ready and data_quality_ready and nas_uploads_complete
+    final_report_complete = bool(checks["report"].get("is_final_report"))
+    confidence_gap = build_confidence_gap(
+        checks["validation_gate"],
+        data_quality=checks["report"].get("data_quality", {}),
+        validation_eligibility=checks["report"].get("validation_eligibility", {}),
+        intraday_replay=checks["intraday_replay"],
+        manifest_quality=checks["manifest_full_session"],
+        is_final_report=final_report_complete,
+    )
+    high_confidence_ready = bool(confidence_gap.get("ready"))
     issues = []
     for name, payload in checks.items():
         for issue in payload.get("issues", []):
@@ -341,7 +351,9 @@ def build_readiness_snapshot(
             "validation_gate_validated": validation_ready,
             "data_quality_gate_ready": data_quality_ready,
             "nas_uploads_complete": nas_uploads_complete,
+            "final_report_complete": final_report_complete,
         },
+        "confidence_gap": confidence_gap,
         "checks": checks,
         "issues": issues,
     }

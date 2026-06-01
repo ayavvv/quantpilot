@@ -66,6 +66,9 @@ def test_readiness_snapshot_accepts_ready_warmup_system(tmp_path):
     assert snapshot["ok"] is True
     assert snapshot["high_confidence_ready"] is False
     assert snapshot["high_confidence_requirements"]["validation_gate_validated"] is False
+    assert snapshot["high_confidence_requirements"]["final_report_complete"] is True
+    assert snapshot["confidence_gap"]["ready"] is False
+    assert snapshot["confidence_gap"]["official_event_count"] == 0
     assert snapshot["checks"]["manifest"]["row_counts"]["trades"] == 100
     assert snapshot["checks"]["manifest"]["symbol_count"] == 0
     assert snapshot["checks"]["validation_gate"]["state"] == "warmup"
@@ -122,6 +125,8 @@ def test_readiness_snapshot_marks_high_confidence_ready_when_gates_pass(tmp_path
     assert snapshot["high_confidence_requirements"]["validation_gate_validated"] is True
     assert snapshot["high_confidence_requirements"]["data_quality_gate_ready"] is True
     assert snapshot["high_confidence_requirements"]["nas_uploads_complete"] is True
+    assert snapshot["high_confidence_requirements"]["final_report_complete"] is True
+    assert snapshot["confidence_gap"]["ready"] is True
 
 
 def test_readiness_snapshot_requires_full_session_manifest_for_high_confidence(tmp_path):
@@ -179,6 +184,7 @@ def test_readiness_snapshot_requires_full_session_manifest_for_high_confidence(t
     assert snapshot["checks"]["manifest_full_session"]["ok"] is False
     assert snapshot["high_confidence_ready"] is False
     assert snapshot["high_confidence_requirements"]["nas_uploads_complete"] is False
+    assert snapshot["confidence_gap"]["requirements"]["nas_uploads_complete"] is False
     assert any("manifest_full_session" in issue and "failed NAS uploads" in issue for issue in snapshot["issues"])
 
 
