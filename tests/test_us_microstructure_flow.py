@@ -100,6 +100,51 @@ def test_feature_builder_counts_only_regular_session_for_coverage():
     assert features.iloc[-1]["coverage_ratio_regular"] == 1 / 390
 
 
+def test_feature_builder_dedupes_trade_sequences_before_summing_flow():
+    trades = pd.DataFrame(
+        [
+            {
+                "symbol": "US.AAPL",
+                "event_time": "2026-06-01 09:30:01.000",
+                "price": 100.0,
+                "volume": 100,
+                "turnover": 10_000.0,
+                "ticker_direction": "BUY",
+                "sequence": 1,
+            },
+            {
+                "symbol": "US.AAPL",
+                "event_time": "2026-06-01 09:30:01.000",
+                "price": 100.0,
+                "volume": 100,
+                "turnover": 10_000.0,
+                "ticker_direction": "BUY",
+                "sequence": 1,
+            },
+            {
+                "symbol": "US.AAPL",
+                "event_time": "2026-06-01 09:30:10.000",
+                "price": 101.0,
+                "volume": 100,
+                "turnover": 10_100.0,
+                "ticker_direction": "SELL",
+                "sequence": 2,
+            },
+        ]
+    )
+
+    features = compute_microstructure_features(trades, pd.DataFrame(), pd.DataFrame())
+
+    row = features.iloc[0]
+    assert row["trade_count"] == 2
+    assert row["raw_trade_count"] == 3
+    assert row["duplicate_sequence_count"] == 1
+    assert row["duplicate_sequence_rate"] == 1 / 3
+    assert row["dollar_volume"] == 20_100.0
+    assert row["active_buy_dollar"] == 10_000.0
+    assert row["active_sell_dollar"] == 10_100.0
+
+
 def test_signal_scoring_keeps_strong_candidate_warmup_without_validation_gate():
     minutes = pd.date_range("2026-06-01 13:30:00+00:00", periods=6, freq="min")
     features = pd.DataFrame(

@@ -215,9 +215,20 @@ def _trade_features(trades: pd.DataFrame) -> pd.DataFrame:
     df["neutral_trade_count"] = np.where(side == 0, 1, 0)
 
     if "sequence" in df.columns:
-        df["sequence_text"] = df["sequence"].astype(str)
+        df["sequence_text"] = df["sequence"].fillna("").astype(str)
     else:
         df["sequence_text"] = ""
+    has_sequence = df["sequence_text"] != ""
+    duplicate_sequence_mask = has_sequence & df.duplicated(["symbol", "sequence_text"], keep="first")
+    duplicate_counts = (
+        df.assign(is_duplicate_sequence=duplicate_sequence_mask)
+        .groupby(["symbol", "minute"], as_index=False)
+        .agg(
+            raw_trade_count=("price", "size"),
+            duplicate_sequence_count=("is_duplicate_sequence", "sum"),
+        )
+    )
+    df = df[~duplicate_sequence_mask].copy()
 
     grouped = (
         df.sort_values(["symbol", "event_ts"])
@@ -240,6 +251,9 @@ def _trade_features(trades: pd.DataFrame) -> pd.DataFrame:
             neutral_trade_count=("neutral_trade_count", "sum"),
         )
     )
+    grouped = grouped.merge(duplicate_counts, on=["symbol", "minute"], how="left")
+    grouped["raw_trade_count"] = _to_numeric(grouped.get("raw_trade_count", grouped["trade_count"]), 0.0)
+    grouped["duplicate_sequence_count"] = _to_numeric(grouped.get("duplicate_sequence_count", pd.Series(index=grouped.index)), 0.0)
     grouped["minute_vwap"] = _safe_div(grouped["dollar_volume"], grouped["share_volume"], np.nan)
     grouped["avg_trade_size"] = _safe_div(grouped["dollar_volume"], grouped["trade_count"], 0.0)
     grouped["active_buy_ratio"] = _safe_div(
@@ -257,8 +271,11 @@ def _trade_features(trades: pd.DataFrame) -> pd.DataFrame:
     grouped["odd_lot_ratio"] = _safe_div(grouped["odd_lot_dollar"], grouped["dollar_volume"], 0.0)
     grouped["range_bps"] = _safe_div(grouped["high_price"] - grouped["low_price"], grouped["minute_vwap"], 0.0) * 10_000
     grouped["minute_return_bps"] = _safe_div(grouped["last_price"], grouped["open_price"], 1.0).sub(1.0) * 10_000
-    duplicate_count = grouped["trade_count"] - grouped["unique_sequence_count"]
-    grouped["duplicate_sequence_rate"] = _safe_div(duplicate_count, grouped["trade_count"], 0.0).clip(lower=0.0)
+    grouped["duplicate_sequence_rate"] = _safe_div(
+        grouped["duplicate_sequence_count"],
+        grouped["raw_trade_count"],
+        0.0,
+    ).clip(lower=0.0)
     return grouped
 
 

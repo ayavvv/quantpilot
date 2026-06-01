@@ -455,7 +455,8 @@ Implemented status as of 2026-06-01:
   and after-hours rows remain available as context but cannot lift
   high-confidence coverage. As a second guard, the reader filters stale trade
   rows out of date partitions if they were collected before this protection
-  existed.
+  existed. Trade aggregation de-duplicates by `symbol + sequence` before
+  summing flow while preserving raw/duplicate counts for data-quality audit.
 - `strategy/us_microstructure_signals.py` scores accumulation and distribution
   candidates, but only emits `high` confidence when a validation gate is
   promoted for that side and both regular-session trade and order-book coverage
