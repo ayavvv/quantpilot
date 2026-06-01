@@ -190,6 +190,10 @@ def test_validate_major_force_eval_exports_validated_rule(tmp_path):
             min_test_alpha=0.001,
             min_test_hit_rate=0.5,
             min_test_win_rate_days=0.5,
+            min_recent_dates=1,
+            min_recent_alpha=0.001,
+            min_recent_hit_rate=0.5,
+            min_recent_win_rate_days=0.5,
             split_ratio=0.5,
         ),
     )
@@ -197,3 +201,49 @@ def test_validate_major_force_eval_exports_validated_rule(tmp_path):
     assert payload["validated"] is True
     assert payload["rules"][0]["side"] == "buy"
     assert payload["rules"][0]["test"]["avg_alpha"] > 0
+
+
+def test_validate_major_force_eval_requires_recent_robustness(tmp_path):
+    eval_dir = tmp_path / "eval_recent"
+    eval_dir.mkdir()
+    dates = ["2026-01-02", "2026-01-09", "2026-01-16", "2026-01-23"]
+    daily_rows = [
+        f"{date},buy,10,10,0.0"
+        for date in dates
+    ]
+    (eval_dir / "daily.csv").write_text(
+        "date,signal_side,horizon,top_n,universe_return\n" + "\n".join(daily_rows),
+        encoding="utf-8",
+    )
+    pick_rows = [
+        "2026-01-02,buy,1,90,1.5,0.2,0.7,0.0,0.02",
+        "2026-01-09,buy,1,90,1.5,0.2,0.7,0.0,0.02",
+        "2026-01-16,buy,1,90,1.5,0.2,0.7,0.0,0.02",
+        "2026-01-23,buy,1,90,1.5,0.2,0.7,0.0,-0.02",
+    ]
+    (eval_dir / "picks.csv").write_text(
+        "eval_date,signal_side,rank,side_score,amount_ratio_5_20,cmf_20,close_location_10,breakout_20,fwd_return_10d\n"
+        + "\n".join(pick_rows),
+        encoding="utf-8",
+    )
+
+    payload = validate_major_force_eval(
+        eval_dir,
+        criteria=ValidationCriteria(
+            min_train_dates=1,
+            min_test_dates=1,
+            min_train_alpha=0.001,
+            min_test_alpha=-0.001,
+            min_test_hit_rate=0.5,
+            min_test_win_rate_days=0.5,
+            min_recent_dates=1,
+            min_recent_alpha=0.001,
+            min_recent_hit_rate=0.5,
+            min_recent_win_rate_days=0.5,
+            split_ratio=0.5,
+            recent_ratio=0.25,
+        ),
+    )
+
+    assert payload["validated"] is False
+    assert payload["best_rules"][0]["recent"]["avg_alpha"] < 0

@@ -26,7 +26,12 @@ class ValidationCriteria:
     min_train_win_rate_days: float = 0.5
     min_test_hit_rate: float = 0.53
     min_test_win_rate_days: float = 0.55
+    min_recent_dates: int = 12
+    min_recent_alpha: float = 0.003
+    min_recent_hit_rate: float = 0.53
+    min_recent_win_rate_days: float = 0.55
     split_ratio: float = 0.67
+    recent_ratio: float = 0.25
     train_candidate_limit_per_side: int = 20
 
 
@@ -164,6 +169,14 @@ def _split_dates(rows: pd.DataFrame, split_ratio: float) -> tuple[set[str], set[
     return set(dates[:split_pos]), set(dates[split_pos:])
 
 
+def _tail_dates(rows: pd.DataFrame, ratio: float) -> set[str]:
+    dates = sorted(str(value) for value in rows["eval_date"].dropna().unique())
+    if not dates:
+        return set()
+    count = max(1, int(len(dates) * ratio))
+    return set(dates[-count:])
+
+
 def _train_score(metrics: dict[str, float | int]) -> float:
     return (
         float(metrics["avg_alpha"])
@@ -278,8 +291,10 @@ def validate_major_force_eval(
         }
 
     train_dates, test_dates = _split_dates(rows, cfg.split_ratio)
+    recent_dates = _tail_dates(rows, cfg.recent_ratio)
     train_rows = rows[rows["eval_date"].astype(str).isin(train_dates)]
     test_rows = rows[rows["eval_date"].astype(str).isin(test_dates)]
+    recent_rows = rows[rows["eval_date"].astype(str).isin(recent_dates)]
     train_passed: list[dict[str, object]] = []
 
     for rule in _rule_candidates(rows):
@@ -294,10 +309,12 @@ def validate_major_force_eval(
         if train_metrics["win_rate_days"] < cfg.min_train_win_rate_days:
             continue
         test_metrics = _evaluate_filtered(_filter_rows(test_rows, rule), side)
+        recent_metrics = _evaluate_filtered(_filter_rows(recent_rows, rule), side)
         record = {
             **rule,
             "train": train_metrics,
             "test": test_metrics,
+            "recent": recent_metrics,
             "score": _train_score(train_metrics),
             "test_score": float(test_metrics["avg_alpha"]) + float(test_metrics["avg_hit_rate"]) / 100.0,
         }
@@ -337,6 +354,10 @@ def validate_major_force_eval(
                 and test_metrics["avg_alpha"] >= cfg.min_test_alpha
                 and test_metrics["avg_hit_rate"] >= cfg.min_test_hit_rate
                 and test_metrics["win_rate_days"] >= cfg.min_test_win_rate_days
+                and item["recent"]["date_count"] >= cfg.min_recent_dates
+                and item["recent"]["avg_alpha"] >= cfg.min_recent_alpha
+                and item["recent"]["avg_hit_rate"] >= cfg.min_recent_hit_rate
+                and item["recent"]["win_rate_days"] >= cfg.min_recent_win_rate_days
             ):
                 side_validated.append({**item, "status": "validated"})
         chosen.extend(side_validated[:max_rules_per_side])
@@ -344,6 +365,7 @@ def validate_major_force_eval(
     message = (
         f"Validated {len(chosen)} rule(s) with train/test split "
         f"{len(train_dates)}/{len(test_dates)} dates; "
+        f"recent robustness window {len(recent_dates)} dates; "
         f"tested top {cfg.train_candidate_limit_per_side} train-selected candidate(s) per side."
     )
     return {
@@ -352,6 +374,7 @@ def validate_major_force_eval(
         "criteria": asdict(cfg),
         "train_date_count": len(train_dates),
         "test_date_count": len(test_dates),
+        "recent_date_count": len(recent_dates),
         "train_passed_count": len(train_passed),
         "rules": chosen,
         "best_rules": best_rows[:20],
@@ -374,7 +397,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--min-train-win-rate-days", type=float, default=0.5)
     parser.add_argument("--min-test-hit-rate", type=float, default=0.53)
     parser.add_argument("--min-test-win-rate-days", type=float, default=0.55)
+    parser.add_argument("--min-recent-dates", type=int, default=12)
+    parser.add_argument("--min-recent-alpha", type=float, default=0.003)
+    parser.add_argument("--min-recent-hit-rate", type=float, default=0.53)
+    parser.add_argument("--min-recent-win-rate-days", type=float, default=0.55)
     parser.add_argument("--split-ratio", type=float, default=0.67)
+    parser.add_argument("--recent-ratio", type=float, default=0.25)
     parser.add_argument("--train-candidate-limit-per-side", type=int, default=20)
     parser.add_argument("--max-rules-per-side", type=int, default=1)
     return parser.parse_args(argv)
@@ -391,7 +419,12 @@ def main(argv: list[str] | None = None) -> int:
         min_train_win_rate_days=args.min_train_win_rate_days,
         min_test_hit_rate=args.min_test_hit_rate,
         min_test_win_rate_days=args.min_test_win_rate_days,
+        min_recent_dates=max(1, args.min_recent_dates),
+        min_recent_alpha=args.min_recent_alpha,
+        min_recent_hit_rate=args.min_recent_hit_rate,
+        min_recent_win_rate_days=args.min_recent_win_rate_days,
         split_ratio=max(0.1, min(0.9, args.split_ratio)),
+        recent_ratio=max(0.05, min(0.5, args.recent_ratio)),
         train_candidate_limit_per_side=max(1, args.train_candidate_limit_per_side),
     )
     payload = validate_major_force_eval(
