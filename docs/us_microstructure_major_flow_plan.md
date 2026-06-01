@@ -465,7 +465,9 @@ Implemented status as of 2026-06-01:
   ledger: `signal_events.parquet`, `forward_returns.parquet`,
   `rule_metrics.csv`, and `active_gate.json`. It promotes only after the
   configured sample-size, 5-day alpha, hit-rate, recent hit-rate, Wilson lower
-  bound, and symbol-concentration gates pass.
+  bound, and symbol-concentration gates pass. The ledger only consumes
+  reportable `watch`/`high` signals with `data_quality_pass=true`; diagnostic
+  or low-coverage rows are not allowed to train the confidence gate.
 - `scripts/update_us_microstructure_prices.py` uses Futu OpenD `K_DAY` data to
   maintain `validation/prices/us_daily_prices.csv` and parquet. This is the
   daily close-price source used to turn signal events into forward-return labels.

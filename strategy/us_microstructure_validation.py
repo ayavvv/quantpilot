@@ -96,18 +96,42 @@ def load_signal_events(
         return pd.DataFrame()
     events["symbol"] = events["symbol"].map(normalize_us_symbol)
     events["signal_date"] = events["signal_date"].astype(str).str[:10]
-    events["side"] = events.get("side", "").astype(str).str.lower()
+    if "side" in events.columns:
+        events["side"] = events["side"].astype(str).str.lower()
+    else:
+        events["side"] = ""
     events["side_score"] = pd.to_numeric(events.get("side_score", np.nan), errors="coerce")
+    if "confidence" in events.columns:
+        events["confidence"] = events["confidence"].astype(str).str.lower()
+    else:
+        events["confidence"] = ""
+    if "data_quality_pass" in events.columns:
+        events["data_quality_pass"] = events["data_quality_pass"].astype(str).str.lower().isin({"1", "true", "yes", "y"})
+    else:
+        events["data_quality_pass"] = False
     events = events[
         (events["symbol"] != "")
         & (events["signal_date"].str.len() == 10)
         & (events["side"].isin({"accumulation", "distribution"}))
         & (events["side_score"] >= float(min_event_score))
+        & (events["confidence"].isin({"watch", "high"}))
+        & (events["data_quality_pass"])
     ].copy()
     if events.empty:
         return pd.DataFrame()
     events["event_id"] = events["signal_date"] + "|" + events["symbol"] + "|" + events["side"]
-    keep_order = ["event_id", "signal_date", "symbol", "side", "side_score", "rank", "confidence", "stage", "reason"]
+    keep_order = [
+        "event_id",
+        "signal_date",
+        "symbol",
+        "side",
+        "side_score",
+        "rank",
+        "confidence",
+        "stage",
+        "reason",
+        "data_quality_pass",
+    ]
     for column in keep_order:
         if column not in events.columns:
             events[column] = np.nan

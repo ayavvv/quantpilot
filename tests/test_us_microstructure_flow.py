@@ -402,6 +402,7 @@ def test_forward_validation_builds_active_gate_from_price_csv(tmp_path):
                 "confidence": "watch",
                 "stage": "accumulation_watch",
                 "reason": "test",
+                "data_quality_pass": True,
             },
             {
                 "symbol": "US.MSFT",
@@ -411,6 +412,7 @@ def test_forward_validation_builds_active_gate_from_price_csv(tmp_path):
                 "confidence": "watch",
                 "stage": "accumulation_watch",
                 "reason": "test",
+                "data_quality_pass": True,
             },
         ],
     )
@@ -459,6 +461,7 @@ def test_validation_script_writes_warmup_gate_without_future_prices(tmp_path):
                 "confidence": "watch",
                 "stage": "accumulation_watch",
                 "reason": "test",
+                "data_quality_pass": True,
             }
         ],
     )
@@ -482,6 +485,8 @@ def test_price_symbol_universe_includes_defaults_explicit_signals_and_benchmark(
                 "side": "accumulation",
                 "side_score": 88,
                 "rank": 1,
+                "confidence": "watch",
+                "data_quality_pass": True,
             }
         ],
     )
@@ -494,6 +499,43 @@ def test_price_symbol_universe_includes_defaults_explicit_signals_and_benchmark(
     )
 
     assert symbols == ["US.SPY", "US.NVDA", "US.AAPL"]
+
+
+def test_load_signal_events_requires_reportable_quality_signals(tmp_path):
+    signal_path = _write_signal(
+        tmp_path,
+        "2026-01-02",
+        [
+            {
+                "symbol": "US.AAPL",
+                "side": "accumulation",
+                "side_score": 90,
+                "rank": 1,
+                "confidence": "watch",
+                "data_quality_pass": True,
+            },
+            {
+                "symbol": "US.NVDA",
+                "side": "accumulation",
+                "side_score": 92,
+                "rank": 2,
+                "confidence": "watch",
+                "data_quality_pass": False,
+            },
+            {
+                "symbol": "US.MSFT",
+                "side": "distribution",
+                "side_score": 91,
+                "rank": 3,
+                "confidence": "diagnostic",
+                "data_quality_pass": True,
+            },
+        ],
+    )
+
+    events = load_signal_events([signal_path], min_event_score=70)
+
+    assert events["symbol"].tolist() == ["US.AAPL"]
 
 
 def test_update_price_history_merges_existing_and_fetcher_rows(tmp_path):
