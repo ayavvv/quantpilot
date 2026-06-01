@@ -411,10 +411,28 @@ Phase 4: production gate
 Build:
 
 - `scripts/collect_us_microstructure.py`
-- `scripts/sync_us_microstructure_to_nas.sh`
 - `strategy/us_microstructure_features.py`
 - `strategy/us_microstructure_signals.py`
 - `scripts/report_us_microstructure_flow.py`
+- `scripts/run_us_microstructure_report.sh`
+
+Implemented status as of 2026-06-01:
+
+- `scripts/collect_us_microstructure.py` collects Futu `TICKER`,
+  `ORDER_BOOK`, and `QUOTE` data into local parquet batches and mirrors them to
+  NAS with `ssh+tar`.
+- `strategy/us_microstructure_features.py` aggregates raw trades, order book,
+  and quotes into one-minute tape/book/impact features. Futu trade timestamps
+  are interpreted as US Eastern time and normalized to UTC so they align with
+  collector receive-time book snapshots.
+- `strategy/us_microstructure_signals.py` scores accumulation and distribution
+  candidates, but only emits `high` confidence when a validation gate is
+  promoted. Without `validation/active_gate.json`, candidates stay
+  `warmup`/`diagnostic` or `watch`.
+- `scripts/report_us_microstructure_flow.py` writes feature parquet, signal CSV,
+  status JSON, and Markdown/HTML reports, then mirrors report artifacts to NAS.
+- `scripts/run_us_microstructure_report.sh` is the Mac-side entrypoint for cron
+  or launchd. It sends email only when `US_MICROSTRUCTURE_SEND_EMAIL=true`.
 
 Start with a fixed universe file:
 
