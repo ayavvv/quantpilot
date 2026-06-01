@@ -205,6 +205,33 @@ def load_shadow_signal_events(
     return _finalize_events(events, scope="shadow")
 
 
+def load_exploration_signal_events(
+    signal_files: Iterable[str | Path],
+    *,
+    min_event_score: float = 50.0,
+) -> pd.DataFrame:
+    """Load broader final, data-quality-passing events for threshold research.
+
+    Exploration events are intentionally not used to promote the official
+    high-confidence gate. They make score-threshold calibration observable when
+    the strict official and near-miss ledgers are starved.
+    """
+
+    events = _load_normalized_signal_rows(signal_files)
+    if events.empty:
+        return pd.DataFrame()
+    events = events[
+        (events["symbol"] != "")
+        & (events["signal_date"].str.len() == 10)
+        & (events["side"].isin({"accumulation", "distribution"}))
+        & (events["side_score"] >= float(min_event_score))
+        & (events["confidence"].isin({"diagnostic", "watch", "high"}))
+        & (events["is_final_report"])
+        & (events["data_quality_pass"])
+    ].copy()
+    return _finalize_events(events, scope="exploration")
+
+
 def _code_to_fname(code: str) -> str:
     replace_names = ["CON", "PRN", "AUX", "NUL"] + [f"COM{i}" for i in range(10)] + [f"LPT{i}" for i in range(10)]
     if str(code).upper() in replace_names:

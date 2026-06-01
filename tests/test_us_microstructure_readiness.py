@@ -40,6 +40,9 @@ def test_readiness_snapshot_accepts_ready_warmup_system(tmp_path):
             "shadow_min_event_score": 65,
             "shadow_event_count": 3,
             "shadow_forward_return_count": 6,
+            "exploration_min_event_score": 50,
+            "exploration_event_count": 7,
+            "exploration_forward_return_count": 14,
             "price_symbol_count": 15,
             "reason": "collecting samples",
         },
@@ -78,6 +81,9 @@ def test_readiness_snapshot_accepts_ready_warmup_system(tmp_path):
     assert snapshot["checks"]["validation_gate"]["shadow_min_event_score"] == 65
     assert snapshot["checks"]["validation_gate"]["shadow_event_count"] == 3
     assert snapshot["checks"]["validation_gate"]["shadow_forward_return_count"] == 6
+    assert snapshot["checks"]["validation_gate"]["exploration_min_event_score"] == 50
+    assert snapshot["checks"]["validation_gate"]["exploration_event_count"] == 7
+    assert snapshot["checks"]["validation_gate"]["exploration_forward_return_count"] == 14
     assert snapshot["checks"]["validation_gate"]["price_symbol_count"] == 15
 
 

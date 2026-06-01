@@ -18,6 +18,7 @@ from strategy.us_microstructure_validation import (
     discover_signal_files,
     load_price_history_from_csv,
     load_price_history_from_qlib,
+    load_exploration_signal_events,
     load_shadow_signal_events,
     load_signal_events,
     merge_price_history,
@@ -67,6 +68,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--shadow-min-event-score",
         type=float,
         default=float(os.environ.get("US_MICROSTRUCTURE_SHADOW_VALIDATION_MIN_SCORE", "65")),
+    )
+    parser.add_argument(
+        "--exploration-min-event-score",
+        type=float,
+        default=float(os.environ.get("US_MICROSTRUCTURE_EXPLORATION_VALIDATION_MIN_SCORE", "50")),
     )
     parser.add_argument(
         "--min-signal-days-per-side",
@@ -127,11 +133,32 @@ def main(argv: list[str] | None = None) -> int:
         max_symbol_sample_share=cfg.max_symbol_sample_share,
     )
     shadow_events = load_shadow_signal_events(signal_files, min_event_score=shadow_cfg.min_event_score)
+    exploration_cfg = ForwardValidationConfig(
+        horizons=cfg.horizons,
+        benchmark=cfg.benchmark,
+        entry_lag_days=cfg.entry_lag_days,
+        min_event_score=args.exploration_min_event_score,
+        promotion_horizon=cfg.promotion_horizon,
+        min_signal_days_per_side=cfg.min_signal_days_per_side,
+        min_observations_per_side=cfg.min_observations_per_side,
+        min_alpha=cfg.min_alpha,
+        min_hit_rate=cfg.min_hit_rate,
+        min_recent_hit_rate=cfg.min_recent_hit_rate,
+        recent_signal_days=cfg.recent_signal_days,
+        min_wilson_lower=cfg.min_wilson_lower,
+        max_symbol_sample_share=cfg.max_symbol_sample_share,
+    )
+    exploration_events = load_exploration_signal_events(
+        signal_files,
+        min_event_score=exploration_cfg.min_event_score,
+    )
     symbols = {cfg.benchmark}
     if not events.empty:
         symbols.update(events["symbol"].tolist())
     if not shadow_events.empty:
         symbols.update(shadow_events["symbol"].tolist())
+    if not exploration_events.empty:
+        symbols.update(exploration_events["symbol"].tolist())
     symbols = sorted(symbols)
 
     csv_prices = load_price_history_from_csv(price_csv) if price_csv else {}
@@ -141,6 +168,8 @@ def main(argv: list[str] | None = None) -> int:
     metrics = build_rule_metrics(forward_returns, config=cfg)
     shadow_forward_returns = compute_forward_returns(shadow_events, prices, config=shadow_cfg)
     shadow_metrics = build_rule_metrics(shadow_forward_returns, config=shadow_cfg)
+    exploration_forward_returns = compute_forward_returns(exploration_events, prices, config=exploration_cfg)
+    exploration_metrics = build_rule_metrics(exploration_forward_returns, config=exploration_cfg)
     gate = build_active_gate(metrics, config=cfg)
     gate["signal_file_count"] = len(signal_files)
     gate["event_count"] = int(len(events))
@@ -148,6 +177,9 @@ def main(argv: list[str] | None = None) -> int:
     gate["shadow_min_event_score"] = float(shadow_cfg.min_event_score)
     gate["shadow_event_count"] = int(len(shadow_events))
     gate["shadow_forward_return_count"] = int(len(shadow_forward_returns))
+    gate["exploration_min_event_score"] = float(exploration_cfg.min_event_score)
+    gate["exploration_event_count"] = int(len(exploration_events))
+    gate["exploration_forward_return_count"] = int(len(exploration_forward_returns))
     gate["price_symbol_count"] = int(len(prices))
     gate["price_sources"] = {
         "qlib_dir": str(Path(args.qlib_dir).expanduser()),
@@ -165,9 +197,15 @@ def main(argv: list[str] | None = None) -> int:
     outputs["shadow_signal_events"] = validation_dir / "shadow_signal_events.parquet"
     outputs["shadow_forward_returns"] = validation_dir / "shadow_forward_returns.parquet"
     outputs["shadow_rule_metrics_csv"] = validation_dir / "shadow_rule_metrics.csv"
+    outputs["exploration_signal_events"] = validation_dir / "exploration_signal_events.parquet"
+    outputs["exploration_forward_returns"] = validation_dir / "exploration_forward_returns.parquet"
+    outputs["exploration_rule_metrics_csv"] = validation_dir / "exploration_rule_metrics.csv"
     shadow_events.to_parquet(outputs["shadow_signal_events"], index=False)
     shadow_forward_returns.to_parquet(outputs["shadow_forward_returns"], index=False)
     shadow_metrics.to_csv(outputs["shadow_rule_metrics_csv"], index=False)
+    exploration_events.to_parquet(outputs["exploration_signal_events"], index=False)
+    exploration_forward_returns.to_parquet(outputs["exploration_forward_returns"], index=False)
+    exploration_metrics.to_csv(outputs["exploration_rule_metrics_csv"], index=False)
     if not args.no_nas_sync:
         sync_results = _sync_outputs(list(outputs.values()), base_dir=base_dir, nas_host=args.nas_host, nas_dir=args.nas_dir)
         gate["nas_sync"] = sync_results
@@ -183,6 +221,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Forward returns: {len(forward_returns)}")
     print(f"Shadow events: {len(shadow_events)}")
     print(f"Shadow forward returns: {len(shadow_forward_returns)}")
+    print(f"Exploration events: {len(exploration_events)}")
+    print(f"Exploration forward returns: {len(exploration_forward_returns)}")
     print(f"Gate: state={gate.get('state')} validated={gate.get('validated')} reason={gate.get('reason')}")
     print(f"Wrote gate: {outputs['active_gate']}")
     return 0

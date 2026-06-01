@@ -490,7 +490,13 @@ Implemented status as of 2026-06-01:
   candidates (`shadow_signal_events.parquet`, `shadow_forward_returns.parquet`,
   and `shadow_rule_metrics.csv`). Shadow rows are not allowed to promote
   `active_gate.json`; they exist only to calibrate whether the strict official
-  score/confidence filters are starving validation samples.
+  score/confidence filters are starving validation samples. A broader
+  exploration ledger (`exploration_signal_events.parquet`,
+  `exploration_forward_returns.parquet`, and `exploration_rule_metrics.csv`)
+  captures final, data-quality-passing candidates above a lower research score
+  floor, default 50. Exploration rows are also blocked from promotion; they only
+  make score-threshold calibration observable when official/shadow samples are
+  empty.
 - `scripts/repair_us_microstructure_nas_uploads.py` retries failed, skipped, or
   otherwise non-`ok` raw-file uploads recorded in manifest rows, updates the
   manifest rows after successful repair, and mirrors the repaired manifest back

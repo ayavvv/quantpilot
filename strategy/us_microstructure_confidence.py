@@ -143,6 +143,8 @@ def build_confidence_gap(
         "official_forward_return_count": _int(gate.get("forward_return_count")),
         "shadow_event_count": _int(gate.get("shadow_event_count")),
         "shadow_forward_return_count": _int(gate.get("shadow_forward_return_count")),
+        "exploration_event_count": _int(gate.get("exploration_event_count")),
+        "exploration_forward_return_count": _int(gate.get("exploration_forward_return_count")),
         "validation_eligible_count": _int(eligibility.get("validation_eligible_count")),
         "validation_eligible_if_final_count": _int(eligibility.get("validation_eligible_if_final_count")),
         "score_pass_count": _int(eligibility.get("score_pass_count")),

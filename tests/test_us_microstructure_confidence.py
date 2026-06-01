@@ -31,6 +31,8 @@ def test_confidence_gap_reports_validation_and_final_report_blockers():
             },
             "event_count": 12,
             "forward_return_count": 24,
+            "exploration_event_count": 5,
+            "exploration_forward_return_count": 10,
         },
         data_quality={"high_confidence_data_quality_ok": False, "nas_upload_complete": True},
         validation_eligibility={"validation_eligible_if_final_count": 3},
@@ -53,6 +55,8 @@ def test_confidence_gap_reports_validation_and_final_report_blockers():
     assert round(acc["hit_rate_gap"], 2) == 0.06
     assert round(acc["concentration_excess"], 2) == 0.2
     assert summary["validation_eligible_if_final_count"] == 3
+    assert summary["exploration_event_count"] == 5
+    assert summary["exploration_forward_return_count"] == 10
     assert summary["cumulative_intraday_replay"]["quality_event_count"] == 5
 
 

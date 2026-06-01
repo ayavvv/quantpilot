@@ -16,6 +16,7 @@ from strategy.us_microstructure_validation import (
     build_rule_metrics,
     compute_forward_returns,
     load_price_history_from_csv,
+    load_exploration_signal_events,
     load_shadow_signal_events,
     load_signal_events,
 )
@@ -1099,6 +1100,67 @@ def test_validation_script_writes_shadow_near_threshold_events(tmp_path):
     assert shadow_returns.iloc[0]["horizon"] == 1
 
 
+def test_validation_script_writes_exploration_events_below_shadow_threshold(tmp_path):
+    _write_signal(
+        tmp_path,
+        "2026-01-02",
+        [
+            {
+                "symbol": "US.AAPL",
+                "side": "distribution",
+                "side_score": 55,
+                "rank": 1,
+                "confidence": "diagnostic",
+                "stage": "distribution_diagnostic",
+                "reason": "exploration threshold",
+                "data_quality_pass": True,
+            }
+        ],
+    )
+    price_dir = tmp_path / "validation" / "prices"
+    price_dir.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {"date": "2026-01-02", "symbol": "US.AAPL", "close": 100},
+            {"date": "2026-01-05", "symbol": "US.AAPL", "close": 99},
+            {"date": "2026-01-06", "symbol": "US.AAPL", "close": 97},
+            {"date": "2026-01-02", "symbol": "US.SPY", "close": 500},
+            {"date": "2026-01-05", "symbol": "US.SPY", "close": 501},
+            {"date": "2026-01-06", "symbol": "US.SPY", "close": 502},
+        ]
+    ).to_csv(price_dir / "us_daily_prices.csv", index=False)
+
+    validate_script.main(
+        [
+            "--base-dir",
+            str(tmp_path),
+            "--qlib-dir",
+            str(tmp_path / "missing_qlib"),
+            "--horizons",
+            "1",
+            "--shadow-min-event-score",
+            "65",
+            "--exploration-min-event-score",
+            "50",
+            "--no-nas-sync",
+        ]
+    )
+
+    gate = json.loads((tmp_path / "validation" / "active_gate.json").read_text(encoding="utf-8"))
+    exploration_events = pd.read_parquet(tmp_path / "validation" / "exploration_signal_events.parquet")
+    exploration_returns = pd.read_parquet(tmp_path / "validation" / "exploration_forward_returns.parquet")
+    shadow_events = pd.read_parquet(tmp_path / "validation" / "shadow_signal_events.parquet")
+
+    assert gate["event_count"] == 0
+    assert gate["shadow_event_count"] == 0
+    assert gate["exploration_min_event_score"] == 50
+    assert gate["exploration_event_count"] == 1
+    assert gate["exploration_forward_return_count"] == 1
+    assert shadow_events.empty
+    assert exploration_events.iloc[0]["validation_scope"] == "exploration"
+    assert exploration_returns.iloc[0]["horizon"] == 1
+
+
 def test_price_symbol_universe_includes_defaults_explicit_signals_and_benchmark(tmp_path):
     _write_signal(
         tmp_path,
@@ -1239,6 +1301,36 @@ def test_load_shadow_signal_events_keeps_final_quality_near_threshold_rows(tmp_p
     assert shadow["symbol"].tolist() == ["US.AAPL"]
     assert shadow.iloc[0]["validation_scope"] == "shadow"
     assert shadow.iloc[0]["confidence"] == "diagnostic"
+
+
+def test_load_exploration_signal_events_keeps_broader_final_quality_rows(tmp_path):
+    signal_path = _write_signal(
+        tmp_path,
+        "2026-01-02",
+        [
+            {
+                "symbol": "US.AAPL",
+                "side": "accumulation",
+                "side_score": 55,
+                "rank": 1,
+                "confidence": "diagnostic",
+                "data_quality_pass": True,
+            },
+            {
+                "symbol": "US.MSFT",
+                "side": "accumulation",
+                "side_score": 49,
+                "rank": 2,
+                "confidence": "diagnostic",
+                "data_quality_pass": True,
+            },
+        ],
+    )
+
+    exploration = load_exploration_signal_events([signal_path], min_event_score=50)
+
+    assert exploration["symbol"].tolist() == ["US.AAPL"]
+    assert exploration.iloc[0]["validation_scope"] == "exploration"
 
 
 def test_update_price_history_merges_existing_and_fetcher_rows(tmp_path):

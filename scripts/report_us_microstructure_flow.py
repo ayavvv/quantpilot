@@ -412,6 +412,9 @@ def _validation_progress(validation_gate: dict[str, object]) -> dict[str, object
         "shadow_min_event_score": _number(validation_gate.get("shadow_min_event_score"), 65.0),
         "shadow_event_count": _count(validation_gate.get("shadow_event_count")),
         "shadow_forward_return_count": _count(validation_gate.get("shadow_forward_return_count")),
+        "exploration_min_event_score": _number(validation_gate.get("exploration_min_event_score"), 50.0),
+        "exploration_event_count": _count(validation_gate.get("exploration_event_count")),
+        "exploration_forward_return_count": _count(validation_gate.get("exploration_forward_return_count")),
         "price_symbol_count": _count(validation_gate.get("price_symbol_count")),
         "promotion_horizon": _count(criteria.get("promotion_horizon")),
         "benchmark": str(criteria.get("benchmark") or ""),
@@ -707,6 +710,7 @@ def _confidence_gap_markdown(summary: dict[str, object]) -> str:
         + ", ".join(f"{key}={bool(value)}" for key, value in sorted(requirements.items())),
         f"- Official validation samples: `{summary.get('official_event_count', 0)}` events, `{summary.get('official_forward_return_count', 0)}` forward-return rows",
         f"- Shadow samples: `{summary.get('shadow_event_count', 0)}` events, `{summary.get('shadow_forward_return_count', 0)}` forward-return rows",
+        f"- Exploration samples: `{summary.get('exploration_event_count', 0)}` events, `{summary.get('exploration_forward_return_count', 0)}` forward-return rows",
         f"- Current report eligible samples: `{summary.get('validation_eligible_count', 0)}` now; `{summary.get('validation_eligible_if_final_count', 0)}` if final",
         f"- Cumulative intraday replay: `{replay.get('date_count', 0)}` dates, `{replay.get('quality_event_count', 0)}` quality events, `{replay.get('quality_return_count', 0)}` quality returns",
     ]
@@ -810,6 +814,7 @@ def render_markdown_report(
         f"- Gate reason: {validation_gate.get('reason', '')}",
         f"- Validation samples: `{validation_progress.get('event_count', 0)}` events, `{validation_progress.get('forward_return_count', 0)}` forward-return rows",
         f"- Shadow calibration samples: `{validation_progress.get('shadow_event_count', 0)}` events, `{validation_progress.get('shadow_forward_return_count', 0)}` forward-return rows; min score `{_score(validation_progress.get('shadow_min_event_score'))}`",
+        f"- Exploration calibration samples: `{validation_progress.get('exploration_event_count', 0)}` events, `{validation_progress.get('exploration_forward_return_count', 0)}` forward-return rows; min score `{_score(validation_progress.get('exploration_min_event_score'))}`",
         f"- Promotion horizon: `{validation_progress.get('promotion_horizon', 0)}d`; benchmark: `{validation_progress.get('benchmark') or 'n/a'}`",
         f"- Symbols eligible for high-confidence reporting: `{data_quality.get('eligible_symbol_count', 0)}` / `{data_quality.get('symbol_count', 0)}`",
         f"- NAS raw uploads complete: `{bool(data_quality.get('nas_upload_complete'))}`; manifest rows: `{data_quality.get('manifest_count', 0)}`",
@@ -1068,7 +1073,8 @@ def _confidence_gap_html(summary: dict[str, object]) -> str:
         "requirements={requirements}; blockers={blockers}</div>"
         "<div class='gate'><strong>Validation sample gap:</strong> official_events={official_events}; "
         "official_forward_returns={official_returns}; shadow_events={shadow_events}; "
-        "shadow_forward_returns={shadow_returns}; eligible_now={eligible}; eligible_if_final={eligible_if_final}; "
+        "shadow_forward_returns={shadow_returns}; exploration_events={exploration_events}; "
+        "exploration_forward_returns={exploration_returns}; eligible_now={eligible}; eligible_if_final={eligible_if_final}; "
         "cumulative_replay_dates={replay_dates}; cumulative_quality_events={replay_events}; "
         "cumulative_quality_returns={replay_returns}</div>{table}"
     ).format(
@@ -1079,6 +1085,8 @@ def _confidence_gap_html(summary: dict[str, object]) -> str:
         official_returns=int(summary.get("official_forward_return_count") or 0),
         shadow_events=int(summary.get("shadow_event_count") or 0),
         shadow_returns=int(summary.get("shadow_forward_return_count") or 0),
+        exploration_events=int(summary.get("exploration_event_count") or 0),
+        exploration_returns=int(summary.get("exploration_forward_return_count") or 0),
         eligible=int(summary.get("validation_eligible_count") or 0),
         eligible_if_final=int(summary.get("validation_eligible_if_final_count") or 0),
         replay_dates=int(replay.get("date_count") or 0),
@@ -1184,6 +1192,7 @@ tr.sell {{ background: #fff1f2; }}
 <div class="gate"><strong>Validation gate:</strong> validated={bool(validation_gate.get('validated'))}; {reason}</div>
 <div class="gate"><strong>Validation samples:</strong> events={validation_progress.get('event_count', 0)}; forward_returns={validation_progress.get('forward_return_count', 0)}; promotion_horizon={validation_progress.get('promotion_horizon', 0)}d; benchmark={html.escape(str(validation_progress.get('benchmark') or 'n/a'))}</div>
 <div class="gate"><strong>Shadow calibration:</strong> events={validation_progress.get('shadow_event_count', 0)}; forward_returns={validation_progress.get('shadow_forward_return_count', 0)}; min_score={_score(validation_progress.get('shadow_min_event_score'))}</div>
+<div class="gate"><strong>Exploration calibration:</strong> events={validation_progress.get('exploration_event_count', 0)}; forward_returns={validation_progress.get('exploration_forward_return_count', 0)}; min_score={_score(validation_progress.get('exploration_min_event_score'))}</div>
 <div class="gate"><strong>Data quality gate:</strong> eligible_symbols={data_quality.get('eligible_symbol_count', 0)}/{data_quality.get('symbol_count', 0)}; median trade/book coverage={_pct(data_quality.get('median_trade_coverage_ratio_regular'))}/{_pct(data_quality.get('median_book_coverage_ratio_regular'))}; nas_upload_complete={bool(data_quality.get('nas_upload_complete'))}; manifest_rows={data_quality.get('manifest_count', 0)}</div>
 <div class="gate"><strong>Duplicate audit:</strong> duplicate_sequence_rows={data_quality.get('duplicate_sequence_count', 0)}/{data_quality.get('raw_trade_count', 0)} ({_pct(data_quality.get('duplicate_sequence_rate'))})</div>
 <h2>Confidence Readiness</h2>
