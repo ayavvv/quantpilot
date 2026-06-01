@@ -103,6 +103,13 @@ def _event_range(df: pd.DataFrame) -> tuple[str, str]:
     return "", ""
 
 
+def _event_date(value: object) -> str:
+    text = str(value or "").strip()
+    if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+        return text[:10]
+    return ""
+
+
 def _partition_path(base_dir: Path, kind: str, date: str, symbol: str, run_id: str, batch_index: int) -> Path:
     return (
         base_dir
@@ -261,11 +268,22 @@ def _flatten_order_book(raw: dict[str, Any], *, symbol: str, recv_time: str, lev
     return row
 
 
-def _prepare_trade_rows(df: pd.DataFrame, *, symbol: str, recv_time: str, seen_sequences: set[str]) -> list[dict[str, Any]]:
+def _prepare_trade_rows(
+    df: pd.DataFrame,
+    *,
+    symbol: str,
+    recv_time: str,
+    seen_sequences: set[str],
+    collection_date: str = "",
+) -> list[dict[str, Any]]:
     if df.empty:
         return []
     rows: list[dict[str, Any]] = []
     for raw in df.to_dict("records"):
+        event_time = raw.get("time", "")
+        event_date = _event_date(event_time)
+        if collection_date and event_date and event_date != collection_date:
+            continue
         sequence = str(raw.get("sequence") or "")
         if sequence and sequence in seen_sequences:
             continue
@@ -273,7 +291,7 @@ def _prepare_trade_rows(df: pd.DataFrame, *, symbol: str, recv_time: str, seen_s
             seen_sequences.add(sequence)
         item = dict(raw)
         item["symbol"] = symbol
-        item["event_time"] = item.get("time", "")
+        item["event_time"] = event_time
         item["recv_time"] = recv_time
         rows.append(item)
     return rows
@@ -403,7 +421,13 @@ def main(argv: list[str] | None = None) -> int:
                 ret, data = ctx.get_rt_ticker(symbol, num=1000)
                 if ret == RET_OK:
                     buffers["trades"].extend(
-                        _prepare_trade_rows(data, symbol=symbol, recv_time=recv_time, seen_sequences=seen_sequences[symbol])
+                        _prepare_trade_rows(
+                            data,
+                            symbol=symbol,
+                            recv_time=recv_time,
+                            seen_sequences=seen_sequences[symbol],
+                            collection_date=date,
+                        )
                     )
                 else:
                     print(f"WARNING: get_rt_ticker failed symbol={symbol}: {data}")

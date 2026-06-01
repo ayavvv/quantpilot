@@ -7,6 +7,7 @@ from scripts import report_us_microstructure_flow as report_script
 from scripts import update_us_microstructure_prices as price_script
 from scripts import validate_us_microstructure_flow as validate_script
 from strategy.us_microstructure_features import compute_microstructure_features
+from strategy.us_microstructure_features import read_microstructure_inputs
 from strategy.us_microstructure_signals import MicrostructureSignalConfig, score_microstructure_signals
 from strategy.us_microstructure_validation import (
     ForwardValidationConfig,
@@ -268,6 +269,35 @@ def test_report_script_writes_warmup_artifacts(tmp_path):
     assert status["high_count"] == 0
     assert "data_quality" in status
     assert status["data_quality"]["eligible_symbol_count"] == 0
+
+
+def test_read_microstructure_inputs_filters_stale_trades_from_date_partition(tmp_path):
+    _write_raw(
+        tmp_path,
+        "trades",
+        "US.AAPL",
+        [
+            {
+                "symbol": "US.AAPL",
+                "event_time": "2026-05-29 15:59:59.000",
+                "price": 99.0,
+                "volume": 100,
+                "turnover": 9_900.0,
+            },
+            {
+                "symbol": "US.AAPL",
+                "event_time": "2026-06-01 09:30:00.000",
+                "price": 100.0,
+                "volume": 100,
+                "turnover": 10_000.0,
+            },
+        ],
+    )
+
+    inputs = read_microstructure_inputs(tmp_path, date="2026-06-01", symbols=["AAPL"])
+
+    assert len(inputs["trades"]) == 1
+    assert inputs["trades"].iloc[0]["event_time"] == "2026-06-01 09:30:00.000"
 
 
 def _write_signal(base: Path, date: str, rows: list[dict]):

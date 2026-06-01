@@ -6,6 +6,7 @@ from scripts.collect_us_microstructure import (
     _flatten_order_book,
     _normalise_symbols,
     _partition_path,
+    _prepare_trade_rows,
     _sha256_file,
     _write_partition,
 )
@@ -66,6 +67,28 @@ def test_write_partition_groups_by_symbol_and_writes_parquet(tmp_path):
     loaded = pd.concat(pd.read_parquet(path) for path in paths)
     assert sorted(loaded["symbol"].unique()) == ["US.AAPL", "US.NVDA"]
     assert all(item["sha256"] == _sha256_file(Path(item["local_path"])) for item in manifest)
+
+
+def test_prepare_trade_rows_filters_stale_tickers_before_deduping():
+    seen = set()
+    rows = _prepare_trade_rows(
+        pd.DataFrame(
+            [
+                {"time": "2026-05-29 15:59:59.000", "sequence": 1, "price": 99.0},
+                {"time": "2026-06-01 09:30:00.000", "sequence": 1, "price": 100.0},
+                {"time": "2026-06-01 09:30:01.000", "sequence": 1, "price": 100.1},
+            ]
+        ),
+        symbol="US.AAPL",
+        recv_time="2026-06-01T13:30:01.000+00:00",
+        seen_sequences=seen,
+        collection_date="2026-06-01",
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["event_time"] == "2026-06-01 09:30:00.000"
+    assert rows[0]["price"] == 100.0
+    assert seen == {"1"}
 
 
 def test_partition_path_is_hive_style(tmp_path):

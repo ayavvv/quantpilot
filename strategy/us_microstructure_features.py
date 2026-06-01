@@ -76,7 +76,30 @@ def _read_kind(base_dir: Path, kind: str, date: str, symbols: list[str]) -> pd.D
         files.extend(sorted(root.glob("*.parquet")))
     if not files:
         return _empty_frame()
-    return pd.concat((pd.read_parquet(path) for path in files), ignore_index=True)
+    frame = pd.concat((pd.read_parquet(path) for path in files), ignore_index=True)
+    if kind == "trades":
+        frame = _filter_trade_partition_date(frame, date)
+    return frame
+
+
+def _date_prefix(series: pd.Series) -> pd.Series:
+    text = series.fillna("").astype(str).str.strip()
+    has_date = text.str.len().ge(10) & text.str[4:5].eq("-") & text.str[7:8].eq("-")
+    return text.str[:10].where(has_date, "")
+
+
+def _filter_trade_partition_date(df: pd.DataFrame, date: str) -> pd.DataFrame:
+    if df.empty or not date:
+        return df
+    source = None
+    for column in ("event_time", "time"):
+        if column in df.columns:
+            source = df[column]
+            break
+    if source is None:
+        return df
+    event_dates = _date_prefix(source)
+    return df[(event_dates == "") | (event_dates == date)].copy()
 
 
 def read_microstructure_inputs(

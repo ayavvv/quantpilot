@@ -433,7 +433,9 @@ Implemented status as of 2026-06-01:
 
 - `scripts/collect_us_microstructure.py` collects Futu `TICKER`,
   `ORDER_BOOK`, and `QUOTE` data into local parquet batches and mirrors them to
-  NAS with `ssh+tar`.
+  NAS with `ssh+tar`. Ticker rows whose Futu event date does not match the
+  collection date are skipped before de-duplication, because OpenD can return
+  the previous trading day's prints before the US open.
 - `scripts/run_us_microstructure_collect.sh` is the Mac-side collection
   wrapper. It loads `.env`, applies a lock, uses
   `config/us_microstructure_core_symbols.txt` by default, and runs the collector
@@ -442,7 +444,9 @@ Implemented status as of 2026-06-01:
   and quotes into one-minute tape/book/impact features. Futu trade timestamps
   are interpreted as US Eastern time and normalized to UTC so they align with
   collector receive-time book snapshots. It also writes separate trade,
-  order-book, quote, and combined regular-session coverage ratios.
+  order-book, quote, and combined regular-session coverage ratios. As a second
+  guard, the reader filters stale trade rows out of date partitions if they were
+  collected before this protection existed.
 - `strategy/us_microstructure_signals.py` scores accumulation and distribution
   candidates, but only emits `high` confidence when a validation gate is
   promoted for that side and both trade and order-book coverage gates pass.
