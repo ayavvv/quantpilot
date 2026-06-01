@@ -652,17 +652,30 @@ def _stealth_rule_validation_text(payload: dict) -> str:
     if not isinstance(rules, list) or not rules:
         return str(payload.get("message") or "No validated stealth rule available.")
     parts = []
+    validated_sides = set()
     for rule in rules:
         if not isinstance(rule, dict):
             continue
         test = rule.get("test") if isinstance(rule.get("test"), dict) else {}
-        side = str(rule.get("side") or "N/A")
+        side = str(rule.get("side") or "N/A").lower()
+        validated_sides.add(side)
         horizon = _safe_int(rule.get("horizon"), 0)
         parts.append(
             f"{side} {horizon}d: {_format_percent(test.get('avg_hit_rate'))} hit, "
             f"alpha {_format_percent(test.get('avg_alpha'))}, "
             f"n={_safe_int(test.get('date_count'), 0)} test dates"
         )
+    searched = payload.get("candidate_rule_count_by_side") if isinstance(payload, dict) else {}
+    train_passed = payload.get("train_passed_count_by_side") if isinstance(payload, dict) else {}
+    if isinstance(searched, dict) and isinstance(train_passed, dict):
+        for side in ["buy", "sell"]:
+            if side in validated_sides:
+                continue
+            searched_count = _safe_int(searched.get(side), 0)
+            if searched_count <= 0:
+                continue
+            train_count = _safe_int(train_passed.get(side), 0)
+            parts.append(f"{side}: no validated rule ({train_count} train-passed/{searched_count} searched)")
     return "; ".join(parts) if parts else str(payload.get("message") or "No validated stealth rule available.")
 
 

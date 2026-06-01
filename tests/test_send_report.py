@@ -392,6 +392,58 @@ def test_check_stealth_money_status_hides_unvalidated_candidates(tmp_path):
     assert "No validated stealth rule" in status["stealth_money_message"]
 
 
+def test_check_stealth_money_status_explains_missing_buy_rule(tmp_path):
+    major_csv = tmp_path / "major_force.csv"
+    major_csv.write_text(
+        "\n".join(
+            [
+                "code,date,score,rank,distribution_score,distribution_rank,stage,amount,close_location_10,reason",
+                "SH.600000,2026-05-29,91,1,20,300,accumulation_candidate,80000000,0.70,volume_expansion",
+                "SZ.000001,2026-05-29,45,300,95,1,distribution_risk,90000000,0.30,20d_negative_flow",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    summary_csv = tmp_path / "summary.csv"
+    summary_csv.write_text(
+        "signal_side,top_n,horizon,date_count,avg_hit_rate,avg_alpha\nsell,10,5,40,0.6,0.011\n",
+        encoding="utf-8",
+    )
+    validation_json = tmp_path / "validation.json"
+    validation_json.write_text(
+        send_report.json.dumps(
+            {
+                "validated": True,
+                "candidate_rule_count_by_side": {"buy": 3348, "sell": 5832},
+                "train_passed_count_by_side": {"buy": 28, "sell": 142},
+                "rules": [
+                    {
+                        "side": "sell",
+                        "horizon": 5,
+                        "rank_n": 10,
+                        "min_score": 92,
+                        "max_close_location_10": 0.35,
+                        "test": {"avg_hit_rate": 0.6, "avg_alpha": 0.011, "date_count": 40},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    status = send_report.check_stealth_money_status(
+        major_csv=major_csv,
+        eval_summary_csv=summary_csv,
+        validation_json=validation_json,
+    )
+
+    assert status["stealth_money_subject_summary"] == "Stealth 0 buy/1 sell"
+    assert status["stealth_money_buys"] == []
+    assert status["stealth_money_sells"][0]["code"] == "SZ.000001"
+    assert "sell 5d: 60.00% hit" in status["stealth_money_validation"]
+    assert "buy: no validated rule (28 train-passed/3348 searched)" in status["stealth_money_validation"]
+
+
 def test_build_report_subject_includes_stealth_summary():
     subject = send_report.build_report_subject(
         "2026-05-31",
