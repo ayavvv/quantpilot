@@ -37,6 +37,9 @@ def test_readiness_snapshot_accepts_ready_warmup_system(tmp_path):
             "signal_file_count": 2,
             "event_count": 0,
             "forward_return_count": 0,
+            "shadow_min_event_score": 65,
+            "shadow_event_count": 3,
+            "shadow_forward_return_count": 6,
             "price_symbol_count": 15,
             "reason": "collecting samples",
         },
@@ -69,6 +72,9 @@ def test_readiness_snapshot_accepts_ready_warmup_system(tmp_path):
     assert snapshot["checks"]["validation_gate"]["side_reasons"]["accumulation"] == "missing 5d validation metrics"
     assert snapshot["checks"]["validation_gate"]["criteria"]["promotion_horizon"] == 5
     assert snapshot["checks"]["validation_gate"]["signal_file_count"] == 2
+    assert snapshot["checks"]["validation_gate"]["shadow_min_event_score"] == 65
+    assert snapshot["checks"]["validation_gate"]["shadow_event_count"] == 3
+    assert snapshot["checks"]["validation_gate"]["shadow_forward_return_count"] == 6
     assert snapshot["checks"]["validation_gate"]["price_symbol_count"] == 15
 
 

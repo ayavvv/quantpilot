@@ -87,11 +87,7 @@ def discover_signal_files(base_dir: str | Path, *, start_date: str = "", end_dat
     return result
 
 
-def load_signal_events(
-    signal_files: Iterable[str | Path],
-    *,
-    min_event_score: float = 70.0,
-) -> pd.DataFrame:
+def _load_normalized_signal_rows(signal_files: Iterable[str | Path]) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
     for raw_path in signal_files:
         path = Path(raw_path).expanduser()
@@ -133,20 +129,18 @@ def load_signal_events(
     for column in EVENT_AUDIT_COLUMNS:
         if column in events.columns and column != "data_quality_pass":
             events[column] = pd.to_numeric(events[column], errors="coerce")
-    events = events[
-        (events["symbol"] != "")
-        & (events["signal_date"].str.len() == 10)
-        & (events["side"].isin({"accumulation", "distribution"}))
-        & (events["side_score"] >= float(min_event_score))
-        & (events["confidence"].isin({"watch", "high"}))
-        & (events["is_final_report"])
-        & (events["data_quality_pass"])
-    ].copy()
+    return events
+
+
+def _finalize_events(events: pd.DataFrame, *, scope: str) -> pd.DataFrame:
     if events.empty:
         return pd.DataFrame()
+    events = events.copy()
     events["event_id"] = events["signal_date"] + "|" + events["symbol"] + "|" + events["side"]
+    events["validation_scope"] = scope
     keep_order = [
         "event_id",
+        "validation_scope",
         "signal_date",
         "symbol",
         "side",
@@ -161,7 +155,54 @@ def load_signal_events(
             events[column] = np.nan
     events = events.sort_values(["signal_date", "side_score"], ascending=[True, False])
     events = events.drop_duplicates("event_id", keep="last")
-    return events.reset_index(drop=True)
+    return events[keep_order].reset_index(drop=True)
+
+
+def load_signal_events(
+    signal_files: Iterable[str | Path],
+    *,
+    min_event_score: float = 70.0,
+) -> pd.DataFrame:
+    events = _load_normalized_signal_rows(signal_files)
+    if events.empty:
+        return pd.DataFrame()
+    events = events[
+        (events["symbol"] != "")
+        & (events["signal_date"].str.len() == 10)
+        & (events["side"].isin({"accumulation", "distribution"}))
+        & (events["side_score"] >= float(min_event_score))
+        & (events["confidence"].isin({"watch", "high"}))
+        & (events["is_final_report"])
+        & (events["data_quality_pass"])
+    ].copy()
+    return _finalize_events(events, scope="official")
+
+
+def load_shadow_signal_events(
+    signal_files: Iterable[str | Path],
+    *,
+    min_event_score: float = 65.0,
+) -> pd.DataFrame:
+    """Load final, data-quality-passing near-threshold events for calibration.
+
+    Shadow events are not used to promote the high-confidence gate. They exist
+    to track whether near-miss signals have useful forward behavior before the
+    strict official event filter has enough samples.
+    """
+
+    events = _load_normalized_signal_rows(signal_files)
+    if events.empty:
+        return pd.DataFrame()
+    events = events[
+        (events["symbol"] != "")
+        & (events["signal_date"].str.len() == 10)
+        & (events["side"].isin({"accumulation", "distribution"}))
+        & (events["side_score"] >= float(min_event_score))
+        & (events["confidence"].isin({"diagnostic", "watch", "high"}))
+        & (events["is_final_report"])
+        & (events["data_quality_pass"])
+    ].copy()
+    return _finalize_events(events, scope="shadow")
 
 
 def _code_to_fname(code: str) -> str:

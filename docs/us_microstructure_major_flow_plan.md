@@ -483,7 +483,12 @@ Implemented status as of 2026-06-01:
 - `scripts/validate_us_microstructure_flow.py` updates the validation ledger
   from archived signal CSV files and daily close prices. It can read a
   `date,symbol,close` price CSV and/or Qlib daily close data. By default it
-  auto-detects `validation/prices/us_daily_prices.csv`.
+  auto-detects `validation/prices/us_daily_prices.csv`. It also writes a
+  separate shadow calibration ledger for final, data-quality-passing near-miss
+  candidates (`shadow_signal_events.parquet`, `shadow_forward_returns.parquet`,
+  and `shadow_rule_metrics.csv`). Shadow rows are not allowed to promote
+  `active_gate.json`; they exist only to calibrate whether the strict official
+  score/confidence filters are starving validation samples.
 - `scripts/report_us_microstructure_flow.py` writes feature parquet, signal CSV,
   per-symbol data-quality CSV, status JSON, and Markdown/HTML reports, then
   mirrors report artifacts to NAS. The status JSON and CSV record which symbols

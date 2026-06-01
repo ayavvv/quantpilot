@@ -16,6 +16,7 @@ from strategy.us_microstructure_validation import (
     build_rule_metrics,
     compute_forward_returns,
     load_price_history_from_csv,
+    load_shadow_signal_events,
     load_signal_events,
 )
 
@@ -718,6 +719,63 @@ def test_validation_script_writes_warmup_gate_without_future_prices(tmp_path):
     assert gate["forward_return_count"] == 0
 
 
+def test_validation_script_writes_shadow_near_threshold_events(tmp_path):
+    _write_signal(
+        tmp_path,
+        "2026-01-02",
+        [
+            {
+                "symbol": "US.AAPL",
+                "side": "accumulation",
+                "side_score": 66,
+                "rank": 1,
+                "confidence": "diagnostic",
+                "stage": "accumulation_diagnostic",
+                "reason": "near threshold",
+                "data_quality_pass": True,
+            }
+        ],
+    )
+    price_dir = tmp_path / "validation" / "prices"
+    price_dir.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {"date": "2026-01-02", "symbol": "US.AAPL", "close": 100},
+            {"date": "2026-01-05", "symbol": "US.AAPL", "close": 101},
+            {"date": "2026-01-06", "symbol": "US.AAPL", "close": 103},
+            {"date": "2026-01-02", "symbol": "US.SPY", "close": 500},
+            {"date": "2026-01-05", "symbol": "US.SPY", "close": 501},
+            {"date": "2026-01-06", "symbol": "US.SPY", "close": 502},
+        ]
+    ).to_csv(price_dir / "us_daily_prices.csv", index=False)
+
+    validate_script.main(
+        [
+            "--base-dir",
+            str(tmp_path),
+            "--qlib-dir",
+            str(tmp_path / "missing_qlib"),
+            "--horizons",
+            "1",
+            "--shadow-min-event-score",
+            "65",
+            "--no-nas-sync",
+        ]
+    )
+
+    gate = json.loads((tmp_path / "validation" / "active_gate.json").read_text(encoding="utf-8"))
+    shadow_events = pd.read_parquet(tmp_path / "validation" / "shadow_signal_events.parquet")
+    shadow_returns = pd.read_parquet(tmp_path / "validation" / "shadow_forward_returns.parquet")
+
+    assert gate["event_count"] == 0
+    assert gate["forward_return_count"] == 0
+    assert gate["shadow_min_event_score"] == 65
+    assert gate["shadow_event_count"] == 1
+    assert gate["shadow_forward_return_count"] == 1
+    assert shadow_events.iloc[0]["validation_scope"] == "shadow"
+    assert shadow_returns.iloc[0]["horizon"] == 1
+
+
 def test_price_symbol_universe_includes_defaults_explicit_signals_and_benchmark(tmp_path):
     _write_signal(
         tmp_path,
@@ -808,6 +866,56 @@ def test_load_signal_events_requires_reportable_quality_signals(tmp_path):
     assert row["duplicate_sequence_count"] == 10
     assert row["dollar_volume"] == 90_000_000.0
     assert row["spread_bps"] == 2.5
+
+
+def test_load_shadow_signal_events_keeps_final_quality_near_threshold_rows(tmp_path):
+    signal_path = _write_signal(
+        tmp_path,
+        "2026-01-02",
+        [
+            {
+                "symbol": "US.AAPL",
+                "side": "accumulation",
+                "side_score": 66,
+                "rank": 1,
+                "confidence": "diagnostic",
+                "data_quality_pass": True,
+            },
+            {
+                "symbol": "US.NVDA",
+                "side": "distribution",
+                "side_score": 64,
+                "rank": 2,
+                "confidence": "diagnostic",
+                "data_quality_pass": True,
+            },
+            {
+                "symbol": "US.MSFT",
+                "side": "accumulation",
+                "side_score": 68,
+                "rank": 3,
+                "confidence": "watch",
+                "data_quality_pass": False,
+            },
+            {
+                "symbol": "US.TSLA",
+                "side": "accumulation",
+                "side_score": 69,
+                "rank": 4,
+                "confidence": "watch",
+                "data_quality_pass": True,
+                "is_final_report": False,
+            },
+        ],
+    )
+
+    official = load_signal_events([signal_path], min_event_score=70)
+    shadow = load_shadow_signal_events([signal_path], min_event_score=65)
+
+    assert official.empty
+    assert shadow["symbol"].tolist() == ["US.AAPL"]
+    assert shadow.iloc[0]["validation_scope"] == "shadow"
+    assert shadow.iloc[0]["confidence"] == "diagnostic"
 
 
 def test_update_price_history_merges_existing_and_fetcher_rows(tmp_path):

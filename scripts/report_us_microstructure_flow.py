@@ -328,6 +328,9 @@ def _validation_progress(validation_gate: dict[str, object]) -> dict[str, object
         "signal_file_count": _count(validation_gate.get("signal_file_count")),
         "event_count": _count(validation_gate.get("event_count")),
         "forward_return_count": _count(validation_gate.get("forward_return_count")),
+        "shadow_min_event_score": _number(validation_gate.get("shadow_min_event_score"), 65.0),
+        "shadow_event_count": _count(validation_gate.get("shadow_event_count")),
+        "shadow_forward_return_count": _count(validation_gate.get("shadow_forward_return_count")),
         "price_symbol_count": _count(validation_gate.get("price_symbol_count")),
         "promotion_horizon": _count(criteria.get("promotion_horizon")),
         "benchmark": str(criteria.get("benchmark") or ""),
@@ -563,6 +566,7 @@ def render_markdown_report(
         f"- Gate validated: `{bool(validation_gate.get('validated'))}`",
         f"- Gate reason: {validation_gate.get('reason', '')}",
         f"- Validation samples: `{validation_progress.get('event_count', 0)}` events, `{validation_progress.get('forward_return_count', 0)}` forward-return rows",
+        f"- Shadow calibration samples: `{validation_progress.get('shadow_event_count', 0)}` events, `{validation_progress.get('shadow_forward_return_count', 0)}` forward-return rows; min score `{_score(validation_progress.get('shadow_min_event_score'))}`",
         f"- Promotion horizon: `{validation_progress.get('promotion_horizon', 0)}d`; benchmark: `{validation_progress.get('benchmark') or 'n/a'}`",
         f"- Symbols eligible for high-confidence reporting: `{data_quality.get('eligible_symbol_count', 0)}` / `{data_quality.get('symbol_count', 0)}`",
         f"- Median trade/book coverage: `{_pct(data_quality.get('median_trade_coverage_ratio_regular'))}` / `{_pct(data_quality.get('median_book_coverage_ratio_regular'))}`",
@@ -783,6 +787,7 @@ tr.sell {{ background: #fff1f2; }}
 <p class="muted">Uses Futu OpenD tick prints, order-book snapshots, and quotes. It does not claim account-level institutional identity.</p>
 <div class="gate"><strong>Validation gate:</strong> validated={bool(validation_gate.get('validated'))}; {reason}</div>
 <div class="gate"><strong>Validation samples:</strong> events={validation_progress.get('event_count', 0)}; forward_returns={validation_progress.get('forward_return_count', 0)}; promotion_horizon={validation_progress.get('promotion_horizon', 0)}d; benchmark={html.escape(str(validation_progress.get('benchmark') or 'n/a'))}</div>
+<div class="gate"><strong>Shadow calibration:</strong> events={validation_progress.get('shadow_event_count', 0)}; forward_returns={validation_progress.get('shadow_forward_return_count', 0)}; min_score={_score(validation_progress.get('shadow_min_event_score'))}</div>
 <div class="gate"><strong>Data quality gate:</strong> eligible_symbols={data_quality.get('eligible_symbol_count', 0)}/{data_quality.get('symbol_count', 0)}; median trade/book coverage={_pct(data_quality.get('median_trade_coverage_ratio_regular'))}/{_pct(data_quality.get('median_book_coverage_ratio_regular'))}</div>
 <div class="gate"><strong>Duplicate audit:</strong> duplicate_sequence_rows={data_quality.get('duplicate_sequence_count', 0)}/{data_quality.get('raw_trade_count', 0)} ({_pct(data_quality.get('duplicate_sequence_rate'))})</div>
 <h2>Validation Progress By Side</h2>
