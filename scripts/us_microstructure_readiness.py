@@ -144,6 +144,7 @@ def check_report(base_dir: str | Path, *, date: str) -> dict[str, Any]:
         issues.append(f"latest report HTML missing: {latest_html}")
     high_count = int(payload.get("high_count") or 0) if payload else 0
     data_quality = payload.get("data_quality", {}) if payload else {}
+    data_quality_ready = bool(isinstance(data_quality, dict) and data_quality.get("high_confidence_data_quality_ok"))
     if high_count > 0 and not (isinstance(data_quality, dict) and data_quality.get("high_confidence_data_quality_ok")):
         issues.append("report has high-confidence signals without a passing data-quality gate")
     return {
@@ -156,6 +157,7 @@ def check_report(base_dir: str | Path, *, date: str) -> dict[str, Any]:
         "high_count": high_count,
         "watch_count": int(payload.get("watch_count") or 0) if payload else 0,
         "data_quality": data_quality if isinstance(data_quality, dict) else {},
+        "data_quality_ready": data_quality_ready,
         "issues": issues,
     }
 
@@ -228,6 +230,9 @@ def build_readiness_snapshot(
     }
     if include_launchd:
         checks["launchd"] = check_launchd(runner=launchd_runner)
+    validation_ready = bool(checks["validation_gate"].get("validated"))
+    data_quality_ready = bool(checks["report"].get("data_quality_ready"))
+    high_confidence_ready = validation_ready and data_quality_ready
     issues = []
     for name, payload in checks.items():
         for issue in payload.get("issues", []):
@@ -237,6 +242,11 @@ def build_readiness_snapshot(
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "base_dir": str(Path(base_dir).expanduser()),
         "date": date,
+        "high_confidence_ready": high_confidence_ready,
+        "high_confidence_requirements": {
+            "validation_gate_validated": validation_ready,
+            "data_quality_gate_ready": data_quality_ready,
+        },
         "checks": checks,
         "issues": issues,
     }

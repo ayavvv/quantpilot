@@ -57,8 +57,55 @@ def test_readiness_snapshot_accepts_ready_warmup_system(tmp_path):
     )
 
     assert snapshot["ok"] is True
+    assert snapshot["high_confidence_ready"] is False
+    assert snapshot["high_confidence_requirements"]["validation_gate_validated"] is False
     assert snapshot["checks"]["manifest"]["row_counts"]["trades"] == 100
     assert snapshot["checks"]["validation_gate"]["state"] == "warmup"
+
+
+def test_readiness_snapshot_marks_high_confidence_ready_when_gates_pass(tmp_path):
+    manifest_dir = tmp_path / "manifests" / "date=2026-06-01"
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "manifest-run.jsonl").write_text(
+        json.dumps({"kind": "trades", "row_count": 100, "nas_upload_status": "ok"}) + "\n",
+        encoding="utf-8",
+    )
+    _write_json(
+        tmp_path / "validation" / "prices" / "us_daily_prices_status.json",
+        {"status": "ok", "symbol_count": 2, "price_row_count": 10, "errors": {}},
+    )
+    _write_json(
+        tmp_path / "validation" / "active_gate.json",
+        {"state": "validated", "validated": True, "validated_sides": {"accumulation": True}},
+    )
+    _write_json(
+        tmp_path / "reports" / "date=2026-06-01" / "status.json",
+        {
+            "signal_count": 1,
+            "high_count": 1,
+            "watch_count": 0,
+            "data_quality": {"high_confidence_data_quality_ok": True, "eligible_symbol_count": 1},
+        },
+    )
+    (tmp_path / "reports" / "date=2026-06-01" / "us_microstructure_flow_report.html").write_text(
+        "<html></html>",
+        encoding="utf-8",
+    )
+    (tmp_path / "reports" / "us_microstructure_flow_report_latest.html").write_text("<html></html>", encoding="utf-8")
+
+    def fake_launchd(label):
+        return 0, "state = not running\nruns = 1\n"
+
+    snapshot = readiness.build_readiness_snapshot(
+        base_dir=tmp_path,
+        date="2026-06-01",
+        launchd_runner=fake_launchd,
+    )
+
+    assert snapshot["ok"] is True
+    assert snapshot["high_confidence_ready"] is True
+    assert snapshot["high_confidence_requirements"]["validation_gate_validated"] is True
+    assert snapshot["high_confidence_requirements"]["data_quality_gate_ready"] is True
 
 
 def test_readiness_snapshot_flags_failed_upload_and_missing_launchd(tmp_path):

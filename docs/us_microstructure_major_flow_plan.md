@@ -484,7 +484,10 @@ Implemented status as of 2026-06-01:
 - `scripts/us_microstructure_readiness.py` checks the latest manifest, price
   feed, validation gate, report artifacts, data-quality gate, and launchd
   services. When run from the daily wrapper it writes dated/latest readiness
-  JSON snapshots locally and mirrors them to the NAS `readiness/` archive.
+  JSON snapshots locally and mirrors them to the NAS `readiness/` archive. The
+  snapshot separates pipeline health (`ok`) from `high_confidence_ready`, which
+  requires both a promoted validation gate and a passing report data-quality
+  gate.
 - `scripts/run_us_microstructure_report.sh` is the Mac-side entrypoint for cron
   or launchd. It updates daily prices, updates validation, generates the
   report, then writes the readiness snapshot. If `US_MICROSTRUCTURE_DATE` is
