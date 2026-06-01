@@ -78,10 +78,13 @@ def test_us_microstructure_report_launchd_plist_is_scheduled_china_mornings():
 def test_us_microstructure_install_script_installs_both_launch_daemons():
     content = INSTALL_SCRIPT.read_text(encoding="utf-8")
     assert 'TARGET_DIR="/Library/LaunchDaemons"' in content
+    assert 'AGENT_TARGET_DIR="$HOME_DIR/Library/LaunchAgents"' in content
+    assert 'US_MICROSTRUCTURE_LAUNCHD_MODE' in content
+    assert 'sudo -n true' in content
     assert 'render_and_install "com.quantpilot.us_microstructure.collect"' in content
     assert 'render_and_install "com.quantpilot.us_microstructure.report"' in content
-    assert "replace(\"__PROJECT_DIR__\", project_dir)" in content
-    assert "replace(\"__HOME__\", home_dir)" in content
-    assert "replace(\"__USER__\", user_name)" in content
+    assert 'payload.pop("UserName", None)' in content
     assert 'sudo launchctl bootstrap system "$target_path"' in content
     assert 'sudo launchctl enable "system/$label"' in content
+    assert 'launchctl bootstrap "gui/$INSTALL_UID" "$target_path"' in content
+    assert 'launchctl enable "gui/$INSTALL_UID/$label"' in content
