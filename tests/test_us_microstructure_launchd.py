@@ -39,6 +39,7 @@ def test_collect_script_runs_futu_collector_with_nas_and_lock():
 def test_report_script_updates_prices_before_validation_by_default():
     content = REPORT_SCRIPT.read_text(encoding="utf-8")
     assert "US_MICROSTRUCTURE_UPDATE_PRICES" in content
+    assert "scripts.us_microstructure_dates default-report-date" in content
     assert '"$PYTHON_BIN" -m scripts.update_us_microstructure_prices' in content
     assert '"$PYTHON_BIN" -m scripts.validate_us_microstructure_flow' in content
     assert '"$PYTHON_BIN" -m scripts.report_us_microstructure_flow' in content

@@ -482,7 +482,10 @@ Implemented status as of 2026-06-01:
   JSON snapshots locally and mirrors them to the NAS `readiness/` archive.
 - `scripts/run_us_microstructure_report.sh` is the Mac-side entrypoint for cron
   or launchd. It updates daily prices, updates validation, generates the
-  report, then writes the readiness snapshot. It sends email only when
+  report, then writes the readiness snapshot. If `US_MICROSTRUCTURE_DATE` is
+  not set, it resolves the latest available collection partition instead of
+  using the China morning calendar date, so the 08:30 report reads the previous
+  evening's US session. It sends email only when
   `US_MICROSTRUCTURE_SEND_EMAIL=true`.
 - Launchd templates are available for weekday evening collection and
   China-morning report generation. `scripts/install_us_microstructure_launchd.sh`
