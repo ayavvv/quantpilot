@@ -28,6 +28,8 @@ EVENT_AUDIT_COLUMNS = (
     "book_coverage_ratio_regular",
     "quote_coverage_ratio_regular",
     "trade_count",
+    "raw_trade_count",
+    "duplicate_sequence_count",
     "dollar_volume",
     "duplicate_sequence_rate",
     "spread_bps",

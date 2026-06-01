@@ -97,6 +97,13 @@ def _mean_valid(series: pd.Series, default: float = 0.0) -> float:
     return float(cleaned.mean())
 
 
+def _sum_valid(series: pd.Series, default: float = 0.0) -> float:
+    cleaned = pd.to_numeric(series, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    if cleaned.empty:
+        return default
+    return float(cleaned.sum())
+
+
 def _median_valid(series: pd.Series, default: float = 0.0) -> float:
     cleaned = pd.to_numeric(series, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
     if cleaned.empty:
@@ -118,6 +125,16 @@ def _reason(labels: list[tuple[str, bool]]) -> str:
 def _summarize_symbol(symbol: str, part: pd.DataFrame, cfg: MicrostructureSignalConfig) -> dict[str, Any]:
     part = part.sort_values("minute").copy()
     trade_count = int(pd.to_numeric(_series(part, "trade_count"), errors="coerce").fillna(0).sum())
+    raw_trade_count = (
+        int(_sum_valid(part["raw_trade_count"], float(trade_count)))
+        if "raw_trade_count" in part.columns
+        else trade_count
+    )
+    duplicate_sequence_count = (
+        int(_sum_valid(part["duplicate_sequence_count"], 0.0))
+        if "duplicate_sequence_count" in part.columns
+        else 0
+    )
     dollar_volume = float(pd.to_numeric(_series(part, "dollar_volume"), errors="coerce").fillna(0).sum())
     active_buy = float(pd.to_numeric(_series(part, "active_buy_dollar"), errors="coerce").fillna(0).sum())
     active_sell = float(pd.to_numeric(_series(part, "active_sell_dollar"), errors="coerce").fillna(0).sum())
@@ -149,7 +166,11 @@ def _summarize_symbol(symbol: str, part: pd.DataFrame, cfg: MicrostructureSignal
     ask_replenish = _mean_valid(_series(part, "ask_replenish_1", np.nan), 0.0)
     dollar_z_max = _finite(pd.to_numeric(_series(part, "dollar_volume_z", 0.0), errors="coerce").max(), 0.0)
     odd_lot_ratio = _mean_valid(_series(part, "odd_lot_ratio", np.nan), 0.0)
-    duplicate_rate = _mean_valid(_series(part, "duplicate_sequence_rate", np.nan), 0.0)
+    duplicate_rate = (
+        duplicate_sequence_count / raw_trade_count
+        if raw_trade_count > 0
+        else _mean_valid(_series(part, "duplicate_sequence_rate", np.nan), 0.0)
+    )
 
     liquidity_quality = min(
         _score_between(trade_count, cfg.min_trade_count * 0.25, cfg.min_trade_count),
@@ -219,6 +240,8 @@ def _summarize_symbol(symbol: str, part: pd.DataFrame, cfg: MicrostructureSignal
         "book_coverage_ratio_regular": book_coverage_ratio,
         "quote_coverage_ratio_regular": quote_coverage_ratio,
         "trade_count": trade_count,
+        "raw_trade_count": raw_trade_count,
+        "duplicate_sequence_count": duplicate_sequence_count,
         "dollar_volume": dollar_volume,
         "active_buy_dollar": active_buy,
         "active_sell_dollar": active_sell,

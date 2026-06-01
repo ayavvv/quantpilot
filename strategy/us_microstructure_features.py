@@ -404,6 +404,8 @@ def compute_microstructure_features(
         "share_volume",
         "dollar_volume",
         "trade_count",
+        "raw_trade_count",
+        "duplicate_sequence_count",
         "active_buy_dollar",
         "active_sell_dollar",
         "neutral_dollar",

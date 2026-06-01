@@ -457,6 +457,10 @@ Implemented status as of 2026-06-01:
   rows out of date partitions if they were collected before this protection
   existed. Trade aggregation de-duplicates by `symbol + sequence` before
   summing flow while preserving raw/duplicate counts for data-quality audit.
+  Signal and report quality gates use full-session
+  `duplicate_sequence_count / raw_trade_count`, not the median minute-level
+  duplicate rate, so concentrated duplicate bursts cannot slip through the
+  high-confidence gate.
 - `strategy/us_microstructure_signals.py` scores accumulation and distribution
   candidates, but only emits `high` confidence when a validation gate is
   promoted for that side and both regular-session trade and order-book coverage

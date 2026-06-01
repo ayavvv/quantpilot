@@ -186,6 +186,8 @@ def test_signal_scoring_keeps_strong_candidate_warmup_without_validation_gate():
     assert row["side_score"] >= 70
     assert row["confidence"] == "watch"
     assert row["report_state"] == "warmup"
+    assert row["raw_trade_count"] == row["trade_count"]
+    assert row["duplicate_sequence_count"] == 0
 
 
 def test_signal_scoring_requires_side_specific_validation_for_high_confidence():
@@ -236,6 +238,59 @@ def test_signal_scoring_requires_side_specific_validation_for_high_confidence():
     assert signals.iloc[0]["confidence"] == "high"
 
 
+def test_signal_scoring_uses_total_duplicate_sequence_rate_for_quality():
+    minutes = pd.date_range("2026-06-01 13:30:00+00:00", periods=3, freq="min")
+    features = pd.DataFrame(
+        {
+            "symbol": ["US.AAPL"] * len(minutes),
+            "minute": minutes,
+            "trade_count": [10_000, 0, 10_000],
+            "raw_trade_count": [10_000, 1, 10_000],
+            "duplicate_sequence_count": [0, 1, 0],
+            "dollar_volume": [10_000_000.0] * len(minutes),
+            "active_buy_dollar": [7_000_000.0] * len(minutes),
+            "active_sell_dollar": [3_000_000.0] * len(minutes),
+            "has_trade_data": [True] * len(minutes),
+            "has_book_data": [True] * len(minutes),
+            "coverage_ratio_regular": [1.0] * len(minutes),
+            "trade_coverage_ratio_regular": [1.0] * len(minutes),
+            "book_coverage_ratio_regular": [1.0] * len(minutes),
+            "reference_price": [100.0, 100.2, 100.4],
+            "vwap_deviation_bps": [20.0] * len(minutes),
+            "price_impact_bps_per_musd": [5.0] * len(minutes),
+            "spread_bps": [2.0] * len(minutes),
+            "depth_imbalance_1": [0.50] * len(minutes),
+            "depth_imbalance_5": [0.40] * len(minutes),
+            "bid_replenish_1": [900.0] * len(minutes),
+            "ask_replenish_1": [0.0] * len(minutes),
+            "dollar_volume_z": [3.0] * len(minutes),
+            "odd_lot_ratio": [0.1] * len(minutes),
+            "duplicate_sequence_rate": [0.0, 1.0, 0.0],
+        }
+    )
+
+    signals = score_microstructure_signals(
+        features,
+        config=MicrostructureSignalConfig(
+            min_trade_count=100,
+            min_dollar_volume=1_000,
+            min_data_coverage=0.1,
+            high_score=70,
+        ),
+        validation_gate={
+            "state": "validated",
+            "validated": True,
+            "validated_sides": {"accumulation": True, "distribution": False},
+        },
+    )
+
+    row = signals.iloc[0]
+    assert row["confidence"] == "high"
+    assert row["raw_trade_count"] == 20_001
+    assert row["duplicate_sequence_count"] == 1
+    assert row["duplicate_sequence_rate"] == 1 / 20_001
+
+
 def test_high_confidence_requires_order_book_coverage_even_when_validated():
     minutes = pd.date_range("2026-06-01 13:30:00+00:00", periods=6, freq="min")
     features = pd.DataFrame(
@@ -282,6 +337,39 @@ def test_high_confidence_requires_order_book_coverage_even_when_validated():
 
     assert signals.iloc[0]["side"] == "accumulation"
     assert signals.iloc[0]["confidence"] != "high"
+
+
+def test_report_data_quality_uses_total_duplicate_sequence_rate():
+    minutes = pd.date_range("2026-06-01 13:30:00+00:00", periods=3, freq="min")
+    features = pd.DataFrame(
+        {
+            "symbol": ["US.AAPL"] * len(minutes),
+            "minute": minutes,
+            "is_regular_session": [True] * len(minutes),
+            "trade_count": [100, 80, 100],
+            "raw_trade_count": [100, 100, 100],
+            "duplicate_sequence_count": [0, 20, 0],
+            "dollar_volume": [30_000_000.0] * len(minutes),
+            "coverage_ratio_regular": [1.0] * len(minutes),
+            "trade_coverage_ratio_regular": [1.0] * len(minutes),
+            "book_coverage_ratio_regular": [1.0] * len(minutes),
+            "quote_coverage_ratio_regular": [1.0] * len(minutes),
+            "spread_bps": [2.0] * len(minutes),
+            "duplicate_sequence_rate": [0.0, 0.2, 0.0],
+        }
+    )
+
+    quality = report_script._data_quality_summary(
+        features,
+        MicrostructureSignalConfig(min_trade_count=1, min_dollar_volume=1_000, min_data_coverage=0.1),
+    )
+
+    row = quality["symbols"][0]
+    assert row["eligible"] is False
+    assert row["raw_trade_count"] == 300
+    assert row["duplicate_sequence_count"] == 20
+    assert row["duplicate_sequence_rate"] == 20 / 300
+    assert quality["duplicate_sequence_rate"] == 20 / 300
 
 
 def test_signal_scoring_ignores_premarket_rows_when_session_flag_exists():
@@ -395,8 +483,11 @@ def test_report_script_writes_warmup_artifacts(tmp_path):
     assert status["data_quality"]["eligible_symbol_count"] == 0
     quality = pd.read_csv(tmp_path / "quality/date=2026-06-01/us_microstructure_data_quality.csv")
     assert quality.iloc[0]["symbol"] == "US.AAPL"
+    assert "raw_trade_count" in quality.columns
+    assert "duplicate_sequence_count" in quality.columns
     html_report = (tmp_path / "reports/date=2026-06-01/us_microstructure_flow_report.html").read_text(encoding="utf-8")
     assert "Data Quality By Symbol" in html_report
+    assert "Duplicate audit" in html_report
 
 
 def test_read_microstructure_inputs_filters_stale_trades_from_date_partition(tmp_path):
@@ -580,6 +671,8 @@ def test_load_signal_events_requires_reportable_quality_signals(tmp_path):
                 "book_coverage_ratio_regular": 0.94,
                 "quote_coverage_ratio_regular": 0.93,
                 "trade_count": 12_000,
+                "raw_trade_count": 12_010,
+                "duplicate_sequence_count": 10,
                 "dollar_volume": 90_000_000.0,
                 "duplicate_sequence_rate": 0.0,
                 "spread_bps": 2.5,
@@ -621,6 +714,8 @@ def test_load_signal_events_requires_reportable_quality_signals(tmp_path):
     assert row["coverage_ratio_regular"] == 0.95
     assert row["book_coverage_ratio_regular"] == 0.94
     assert row["trade_count"] == 12_000
+    assert row["raw_trade_count"] == 12_010
+    assert row["duplicate_sequence_count"] == 10
     assert row["dollar_volume"] == 90_000_000.0
     assert row["spread_bps"] == 2.5
 

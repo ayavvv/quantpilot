@@ -154,6 +154,15 @@ def _median_numeric(part: pd.DataFrame, column: str, default: float = 0.0) -> fl
     return float(values.median())
 
 
+def _sum_numeric(part: pd.DataFrame, column: str, default: float = 0.0) -> float:
+    if column not in part.columns:
+        return default
+    values = pd.to_numeric(part[column], errors="coerce").replace([float("inf"), float("-inf")], pd.NA).dropna()
+    if values.empty:
+        return default
+    return float(values.sum())
+
+
 def _data_quality_summary(features: pd.DataFrame, cfg: MicrostructureSignalConfig) -> dict[str, object]:
     if features.empty:
         return {
@@ -180,8 +189,14 @@ def _data_quality_summary(features: pd.DataFrame, cfg: MicrostructureSignalConfi
         book_coverage = _last_numeric(part, "book_coverage_ratio_regular", coverage)
         quote_coverage = _last_numeric(part, "quote_coverage_ratio_regular")
         trade_count = int(pd.to_numeric(regular_part.get("trade_count", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
+        raw_trade_count = int(_sum_numeric(regular_part, "raw_trade_count", float(trade_count)))
+        duplicate_sequence_count = int(_sum_numeric(regular_part, "duplicate_sequence_count", 0.0))
         dollar_volume = float(pd.to_numeric(regular_part.get("dollar_volume", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
-        duplicate_rate = _median_numeric(regular_part, "duplicate_sequence_rate")
+        duplicate_rate = (
+            duplicate_sequence_count / raw_trade_count
+            if raw_trade_count > 0
+            else _median_numeric(regular_part, "duplicate_sequence_rate")
+        )
         spread_bps = _median_numeric(regular_part, "spread_bps", cfg.max_spread_bps)
         eligible = (
             coverage >= cfg.min_data_coverage
@@ -201,6 +216,8 @@ def _data_quality_summary(features: pd.DataFrame, cfg: MicrostructureSignalConfi
                 "book_coverage_ratio_regular": book_coverage,
                 "quote_coverage_ratio_regular": quote_coverage,
                 "trade_count": trade_count,
+                "raw_trade_count": raw_trade_count,
+                "duplicate_sequence_count": duplicate_sequence_count,
                 "dollar_volume": dollar_volume,
                 "duplicate_sequence_rate": duplicate_rate,
                 "spread_bps": spread_bps,
@@ -211,10 +228,15 @@ def _data_quality_summary(features: pd.DataFrame, cfg: MicrostructureSignalConfi
     trade_ratios = [float(row["trade_coverage_ratio_regular"]) for row in rows]
     book_ratios = [float(row["book_coverage_ratio_regular"]) for row in rows]
     eligible_count = sum(1 for row in rows if row["eligible"])
+    raw_trade_count = sum(int(row.get("raw_trade_count") or 0) for row in rows)
+    duplicate_sequence_count = sum(int(row.get("duplicate_sequence_count") or 0) for row in rows)
     return {
         "symbol_count": len(rows),
         "eligible_symbol_count": int(eligible_count),
         "high_confidence_data_quality_ok": eligible_count > 0,
+        "raw_trade_count": int(raw_trade_count),
+        "duplicate_sequence_count": int(duplicate_sequence_count),
+        "duplicate_sequence_rate": duplicate_sequence_count / raw_trade_count if raw_trade_count > 0 else 0.0,
         "min_required_coverage": float(cfg.min_data_coverage),
         "min_required_trade_count": int(cfg.min_trade_count),
         "min_required_dollar_volume": float(cfg.min_dollar_volume),
@@ -283,15 +305,15 @@ def _quality_markdown_table(data_quality: dict[str, object]) -> str:
         return "No data-quality rows.\n"
     header = (
         "| Symbol | Eligible | Coverage | Trade Cov | Book Cov | Quote Cov | "
-        "Trades | Dollar Vol | Dup Seq | Spread bps |\n"
+        "Trades | Raw Trades | Dup Rows | Dollar Vol | Dup Seq | Spread bps |\n"
     )
-    sep = "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n"
+    sep = "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n"
     body = []
     for row in rows:
         if not isinstance(row, dict):
             continue
         body.append(
-            "| {symbol} | {eligible} | {coverage} | {trade_cov} | {book_cov} | {quote_cov} | {trades} | {dollar} | {dup} | {spread} |".format(
+            "| {symbol} | {eligible} | {coverage} | {trade_cov} | {book_cov} | {quote_cov} | {trades} | {raw_trades} | {dup_rows} | {dollar} | {dup} | {spread} |".format(
                 symbol=row.get("symbol", ""),
                 eligible="yes" if row.get("eligible") else "no",
                 coverage=_pct(row.get("coverage_ratio_regular")),
@@ -299,6 +321,8 @@ def _quality_markdown_table(data_quality: dict[str, object]) -> str:
                 book_cov=_pct(row.get("book_coverage_ratio_regular")),
                 quote_cov=_pct(row.get("quote_coverage_ratio_regular")),
                 trades=int(row.get("trade_count") or 0),
+                raw_trades=int(row.get("raw_trade_count") or 0),
+                dup_rows=int(row.get("duplicate_sequence_count") or 0),
                 dollar=_money(row.get("dollar_volume")),
                 dup=_pct(row.get("duplicate_sequence_rate")),
                 spread=_bps(row.get("spread_bps")),
@@ -337,6 +361,7 @@ def render_markdown_report(
         f"- Gate reason: {validation_gate.get('reason', '')}",
         f"- Symbols eligible for high-confidence reporting: `{data_quality.get('eligible_symbol_count', 0)}` / `{data_quality.get('symbol_count', 0)}`",
         f"- Median trade/book coverage: `{_pct(data_quality.get('median_trade_coverage_ratio_regular'))}` / `{_pct(data_quality.get('median_book_coverage_ratio_regular'))}`",
+        f"- Duplicate sequence rows: `{data_quality.get('duplicate_sequence_count', 0)}` / `{data_quality.get('raw_trade_count', 0)}` (`{_pct(data_quality.get('duplicate_sequence_rate'))}`)",
         "",
         "## Data Coverage",
         "",
@@ -405,7 +430,7 @@ def _quality_html_table(data_quality: dict[str, object]) -> str:
         table_rows.append(
             "<tr class='{cls}'><td>{symbol}</td><td>{eligible}</td><td>{coverage}</td>"
             "<td>{trade_cov}</td><td>{book_cov}</td><td>{quote_cov}</td><td>{trades}</td>"
-            "<td>{dollar}</td><td>{dup}</td><td>{spread}</td></tr>".format(
+            "<td>{raw_trades}</td><td>{dup_rows}</td><td>{dollar}</td><td>{dup}</td><td>{spread}</td></tr>".format(
                 cls=cls,
                 symbol=html.escape(str(row.get("symbol") or "")),
                 eligible="yes" if row.get("eligible") else "no",
@@ -414,6 +439,8 @@ def _quality_html_table(data_quality: dict[str, object]) -> str:
                 book_cov=_pct(row.get("book_coverage_ratio_regular")),
                 quote_cov=_pct(row.get("quote_coverage_ratio_regular")),
                 trades=int(row.get("trade_count") or 0),
+                raw_trades=int(row.get("raw_trade_count") or 0),
+                dup_rows=int(row.get("duplicate_sequence_count") or 0),
                 dollar=_money(row.get("dollar_volume")),
                 dup=_pct(row.get("duplicate_sequence_rate")),
                 spread=_bps(row.get("spread_bps")),
@@ -421,7 +448,7 @@ def _quality_html_table(data_quality: dict[str, object]) -> str:
         )
     return (
         "<table><tr><th>Symbol</th><th>Eligible</th><th>Coverage</th><th>Trade Cov</th>"
-        "<th>Book Cov</th><th>Quote Cov</th><th>Trades</th><th>Dollar Vol</th>"
+        "<th>Book Cov</th><th>Quote Cov</th><th>Trades</th><th>Raw Trades</th><th>Dup Rows</th><th>Dollar Vol</th>"
         "<th>Dup Seq</th><th>Spread bps</th></tr>"
         + "\n".join(table_rows)
         + "</table>"
@@ -472,6 +499,7 @@ tr.sell {{ background: #fff1f2; }}
 <p class="muted">Uses Futu OpenD tick prints, order-book snapshots, and quotes. It does not claim account-level institutional identity.</p>
 <div class="gate"><strong>Validation gate:</strong> validated={bool(validation_gate.get('validated'))}; {reason}</div>
 <div class="gate"><strong>Data quality gate:</strong> eligible_symbols={data_quality.get('eligible_symbol_count', 0)}/{data_quality.get('symbol_count', 0)}; median trade/book coverage={_pct(data_quality.get('median_trade_coverage_ratio_regular'))}/{_pct(data_quality.get('median_book_coverage_ratio_regular'))}</div>
+<div class="gate"><strong>Duplicate audit:</strong> duplicate_sequence_rows={data_quality.get('duplicate_sequence_count', 0)}/{data_quality.get('raw_trade_count', 0)} ({_pct(data_quality.get('duplicate_sequence_rate'))})</div>
 <h2>Data Coverage</h2>
 <p>Raw trades={raw_counts.get('trades', 0)}, order_book={raw_counts.get('order_book', 0)}, quotes={raw_counts.get('quotes', 0)}. Regular trade/book/quote minutes={coverage['regular_trade_minutes']} / {coverage['regular_book_minutes']} / {coverage['regular_quote_minutes']}.</p>
 <h2>Candidates</h2>
