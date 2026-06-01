@@ -201,6 +201,9 @@ def test_validate_major_force_eval_exports_validated_rule(tmp_path):
     assert payload["validated"] is True
     assert payload["rules"][0]["side"] == "buy"
     assert payload["rules"][0]["test"]["avg_alpha"] > 0
+    assert payload["candidate_rule_count_by_side"]["buy"] > 0
+    assert payload["train_passed_count_by_side"]["buy"] > 0
+    assert payload["best_rules_by_side"]["buy"][0]["side"] == "buy"
 
 
 def test_validate_major_force_eval_requires_recent_robustness(tmp_path):
@@ -247,3 +250,4 @@ def test_validate_major_force_eval_requires_recent_robustness(tmp_path):
 
     assert payload["validated"] is False
     assert payload["best_rules"][0]["recent"]["avg_alpha"] < 0
+    assert payload["best_rules_by_side"]["buy"][0]["recent"]["avg_alpha"] < 0

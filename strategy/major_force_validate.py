@@ -201,22 +201,92 @@ def _extra_filter_available(extra: dict[str, object], columns: set[str]) -> bool
     return True
 
 
+BUY_STAGE_FILTER_SETS: tuple[dict[str, object], ...] = (
+    {"stages": ["stealth_accumulation"]},
+    {"stages": ["stealth_accumulation", "accumulation_candidate"]},
+)
+
+BUY_MARKET_FILTER_SETS: tuple[dict[str, object], ...] = (
+    {"min_market_above_ma20_rate": 0.45, "min_market_positive_rate_20": 0.50},
+    {"min_market_drawdown_20": -0.005},
+    {"min_market_return_20": -0.01, "max_market_return_20": 0.03},
+)
+
+BUY_STOCK_FILTER_SETS: tuple[dict[str, object], ...] = (
+    {"min_cmf_20": 0.08},
+    {"min_cmf_20": 0.12},
+    {"min_cmf_20": 0.08, "max_price_change_20": 0.08},
+    {"min_cmf_20": 0.08, "max_amount_ratio_5_20": 2.0},
+    {"min_close_location_10": 0.55},
+    {"min_close_location_10": 0.50, "max_close_location_10": 0.85, "max_price_change_20": 0.08},
+    {"min_breakout_20": 0.0},
+    {"max_price_change_20": 0.08},
+    {"min_price_change_20": -0.08, "max_price_change_20": 0.08},
+    {"max_today_chg_pct": 3.0},
+    {"max_amount_ratio_5_20": 2.0},
+    {"max_volatility_20": 0.026},
+    {"min_positive_flow_days_20": 0.55},
+)
+
+BUY_FOCUSED_MARKET_FILTER_SETS: tuple[dict[str, object], ...] = (
+    {"min_market_drawdown_20": -0.005},
+    {"min_market_return_20": -0.01, "max_market_return_20": 0.03},
+    {"min_market_above_ma20_rate": 0.45, "min_market_positive_rate_20": 0.50},
+)
+
+BUY_FOCUSED_STOCK_FILTER_SETS: tuple[dict[str, object], ...] = (
+    {"min_cmf_20": 0.08, "max_price_change_20": 0.08},
+    {"min_cmf_20": 0.08, "max_amount_ratio_5_20": 2.0},
+    {"max_price_change_20": 0.08},
+    {"min_close_location_10": 0.50, "max_close_location_10": 0.85, "max_price_change_20": 0.08},
+)
+
+SELL_FILTER_SETS: tuple[dict[str, object], ...] = (
+    {},
+    {"stages": ["distribution_risk"]},
+    {"max_market_return_20": 0.02, "max_market_above_ma20_rate": 0.55},
+)
+
+
+def _merge_filters(*extras: dict[str, object]) -> dict[str, object]:
+    merged: dict[str, object] = {}
+    for extra in extras:
+        merged.update(extra)
+    return merged
+
+
+def _rule_has_valid_bounds(rule: dict[str, object]) -> bool:
+    fields = {key[4:] for key in rule if key.startswith(("min_", "max_")) and key != "min_score"}
+    for field in fields:
+        min_key = f"min_{field}"
+        max_key = f"max_{field}"
+        if min_key in rule and max_key in rule and float(rule[min_key]) > float(rule[max_key]):
+            return False
+    return True
+
+
+def _buy_extra_filter_sets() -> Iterable[dict[str, object]]:
+    yield {}
+    yield from BUY_STAGE_FILTER_SETS
+    yield from BUY_MARKET_FILTER_SETS
+    yield from BUY_STOCK_FILTER_SETS
+    for market_filter in BUY_FOCUSED_MARKET_FILTER_SETS:
+        for stock_filter in BUY_FOCUSED_STOCK_FILTER_SETS:
+            yield _merge_filters(market_filter, stock_filter)
+
+
 def _rule_variants(rule: dict[str, object], side: str, columns: set[str]) -> Iterable[dict[str, object]]:
-    yield rule
     if side == "buy":
-        extras = [
-            {"min_market_above_ma20_rate": 0.45, "min_market_positive_rate_20": 0.50},
-        ]
+        extras = _buy_extra_filter_sets()
     else:
-        extras = [
-            {"stages": ["distribution_risk"]},
-            {"max_market_return_20": 0.02, "max_market_above_ma20_rate": 0.55},
-        ]
+        extras = SELL_FILTER_SETS
     for extra in extras:
         if not _extra_filter_available(extra, columns):
             continue
         candidate = dict(rule)
         candidate.update(extra)
+        if not _rule_has_valid_bounds(candidate):
+            continue
         yield candidate
 
 
@@ -227,7 +297,8 @@ def _rule_candidates(rows: pd.DataFrame) -> Iterable[dict[str, object]]:
     for horizon in horizons:
         for side in ["buy", "sell"]:
             for rank_n in [5, 10, 20, 50, 100, 200]:
-                for min_score in [80, 88, 92]:
+                min_scores = [80, 88, 92]
+                for min_score in min_scores:
                     for min_amount_ratio in [0.0, 1.2]:
                         base = {
                             "side": side,
@@ -237,21 +308,11 @@ def _rule_candidates(rows: pd.DataFrame) -> Iterable[dict[str, object]]:
                             "min_amount_ratio_5_20": float(min_amount_ratio),
                         }
                         if side == "buy":
-                            for min_cmf in [None, 0.12, 0.2]:
-                                for min_loc in [None, 0.55, 0.65]:
-                                    for min_breakout in [None, 0.0]:
-                                        rule = dict(base)
-                                        if min_cmf is not None:
-                                            rule["min_cmf_20"] = float(min_cmf)
-                                        if min_loc is not None:
-                                            rule["min_close_location_10"] = float(min_loc)
-                                        if min_breakout is not None:
-                                            rule["min_breakout_20"] = float(min_breakout)
-                                        for candidate in _rule_variants(rule, side, columns):
-                                            key = _rule_key(candidate)
-                                            if key not in seen:
-                                                seen.add(key)
-                                                yield candidate
+                            for candidate in _rule_variants(base, side, columns):
+                                key = _rule_key(candidate)
+                                if key not in seen:
+                                    seen.add(key)
+                                    yield candidate
                         else:
                             for max_cmf in [None, -0.12, -0.2]:
                                 for max_loc in [None, 0.45, 0.35]:
@@ -296,9 +357,15 @@ def validate_major_force_eval(
     test_rows = rows[rows["eval_date"].astype(str).isin(test_dates)]
     recent_rows = rows[rows["eval_date"].astype(str).isin(recent_dates)]
     train_passed: list[dict[str, object]] = []
+    candidate_rule_count = 0
+    candidate_rule_count_by_side = {"buy": 0, "sell": 0}
+    train_passed_count_by_side = {"buy": 0, "sell": 0}
 
     for rule in _rule_candidates(rows):
+        candidate_rule_count += 1
         side = str(rule["side"])
+        if side in candidate_rule_count_by_side:
+            candidate_rule_count_by_side[side] += 1
         train_metrics = _evaluate_filtered(_filter_rows(train_rows, rule), side)
         if train_metrics["date_count"] < cfg.min_train_dates:
             continue
@@ -319,6 +386,8 @@ def validate_major_force_eval(
             "test_score": float(test_metrics["avg_alpha"]) + float(test_metrics["avg_hit_rate"]) / 100.0,
         }
         train_passed.append(record)
+        if side in train_passed_count_by_side:
+            train_passed_count_by_side[side] += 1
 
     best_rows = sorted(
         train_passed,
@@ -330,6 +399,21 @@ def validate_major_force_eval(
             -int(item["train"]["date_count"]),
         ),
     )
+    best_rows_by_side = {
+        side: [
+            item
+            for item in sorted(
+                (row for row in train_passed if str(row.get("side")) == side),
+                key=lambda item: (
+                    -float(item["score"]),
+                    -float(item["train"]["avg_alpha"]),
+                    -float(item["train"]["avg_hit_rate"]),
+                    -int(item["train"]["date_count"]),
+                ),
+            )[:10]
+        ]
+        for side in ["buy", "sell"]
+    }
     chosen: list[dict[str, object]] = []
     for side in ["buy", "sell"]:
         side_train_rules = [
@@ -366,6 +450,9 @@ def validate_major_force_eval(
         f"Validated {len(chosen)} rule(s) with train/test split "
         f"{len(train_dates)}/{len(test_dates)} dates; "
         f"recent robustness window {len(recent_dates)} dates; "
+        f"searched {candidate_rule_count} candidate rule(s); "
+        f"train-passed buy/sell "
+        f"{train_passed_count_by_side['buy']}/{train_passed_count_by_side['sell']}; "
         f"tested top {cfg.train_candidate_limit_per_side} train-selected candidate(s) per side."
     )
     return {
@@ -375,9 +462,13 @@ def validate_major_force_eval(
         "train_date_count": len(train_dates),
         "test_date_count": len(test_dates),
         "recent_date_count": len(recent_dates),
+        "candidate_rule_count": candidate_rule_count,
+        "candidate_rule_count_by_side": candidate_rule_count_by_side,
         "train_passed_count": len(train_passed),
+        "train_passed_count_by_side": train_passed_count_by_side,
         "rules": chosen,
         "best_rules": best_rows[:20],
+        "best_rules_by_side": best_rows_by_side,
         "message": message,
     }
 
