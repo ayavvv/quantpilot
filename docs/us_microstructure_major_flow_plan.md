@@ -488,8 +488,10 @@ Implemented status as of 2026-06-01:
   report, then writes the readiness snapshot. If `US_MICROSTRUCTURE_DATE` is
   not set, it resolves the latest available collection partition instead of
   using the China morning calendar date, so the 08:30 report reads the previous
-  evening's US session. It sends email only when
-  `US_MICROSTRUCTURE_SEND_EMAIL=true`.
+  evening's US session. Validation defaults to ending one calendar day before
+  the report date, because validation runs before the current day's final report
+  is written; this prevents intraday/manual same-date signal files from entering
+  the forward ledger. It sends email only when `US_MICROSTRUCTURE_SEND_EMAIL=true`.
 - Launchd templates are available for weekday evening collection and
   China-morning report generation. `scripts/install_us_microstructure_launchd.sh`
   renders both templates into `/Library/LaunchDaemons` when passwordless sudo is

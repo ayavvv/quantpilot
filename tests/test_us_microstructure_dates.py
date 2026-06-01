@@ -1,4 +1,4 @@
-from scripts.us_microstructure_dates import collection_dates, default_report_date
+from scripts.us_microstructure_dates import collection_dates, default_report_date, validation_end_date
 
 
 def test_collection_dates_reads_hive_date_dirs(tmp_path):
@@ -18,3 +18,7 @@ def test_default_report_date_prefers_latest_collection_date(tmp_path):
 
 def test_default_report_date_falls_back_to_previous_local_date(tmp_path):
     assert default_report_date(tmp_path, today="2026-06-02") == "2026-06-01"
+
+
+def test_validation_end_date_excludes_current_report_date():
+    assert validation_end_date("2026-06-01") == "2026-05-31"
