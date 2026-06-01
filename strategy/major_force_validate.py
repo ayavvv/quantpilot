@@ -322,6 +322,7 @@ BUY_MARKET_FILTER_SETS: tuple[dict[str, object], ...] = (
 BUY_STOCK_FILTER_SETS: tuple[dict[str, object], ...] = (
     {"min_cmf_20": 0.08},
     {"min_cmf_20": 0.12},
+    {"max_cmf_accel_5_20": 0.10},
     {"min_cmf_20": 0.08, "max_price_change_20": 0.08},
     {"min_cmf_20": 0.08, "max_amount_ratio_5_20": 2.0},
     {"min_close_location_10": 0.55},

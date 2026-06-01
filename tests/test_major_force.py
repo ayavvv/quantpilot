@@ -224,6 +224,7 @@ def test_validate_major_force_fast_metrics_match_dataframe_path():
                 "side_score": 91,
                 "amount_ratio_5_20": 1.3,
                 "cmf_20": 0.2,
+                "cmf_accel_5_20": 0.05,
                 "close_location_10": 0.7,
                 "breakout_20": 0.01,
                 "fwd_return": 0.02,
@@ -238,6 +239,7 @@ def test_validate_major_force_fast_metrics_match_dataframe_path():
                 "side_score": 89,
                 "amount_ratio_5_20": 1.1,
                 "cmf_20": 0.1,
+                "cmf_accel_5_20": 0.15,
                 "close_location_10": 0.6,
                 "breakout_20": -0.01,
                 "fwd_return": -0.01,
@@ -252,6 +254,7 @@ def test_validate_major_force_fast_metrics_match_dataframe_path():
                 "side_score": 92,
                 "amount_ratio_5_20": 1.4,
                 "cmf_20": 0.3,
+                "cmf_accel_5_20": 0.03,
                 "close_location_10": 0.8,
                 "breakout_20": 0.02,
                 "fwd_return": 0.03,
@@ -267,6 +270,7 @@ def test_validate_major_force_fast_metrics_match_dataframe_path():
         "min_score": 80.0,
         "min_amount_ratio_5_20": 1.2,
         "min_cmf_20": 0.12,
+        "max_cmf_accel_5_20": 0.10,
         "stages": ["stealth_accumulation"],
     }
 
