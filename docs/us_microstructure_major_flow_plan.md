@@ -411,6 +411,7 @@ Phase 4: production gate
 Build:
 
 - `scripts/collect_us_microstructure.py`
+- `scripts/run_us_microstructure_collect.sh`
 - `strategy/us_microstructure_features.py`
 - `strategy/us_microstructure_signals.py`
 - `strategy/us_microstructure_validation.py`
@@ -418,12 +419,19 @@ Build:
 - `scripts/update_us_microstructure_prices.py`
 - `scripts/validate_us_microstructure_flow.py`
 - `scripts/run_us_microstructure_report.sh`
+- `deploy/launchd/com.quantpilot.us_microstructure.collect.plist`
+- `deploy/launchd/com.quantpilot.us_microstructure.report.plist`
+- `scripts/install_us_microstructure_launchd.sh`
 
 Implemented status as of 2026-06-01:
 
 - `scripts/collect_us_microstructure.py` collects Futu `TICKER`,
   `ORDER_BOOK`, and `QUOTE` data into local parquet batches and mirrors them to
   NAS with `ssh+tar`.
+- `scripts/run_us_microstructure_collect.sh` is the Mac-side collection
+  wrapper. It loads `.env`, applies a lock, uses
+  `config/us_microstructure_core_symbols.txt` by default, and runs the collector
+  for the configured session duration.
 - `strategy/us_microstructure_features.py` aggregates raw trades, order book,
   and quotes into one-minute tape/book/impact features. Futu trade timestamps
   are interpreted as US Eastern time and normalized to UTC so they align with
@@ -449,6 +457,9 @@ Implemented status as of 2026-06-01:
 - `scripts/run_us_microstructure_report.sh` is the Mac-side entrypoint for cron
   or launchd. It updates daily prices, updates validation, then generates the
   report. It sends email only when `US_MICROSTRUCTURE_SEND_EMAIL=true`.
+- Launchd templates are available for weekday evening collection and
+  China-morning report generation. `scripts/install_us_microstructure_launchd.sh`
+  renders both templates into `/Library/LaunchDaemons`.
 
 Start with a fixed universe file:
 
