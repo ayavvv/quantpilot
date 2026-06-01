@@ -88,6 +88,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     base_dir = Path(args.base_dir).expanduser()
+    default_price_csv = base_dir / "validation" / "prices" / "us_daily_prices.csv"
+    price_csv = str(args.price_csv or "")
+    if not price_csv and default_price_csv.exists():
+        price_csv = str(default_price_csv)
     cfg = ForwardValidationConfig(
         horizons=_parse_int_tuple(args.horizons),
         benchmark=args.benchmark,
@@ -103,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
     events = load_signal_events(signal_files, min_event_score=cfg.min_event_score)
     symbols = sorted(set(events["symbol"].tolist()) | {cfg.benchmark}) if not events.empty else [cfg.benchmark]
 
-    csv_prices = load_price_history_from_csv(args.price_csv) if args.price_csv else {}
+    csv_prices = load_price_history_from_csv(price_csv) if price_csv else {}
     qlib_prices = load_price_history_from_qlib(args.qlib_dir, symbols)
     prices = merge_price_history(qlib_prices, csv_prices)
     forward_returns = compute_forward_returns(events, prices, config=cfg)
@@ -115,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
     gate["price_symbol_count"] = int(len(prices))
     gate["price_sources"] = {
         "qlib_dir": str(Path(args.qlib_dir).expanduser()),
-        "price_csv": str(Path(args.price_csv).expanduser()) if args.price_csv else "",
+        "price_csv": str(Path(price_csv).expanduser()) if price_csv else "",
     }
 
     outputs = write_validation_outputs(

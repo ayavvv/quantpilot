@@ -4,6 +4,7 @@ from pathlib import Path
 import pandas as pd
 
 from scripts import report_us_microstructure_flow as report_script
+from scripts import update_us_microstructure_prices as price_script
 from scripts import validate_us_microstructure_flow as validate_script
 from strategy.us_microstructure_features import compute_microstructure_features
 from strategy.us_microstructure_signals import MicrostructureSignalConfig, score_microstructure_signals
@@ -299,3 +300,89 @@ def test_validation_script_writes_warmup_gate_without_future_prices(tmp_path):
     assert gate["validated"] is False
     assert gate["event_count"] == 1
     assert gate["forward_return_count"] == 0
+
+
+def test_price_symbol_universe_includes_defaults_explicit_signals_and_benchmark(tmp_path):
+    _write_signal(
+        tmp_path,
+        "2026-01-02",
+        [
+            {
+                "symbol": "US.AAPL",
+                "side": "accumulation",
+                "side_score": 88,
+                "rank": 1,
+            }
+        ],
+    )
+
+    symbols = price_script.build_price_symbol_universe(
+        tmp_path,
+        explicit_symbols=["nvda"],
+        benchmark="SPY",
+        include_default_symbols=False,
+    )
+
+    assert symbols == ["US.SPY", "US.NVDA", "US.AAPL"]
+
+
+def test_update_price_history_merges_existing_and_fetcher_rows(tmp_path):
+    price_dir = tmp_path / "validation" / "prices"
+    price_dir.mkdir(parents=True)
+    (price_dir / "us_daily_prices.csv").write_text(
+        "date,symbol,open,high,low,close,volume,turnover,amount,source,updated_at\n"
+        "2026-01-02,US.AAPL,99,101,98,100,1000,100000,100000,old,2026-01-02T00:00:00\n",
+        encoding="utf-8",
+    )
+
+    def fake_fetcher(symbols, start, end):
+        assert symbols == ["US.AAPL", "US.SPY"]
+        assert start == "2026-01-02"
+        assert end == "2026-01-03"
+        rows = price_script.normalize_kline_rows(
+            [
+                {
+                    "time_key": "2026-01-02 00:00:00",
+                    "open": 100,
+                    "high": 102,
+                    "low": 99,
+                    "close": 101,
+                    "volume": 2000,
+                    "turnover": 202000,
+                }
+            ],
+            symbol="US.AAPL",
+            source="fake",
+        )
+        spy = price_script.normalize_kline_rows(
+            [
+                {
+                    "time_key": "2026-01-03 00:00:00",
+                    "open": 500,
+                    "high": 505,
+                    "low": 499,
+                    "close": 504,
+                    "volume": 3000,
+                    "turnover": 1512000,
+                }
+            ],
+            symbol="SPY",
+            source="fake",
+        )
+        return pd.concat([rows, spy], ignore_index=True), {}
+
+    prices, errors, outputs = price_script.update_price_history(
+        tmp_path,
+        symbols=["US.AAPL", "US.SPY"],
+        start_date="2026-01-02",
+        end_date="2026-01-03",
+        fetcher=fake_fetcher,
+    )
+
+    by_key = {(row["date"], row["symbol"]): row for row in prices.to_dict("records")}
+    assert not errors
+    assert by_key[("2026-01-02", "US.AAPL")]["close"] == 101
+    assert by_key[("2026-01-03", "US.SPY")]["close"] == 504
+    assert outputs["csv"].exists()
+    assert outputs["parquet"].exists()
+    assert outputs["status"].exists()

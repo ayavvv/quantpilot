@@ -415,6 +415,7 @@ Build:
 - `strategy/us_microstructure_signals.py`
 - `strategy/us_microstructure_validation.py`
 - `scripts/report_us_microstructure_flow.py`
+- `scripts/update_us_microstructure_prices.py`
 - `scripts/validate_us_microstructure_flow.py`
 - `scripts/run_us_microstructure_report.sh`
 
@@ -436,14 +437,18 @@ Implemented status as of 2026-06-01:
   `rule_metrics.csv`, and `active_gate.json`. It promotes only after the
   configured sample-size, 5-day alpha, hit-rate, recent hit-rate, Wilson lower
   bound, and symbol-concentration gates pass.
+- `scripts/update_us_microstructure_prices.py` uses Futu OpenD `K_DAY` data to
+  maintain `validation/prices/us_daily_prices.csv` and parquet. This is the
+  daily close-price source used to turn signal events into forward-return labels.
 - `scripts/validate_us_microstructure_flow.py` updates the validation ledger
   from archived signal CSV files and daily close prices. It can read a
-  `date,symbol,close` price CSV and/or Qlib daily close data.
+  `date,symbol,close` price CSV and/or Qlib daily close data. By default it
+  auto-detects `validation/prices/us_daily_prices.csv`.
 - `scripts/report_us_microstructure_flow.py` writes feature parquet, signal CSV,
   status JSON, and Markdown/HTML reports, then mirrors report artifacts to NAS.
 - `scripts/run_us_microstructure_report.sh` is the Mac-side entrypoint for cron
-  or launchd. It updates validation first, then generates the report. It sends
-  email only when `US_MICROSTRUCTURE_SEND_EMAIL=true`.
+  or launchd. It updates daily prices, updates validation, then generates the
+  report. It sends email only when `US_MICROSTRUCTURE_SEND_EMAIL=true`.
 
 Start with a fixed universe file:
 
