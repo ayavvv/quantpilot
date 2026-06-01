@@ -487,7 +487,9 @@ Implemented status as of 2026-06-01:
   JSON snapshots locally and mirrors them to the NAS `readiness/` archive. The
   snapshot separates pipeline health (`ok`) from `high_confidence_ready`, which
   requires both a promoted validation gate and a passing report data-quality
-  gate.
+  gate. Manifest readiness also audits per-symbol channel coverage across
+  trades, order-book, and quotes so a missing data stream is visible before it
+  reaches scoring.
 - `scripts/run_us_microstructure_report.sh` is the Mac-side entrypoint for cron
   or launchd. It updates daily prices, updates validation, generates the
   report, then writes the readiness snapshot. If `US_MICROSTRUCTURE_DATE` is

@@ -60,6 +60,7 @@ def test_readiness_snapshot_accepts_ready_warmup_system(tmp_path):
     assert snapshot["high_confidence_ready"] is False
     assert snapshot["high_confidence_requirements"]["validation_gate_validated"] is False
     assert snapshot["checks"]["manifest"]["row_counts"]["trades"] == 100
+    assert snapshot["checks"]["manifest"]["symbol_count"] == 0
     assert snapshot["checks"]["validation_gate"]["state"] == "warmup"
 
 
@@ -154,6 +155,33 @@ def test_manifest_check_defaults_to_latest_run(tmp_path):
     assert latest["row_counts"]["trades"] == 2
     assert all_runs["ok"] is False
     assert all_runs["status_counts"]["failed"] == 1
+
+
+def test_manifest_check_flags_missing_kind_coverage_by_symbol(tmp_path):
+    manifest_dir = tmp_path / "manifests" / "date=2026-06-01"
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "manifest-run.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"kind": "trades", "symbol": "US.AAPL", "batch_index": 1, "row_count": 10, "nas_upload_status": "ok"}),
+                json.dumps({"kind": "order_book", "symbol": "US.AAPL", "batch_index": 1, "row_count": 1, "nas_upload_status": "ok"}),
+                json.dumps({"kind": "quotes", "symbol": "US.AAPL", "batch_index": 1, "row_count": 1, "nas_upload_status": "ok"}),
+                json.dumps({"kind": "trades", "symbol": "US.NVDA", "batch_index": 1, "row_count": 10, "nas_upload_status": "ok"}),
+                json.dumps({"kind": "quotes", "symbol": "US.NVDA", "batch_index": 1, "row_count": 1, "nas_upload_status": "ok"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = readiness.check_manifest(tmp_path, date="2026-06-01")
+
+    assert result["ok"] is False
+    assert result["symbol_count"] == 2
+    assert result["complete_symbol_count"] == 1
+    assert result["batch_count"] == 1
+    assert result["missing_kind_symbols"] == {"order_book": ["US.NVDA"]}
+    assert any("missing kind coverage" in issue for issue in result["issues"])
 
 
 def test_write_readiness_snapshot_writes_latest_and_dated_file(tmp_path):

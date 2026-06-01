@@ -63,18 +63,42 @@ def check_manifest(base_dir: str | Path, *, date: str, min_records: int = 1, lat
     status_counts: dict[str, int] = {}
     kind_counts: dict[str, int] = {}
     row_counts: dict[str, int] = {}
+    symbols_by_kind: dict[str, set[str]] = {}
+    batch_indexes: set[int] = set()
     for record in records:
         status = str(record.get("nas_upload_status") or "")
         kind = str(record.get("kind") or "")
+        symbol = str(record.get("symbol") or "").strip()
         status_counts[status] = status_counts.get(status, 0) + 1
         kind_counts[kind] = kind_counts.get(kind, 0) + 1
         row_counts[kind] = row_counts.get(kind, 0) + int(record.get("row_count") or 0)
+        if kind and symbol:
+            symbols_by_kind.setdefault(kind, set()).add(symbol)
+        try:
+            batch_indexes.add(int(record.get("batch_index")))
+        except (TypeError, ValueError):
+            pass
+    required_kinds = ("trades", "order_book", "quotes")
+    covered_symbols = set().union(*(symbols_by_kind.get(kind, set()) for kind in required_kinds))
+    missing_kind_symbols = {
+        kind: sorted(covered_symbols.difference(symbols_by_kind.get(kind, set())))
+        for kind in required_kinds
+    }
+    missing_kind_symbols = {kind: symbols for kind, symbols in missing_kind_symbols.items() if symbols}
+    complete_symbol_count = sum(
+        1
+        for symbol in covered_symbols
+        if all(symbol in symbols_by_kind.get(kind, set()) for kind in required_kinds)
+    )
     issues = []
     if len(records) < int(min_records):
         issues.append(f"manifest records below minimum: {len(records)} < {min_records}")
     failed = status_counts.get("failed", 0)
     if failed:
         issues.append(f"manifest contains failed NAS uploads: {failed}")
+    if missing_kind_symbols:
+        summary = ", ".join(f"{kind}={len(symbols)}" for kind, symbols in sorted(missing_kind_symbols.items()))
+        issues.append(f"manifest missing kind coverage for symbols: {summary}")
     return {
         "ok": not issues,
         "date": date,
@@ -83,6 +107,10 @@ def check_manifest(base_dir: str | Path, *, date: str, min_records: int = 1, lat
         "status_counts": status_counts,
         "kind_counts": kind_counts,
         "row_counts": row_counts,
+        "symbol_count": len(covered_symbols),
+        "complete_symbol_count": complete_symbol_count,
+        "batch_count": len(batch_indexes),
+        "missing_kind_symbols": missing_kind_symbols,
         "issues": issues,
     }
 
