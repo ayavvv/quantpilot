@@ -142,6 +142,10 @@ def check_report(base_dir: str | Path, *, date: str) -> dict[str, Any]:
         issues.append(f"report HTML missing: {html_path}")
     if not latest_html.exists():
         issues.append(f"latest report HTML missing: {latest_html}")
+    high_count = int(payload.get("high_count") or 0) if payload else 0
+    data_quality = payload.get("data_quality", {}) if payload else {}
+    if high_count > 0 and not (isinstance(data_quality, dict) and data_quality.get("high_confidence_data_quality_ok")):
+        issues.append("report has high-confidence signals without a passing data-quality gate")
     return {
         "ok": not issues,
         "status_path": str(status_path),
@@ -149,8 +153,9 @@ def check_report(base_dir: str | Path, *, date: str) -> dict[str, Any]:
         "latest_html_path": str(latest_html),
         "exists": status_path.exists() and html_path.exists(),
         "signal_count": int(payload.get("signal_count") or 0) if payload else 0,
-        "high_count": int(payload.get("high_count") or 0) if payload else 0,
+        "high_count": high_count,
         "watch_count": int(payload.get("watch_count") or 0) if payload else 0,
+        "data_quality": data_quality if isinstance(data_quality, dict) else {},
         "issues": issues,
     }
 

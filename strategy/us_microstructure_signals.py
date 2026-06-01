@@ -130,6 +130,12 @@ def _summarize_symbol(symbol: str, part: pd.DataFrame, cfg: MicrostructureSignal
     coverage_ratio = _last_valid(_series(part, "coverage_ratio_regular", np.nan), 0.0)
     if coverage_ratio <= 0 and coverage_minutes:
         coverage_ratio = min(1.0, coverage_minutes / 390.0)
+    trade_coverage_minutes = int(_series(part, "has_trade_data", False).fillna(False).sum())
+    book_coverage_minutes = int(_series(part, "has_book_data", False).fillna(False).sum())
+    quote_coverage_minutes = int(_series(part, "has_quote_data", False).fillna(False).sum())
+    trade_coverage_ratio = _last_valid(_series(part, "trade_coverage_ratio_regular", np.nan), coverage_ratio)
+    book_coverage_ratio = _last_valid(_series(part, "book_coverage_ratio_regular", np.nan), coverage_ratio)
+    quote_coverage_ratio = _last_valid(_series(part, "quote_coverage_ratio_regular", np.nan), 0.0)
 
     first_price = _first_valid(_series(part, "reference_price", np.nan))
     last_price = _last_valid(_series(part, "reference_price", np.nan))
@@ -206,6 +212,12 @@ def _summarize_symbol(symbol: str, part: pd.DataFrame, cfg: MicrostructureSignal
         "minute_count": int(len(part)),
         "coverage_minutes": coverage_minutes,
         "coverage_ratio_regular": coverage_ratio,
+        "trade_coverage_minutes": trade_coverage_minutes,
+        "book_coverage_minutes": book_coverage_minutes,
+        "quote_coverage_minutes": quote_coverage_minutes,
+        "trade_coverage_ratio_regular": trade_coverage_ratio,
+        "book_coverage_ratio_regular": book_coverage_ratio,
+        "quote_coverage_ratio_regular": quote_coverage_ratio,
         "trade_count": trade_count,
         "dollar_volume": dollar_volume,
         "active_buy_dollar": active_buy,
@@ -269,6 +281,8 @@ def _attach_side(row: pd.Series, cfg: MicrostructureSignalConfig, gate: dict[str
 
     has_data_quality = (
         _finite(row.get("coverage_ratio_regular"), 0.0) >= cfg.min_data_coverage
+        and _finite(row.get("trade_coverage_ratio_regular"), 0.0) >= cfg.min_data_coverage
+        and _finite(row.get("book_coverage_ratio_regular"), 0.0) >= cfg.min_data_coverage
         and int(row.get("trade_count") or 0) >= cfg.min_trade_count
         and _finite(row.get("dollar_volume"), 0.0) >= cfg.min_dollar_volume
         and _finite(row.get("spread_bps"), cfg.max_spread_bps) <= cfg.max_spread_bps

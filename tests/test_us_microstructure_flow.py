@@ -55,6 +55,10 @@ def test_feature_builder_aligns_futu_eastern_trades_with_utc_book():
     assert str(row["minute"]) == "2026-06-01 13:30:00+00:00"
     assert row["trade_count"] == 1
     assert row["book_snapshot_count"] == 1
+    assert row["trade_coverage_minutes"] == 1
+    assert row["book_coverage_minutes"] == 1
+    assert row["trade_coverage_ratio_regular"] > 0
+    assert row["book_coverage_ratio_regular"] > 0
     assert row["active_buy_dollar"] == 10_000.0
     assert row["depth_imbalance_1"] > 0
 
@@ -72,6 +76,8 @@ def test_signal_scoring_keeps_strong_candidate_warmup_without_validation_gate():
             "has_trade_data": [True] * len(minutes),
             "has_book_data": [True] * len(minutes),
             "coverage_ratio_regular": [1.0] * len(minutes),
+            "trade_coverage_ratio_regular": [1.0] * len(minutes),
+            "book_coverage_ratio_regular": [1.0] * len(minutes),
             "reference_price": [100, 100.1, 100.2, 100.25, 100.3, 100.35],
             "vwap_deviation_bps": [5, 8, 10, 12, 13, 14],
             "price_impact_bps_per_musd": [5] * len(minutes),
@@ -113,6 +119,8 @@ def test_signal_scoring_requires_side_specific_validation_for_high_confidence():
             "has_trade_data": [True] * len(minutes),
             "has_book_data": [True] * len(minutes),
             "coverage_ratio_regular": [1.0] * len(minutes),
+            "trade_coverage_ratio_regular": [1.0] * len(minutes),
+            "book_coverage_ratio_regular": [1.0] * len(minutes),
             "reference_price": [100, 100.1, 100.2, 100.25, 100.3, 100.35],
             "vwap_deviation_bps": [20] * len(minutes),
             "price_impact_bps_per_musd": [5] * len(minutes),
@@ -144,6 +152,54 @@ def test_signal_scoring_requires_side_specific_validation_for_high_confidence():
 
     assert signals.iloc[0]["side"] == "accumulation"
     assert signals.iloc[0]["confidence"] == "high"
+
+
+def test_high_confidence_requires_order_book_coverage_even_when_validated():
+    minutes = pd.date_range("2026-06-01 13:30:00+00:00", periods=6, freq="min")
+    features = pd.DataFrame(
+        {
+            "symbol": ["US.AAPL"] * len(minutes),
+            "minute": minutes,
+            "trade_count": [200] * len(minutes),
+            "dollar_volume": [10_000_000.0] * len(minutes),
+            "active_buy_dollar": [7_000_000.0] * len(minutes),
+            "active_sell_dollar": [3_000_000.0] * len(minutes),
+            "has_trade_data": [True] * len(minutes),
+            "has_book_data": [False] * len(minutes),
+            "coverage_ratio_regular": [1.0] * len(minutes),
+            "trade_coverage_ratio_regular": [1.0] * len(minutes),
+            "book_coverage_ratio_regular": [0.0] * len(minutes),
+            "reference_price": [100, 100.1, 100.2, 100.25, 100.3, 100.35],
+            "vwap_deviation_bps": [20] * len(minutes),
+            "price_impact_bps_per_musd": [5] * len(minutes),
+            "spread_bps": [2] * len(minutes),
+            "depth_imbalance_1": [0.50] * len(minutes),
+            "depth_imbalance_5": [0.40] * len(minutes),
+            "bid_replenish_1": [900] * len(minutes),
+            "ask_replenish_1": [0] * len(minutes),
+            "dollar_volume_z": [3] * len(minutes),
+            "odd_lot_ratio": [0.1] * len(minutes),
+            "duplicate_sequence_rate": [0.0] * len(minutes),
+        }
+    )
+
+    signals = score_microstructure_signals(
+        features,
+        config=MicrostructureSignalConfig(
+            min_trade_count=100,
+            min_dollar_volume=1_000,
+            min_data_coverage=0.8,
+            high_score=70,
+        ),
+        validation_gate={
+            "state": "validated",
+            "validated": True,
+            "validated_sides": {"accumulation": True, "distribution": False},
+        },
+    )
+
+    assert signals.iloc[0]["side"] == "accumulation"
+    assert signals.iloc[0]["confidence"] != "high"
 
 
 def _write_raw(base: Path, kind: str, symbol: str, rows: list[dict]):
@@ -210,6 +266,8 @@ def test_report_script_writes_warmup_artifacts(tmp_path):
     status = json.loads((tmp_path / "reports/date=2026-06-01/status.json").read_text(encoding="utf-8"))
     assert status["validation_gate"]["state"] == "warmup"
     assert status["high_count"] == 0
+    assert "data_quality" in status
+    assert status["data_quality"]["eligible_symbol_count"] == 0
 
 
 def _write_signal(base: Path, date: str, rows: list[dict]):

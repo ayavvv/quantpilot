@@ -427,10 +427,21 @@ def compute_microstructure_features(
         window = max(3, int(cfg.rolling_window_minutes))
         part["dollar_volume_z"] = _rolling_z(part["dollar_volume"], window)
         part["trade_count_z"] = _rolling_z(part["trade_count"], window)
-        part["coverage_minutes"] = int((part["has_trade_data"] | part["has_book_data"]).sum())
+        trade_minutes = int(part["has_trade_data"].sum())
+        book_minutes = int(part["has_book_data"].sum())
+        quote_minutes = int(part["has_quote_data"].sum())
+        coverage_minutes = int((part["has_trade_data"] | part["has_book_data"]).sum())
+        expected_minutes = float(max(1, cfg.expected_regular_minutes))
+        part["trade_coverage_minutes"] = trade_minutes
+        part["book_coverage_minutes"] = book_minutes
+        part["quote_coverage_minutes"] = quote_minutes
+        part["coverage_minutes"] = coverage_minutes
+        part["trade_coverage_ratio_regular"] = min(1.0, float(trade_minutes) / expected_minutes)
+        part["book_coverage_ratio_regular"] = min(1.0, float(book_minutes) / expected_minutes)
+        part["quote_coverage_ratio_regular"] = min(1.0, float(quote_minutes) / expected_minutes)
         part["coverage_ratio_regular"] = min(
             1.0,
-            float(part["coverage_minutes"].iloc[-1]) / float(max(1, cfg.expected_regular_minutes)),
+            float(coverage_minutes) / expected_minutes,
         )
         enriched.append(part)
 

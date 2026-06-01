@@ -212,6 +212,9 @@ Candidate behavior:
 High-confidence gate before validation:
 
 - Data coverage at least 80% of the regular session for the symbol.
+- Trade coverage and order-book coverage must each meet the minimum, so a
+  candidate cannot become high-confidence from prints alone when book evidence
+  is missing.
 - Minimum regular-session dollar volume, default 50m USD.
 - Minimum collected trade count, default 1000 prints.
 - At least two independent evidence blocks agree:
@@ -438,11 +441,13 @@ Implemented status as of 2026-06-01:
 - `strategy/us_microstructure_features.py` aggregates raw trades, order book,
   and quotes into one-minute tape/book/impact features. Futu trade timestamps
   are interpreted as US Eastern time and normalized to UTC so they align with
-  collector receive-time book snapshots.
+  collector receive-time book snapshots. It also writes separate trade,
+  order-book, quote, and combined regular-session coverage ratios.
 - `strategy/us_microstructure_signals.py` scores accumulation and distribution
   candidates, but only emits `high` confidence when a validation gate is
-  promoted for that side. Without `validation/active_gate.json`, candidates stay
-  `warmup`/`diagnostic` or `watch`.
+  promoted for that side and both trade and order-book coverage gates pass.
+  Without `validation/active_gate.json`, candidates stay `warmup`/`diagnostic`
+  or `watch`.
 - `strategy/us_microstructure_validation.py` maintains the forward validation
   ledger: `signal_events.parquet`, `forward_returns.parquet`,
   `rule_metrics.csv`, and `active_gate.json`. It promotes only after the
@@ -457,10 +462,13 @@ Implemented status as of 2026-06-01:
   auto-detects `validation/prices/us_daily_prices.csv`.
 - `scripts/report_us_microstructure_flow.py` writes feature parquet, signal CSV,
   status JSON, and Markdown/HTML reports, then mirrors report artifacts to NAS.
+  The status JSON includes a `data_quality` block that records which symbols
+  are eligible for high-confidence reporting based on coverage, liquidity,
+  duplicate sequence rate, and spread.
 - `scripts/us_microstructure_readiness.py` checks the latest manifest, price
-  feed, validation gate, report artifacts, and launchd services. When run from
-  the daily wrapper it writes dated/latest readiness JSON snapshots locally and
-  mirrors them to the NAS `readiness/` archive.
+  feed, validation gate, report artifacts, data-quality gate, and launchd
+  services. When run from the daily wrapper it writes dated/latest readiness
+  JSON snapshots locally and mirrors them to the NAS `readiness/` archive.
 - `scripts/run_us_microstructure_report.sh` is the Mac-side entrypoint for cron
   or launchd. It updates daily prices, updates validation, generates the
   report, then writes the readiness snapshot. It sends email only when

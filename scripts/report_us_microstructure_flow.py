@@ -104,6 +104,94 @@ def _coverage_summary(features: pd.DataFrame) -> dict[str, object]:
     }
 
 
+def _last_numeric(part: pd.DataFrame, column: str, default: float = 0.0) -> float:
+    if column not in part.columns:
+        return default
+    values = pd.to_numeric(part[column], errors="coerce").dropna()
+    if values.empty:
+        return default
+    return float(values.iloc[-1])
+
+
+def _median_numeric(part: pd.DataFrame, column: str, default: float = 0.0) -> float:
+    if column not in part.columns:
+        return default
+    values = pd.to_numeric(part[column], errors="coerce").dropna()
+    if values.empty:
+        return default
+    return float(values.median())
+
+
+def _data_quality_summary(features: pd.DataFrame, cfg: MicrostructureSignalConfig) -> dict[str, object]:
+    if features.empty:
+        return {
+            "symbol_count": 0,
+            "eligible_symbol_count": 0,
+            "high_confidence_data_quality_ok": False,
+            "min_required_coverage": float(cfg.min_data_coverage),
+            "min_required_trade_count": int(cfg.min_trade_count),
+            "min_required_dollar_volume": float(cfg.min_dollar_volume),
+            "max_allowed_duplicate_sequence_rate": 0.01,
+            "max_allowed_spread_bps": float(cfg.max_spread_bps),
+            "symbols": [],
+        }
+
+    rows = []
+    for symbol, group in features.groupby("symbol", sort=True):
+        part = group.sort_values("minute")
+        coverage = _last_numeric(part, "coverage_ratio_regular")
+        trade_coverage = _last_numeric(part, "trade_coverage_ratio_regular", coverage)
+        book_coverage = _last_numeric(part, "book_coverage_ratio_regular", coverage)
+        quote_coverage = _last_numeric(part, "quote_coverage_ratio_regular")
+        trade_count = int(pd.to_numeric(part.get("trade_count", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
+        dollar_volume = float(pd.to_numeric(part.get("dollar_volume", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
+        duplicate_rate = _median_numeric(part, "duplicate_sequence_rate")
+        spread_bps = _median_numeric(part, "spread_bps", cfg.max_spread_bps)
+        eligible = (
+            coverage >= cfg.min_data_coverage
+            and trade_coverage >= cfg.min_data_coverage
+            and book_coverage >= cfg.min_data_coverage
+            and trade_count >= cfg.min_trade_count
+            and dollar_volume >= cfg.min_dollar_volume
+            and duplicate_rate < 0.01
+            and spread_bps <= cfg.max_spread_bps
+        )
+        rows.append(
+            {
+                "symbol": str(symbol),
+                "eligible": bool(eligible),
+                "coverage_ratio_regular": coverage,
+                "trade_coverage_ratio_regular": trade_coverage,
+                "book_coverage_ratio_regular": book_coverage,
+                "quote_coverage_ratio_regular": quote_coverage,
+                "trade_count": trade_count,
+                "dollar_volume": dollar_volume,
+                "duplicate_sequence_rate": duplicate_rate,
+                "spread_bps": spread_bps,
+            }
+        )
+
+    ratios = [float(row["coverage_ratio_regular"]) for row in rows]
+    trade_ratios = [float(row["trade_coverage_ratio_regular"]) for row in rows]
+    book_ratios = [float(row["book_coverage_ratio_regular"]) for row in rows]
+    eligible_count = sum(1 for row in rows if row["eligible"])
+    return {
+        "symbol_count": len(rows),
+        "eligible_symbol_count": int(eligible_count),
+        "high_confidence_data_quality_ok": eligible_count > 0,
+        "min_required_coverage": float(cfg.min_data_coverage),
+        "min_required_trade_count": int(cfg.min_trade_count),
+        "min_required_dollar_volume": float(cfg.min_dollar_volume),
+        "max_allowed_duplicate_sequence_rate": 0.01,
+        "max_allowed_spread_bps": float(cfg.max_spread_bps),
+        "min_coverage_ratio_regular": min(ratios) if ratios else 0.0,
+        "median_coverage_ratio_regular": float(pd.Series(ratios).median()) if ratios else 0.0,
+        "median_trade_coverage_ratio_regular": float(pd.Series(trade_ratios).median()) if trade_ratios else 0.0,
+        "median_book_coverage_ratio_regular": float(pd.Series(book_ratios).median()) if book_ratios else 0.0,
+        "symbols": rows,
+    }
+
+
 def _candidate_view(signals: pd.DataFrame, *, top_n: int, min_score: float) -> pd.DataFrame:
     if signals.empty:
         return signals
@@ -160,6 +248,7 @@ def render_markdown_report(
     features: pd.DataFrame,
     raw_counts: dict[str, int],
     validation_gate: dict,
+    data_quality: dict[str, object],
     top_n: int,
     min_score: float,
 ) -> str:
@@ -180,6 +269,8 @@ def render_markdown_report(
         "",
         f"- Gate validated: `{bool(validation_gate.get('validated'))}`",
         f"- Gate reason: {validation_gate.get('reason', '')}",
+        f"- Symbols eligible for high-confidence reporting: `{data_quality.get('eligible_symbol_count', 0)}` / `{data_quality.get('symbol_count', 0)}`",
+        f"- Median trade/book coverage: `{_pct(data_quality.get('median_trade_coverage_ratio_regular'))}` / `{_pct(data_quality.get('median_book_coverage_ratio_regular'))}`",
         "",
         "## Data Coverage",
         "",
@@ -238,6 +329,7 @@ def render_html_report(
     features: pd.DataFrame,
     raw_counts: dict[str, int],
     validation_gate: dict,
+    data_quality: dict[str, object],
     top_n: int,
     min_score: float,
 ) -> str:
@@ -273,6 +365,7 @@ tr.sell {{ background: #fff1f2; }}
 <div class="metric"><div class="value">{coverage['minute_count']}</div><div class="label">Feature Minutes</div></div>
 <p class="muted">Uses Futu OpenD tick prints, order-book snapshots, and quotes. It does not claim account-level institutional identity.</p>
 <div class="gate"><strong>Validation gate:</strong> validated={bool(validation_gate.get('validated'))}; {reason}</div>
+<div class="gate"><strong>Data quality gate:</strong> eligible_symbols={data_quality.get('eligible_symbol_count', 0)}/{data_quality.get('symbol_count', 0)}; median trade/book coverage={_pct(data_quality.get('median_trade_coverage_ratio_regular'))}/{_pct(data_quality.get('median_book_coverage_ratio_regular'))}</div>
 <h2>Data Coverage</h2>
 <p>Raw trades={raw_counts.get('trades', 0)}, order_book={raw_counts.get('order_book', 0)}, quotes={raw_counts.get('quotes', 0)}. Trade/book/quote minutes={coverage['trade_minutes']} / {coverage['book_minutes']} / {coverage['quote_minutes']}.</p>
 <h2>Candidates</h2>
@@ -379,19 +472,22 @@ def main(argv: list[str] | None = None) -> int:
         inputs["quotes"],
         config=MicrostructureFeatureConfig(book_levels=args.book_levels),
     )
+    signal_cfg = MicrostructureSignalConfig()
     signals = score_microstructure_signals(
         features,
-        config=MicrostructureSignalConfig(),
+        config=signal_cfg,
         validation_gate=gate,
         include_diagnostic=True,
     )
     raw_counts = _raw_counts(inputs)
+    data_quality = _data_quality_summary(features, signal_cfg)
     status = {
         "date": args.date,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "base_dir": str(base_dir),
         "raw_counts": raw_counts,
         "coverage": _coverage_summary(features),
+        "data_quality": data_quality,
         "signal_count": int(len(signals)),
         "high_count": int((signals.get("confidence", pd.Series(dtype=str)) == "high").sum()) if not signals.empty else 0,
         "watch_count": int((signals.get("confidence", pd.Series(dtype=str)) == "watch").sum()) if not signals.empty else 0,
@@ -403,6 +499,7 @@ def main(argv: list[str] | None = None) -> int:
         features=features,
         raw_counts=raw_counts,
         validation_gate=gate,
+        data_quality=data_quality,
         top_n=args.top_n,
         min_score=args.min_score,
     )
@@ -412,6 +509,7 @@ def main(argv: list[str] | None = None) -> int:
         features=features,
         raw_counts=raw_counts,
         validation_gate=gate,
+        data_quality=data_quality,
         top_n=args.top_n,
         min_score=args.min_score,
     )
