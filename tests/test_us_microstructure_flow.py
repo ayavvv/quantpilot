@@ -462,7 +462,7 @@ def _write_json(path: Path, payload: dict):
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def test_report_script_writes_warmup_artifacts(tmp_path):
+def test_report_script_writes_warmup_artifacts(tmp_path, monkeypatch):
     trades = []
     for idx in range(5):
         trades.append(
@@ -541,6 +541,7 @@ def test_report_script_writes_warmup_artifacts(tmp_path):
         },
     )
 
+    monkeypatch.setattr(report_script, "_is_final_report", lambda date: False)
     report_script.main(
         [
             "--date",
@@ -555,10 +556,15 @@ def test_report_script_writes_warmup_artifacts(tmp_path):
 
     assert (tmp_path / "features_1m/date=2026-06-01/part-us-microstructure-features.parquet").exists()
     assert (tmp_path / "signals/date=2026-06-01/us_major_flow_signals.csv").exists()
+    assert not (tmp_path / "signals/us_major_flow_signals_latest.csv").exists()
     assert (tmp_path / "quality/date=2026-06-01/us_microstructure_data_quality.csv").exists()
-    assert (tmp_path / "quality/us_microstructure_data_quality_latest.csv").exists()
+    assert not (tmp_path / "quality/us_microstructure_data_quality_latest.csv").exists()
     assert (tmp_path / "reports/date=2026-06-01/us_microstructure_flow_report.html").exists()
+    assert not (tmp_path / "reports/us_microstructure_flow_report_latest.html").exists()
+    assert not (tmp_path / "reports/us_microstructure_flow_status_latest.json").exists()
     status = json.loads((tmp_path / "reports/date=2026-06-01/status.json").read_text(encoding="utf-8"))
+    assert status["is_final_report"] is False
+    assert status["latest_alias_updated"] is False
     assert status["validation_gate"]["state"] == "warmup"
     assert status["validation_progress"]["event_count"] == 12
     assert status["validation_progress"]["forward_return_count"] == 24
@@ -579,6 +585,71 @@ def test_report_script_writes_warmup_artifacts(tmp_path):
     assert "Validation Progress By Side" in html_report
     assert "Validation Event Eligibility" in html_report
     assert "missing 5d validation metrics" in html_report
+
+
+def test_report_script_updates_latest_aliases_for_final_report(tmp_path, monkeypatch):
+    _write_raw(
+        tmp_path,
+        "trades",
+        "US.AAPL",
+        [
+            {
+                "symbol": "US.AAPL",
+                "event_time": "2026-06-01 09:30:05.000",
+                "price": 100.0,
+                "volume": 100,
+                "turnover": 10_000.0,
+                "ticker_direction": "BUY",
+                "sequence": 1,
+                "type": "AUTO_MATCH",
+            }
+        ],
+    )
+    _write_raw(
+        tmp_path,
+        "order_book",
+        "US.AAPL",
+        [
+            {
+                "symbol": "US.AAPL",
+                "recv_time": "2026-06-01T13:30:06.000+00:00",
+                "bid_px_1": 100.0,
+                "bid_sz_1": 500,
+                "ask_px_1": 100.1,
+                "ask_sz_1": 250,
+                "mid": 100.05,
+                "spread_bps": 10.0,
+            }
+        ],
+    )
+    _write_json(
+        tmp_path / "validation" / "active_gate.json",
+        {"state": "warmup", "validated": False, "validated_sides": {"accumulation": False, "distribution": False}},
+    )
+
+    monkeypatch.setattr(report_script, "_is_final_report", lambda date: True)
+    report_script.main(
+        [
+            "--date",
+            "2026-06-01",
+            "--base-dir",
+            str(tmp_path),
+            "--symbols",
+            "AAPL",
+            "--no-nas-sync",
+        ]
+    )
+
+    assert (tmp_path / "signals/us_major_flow_signals_latest.csv").exists()
+    assert (tmp_path / "quality/us_microstructure_data_quality_latest.csv").exists()
+    assert (tmp_path / "reports/us_microstructure_flow_report_latest.html").exists()
+    latest_status_path = tmp_path / "reports/us_microstructure_flow_status_latest.json"
+    assert latest_status_path.exists()
+    status = json.loads((tmp_path / "reports/date=2026-06-01/status.json").read_text(encoding="utf-8"))
+    latest_status = json.loads(latest_status_path.read_text(encoding="utf-8"))
+    assert status["is_final_report"] is True
+    assert status["latest_alias_updated"] is True
+    assert latest_status["latest_alias_updated"] is True
 
 
 def test_read_microstructure_inputs_filters_stale_trades_from_date_partition(tmp_path):

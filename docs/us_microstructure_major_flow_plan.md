@@ -491,9 +491,12 @@ Implemented status as of 2026-06-01:
   score/confidence filters are starving validation samples.
 - `scripts/report_us_microstructure_flow.py` writes feature parquet, signal CSV,
   per-symbol data-quality CSV, status JSON, and Markdown/HTML reports, then
-  mirrors report artifacts to NAS. The status JSON and CSV record which symbols
-  are eligible for high-confidence reporting based on regular-session coverage,
-  liquidity, duplicate sequence rate, and spread. The report also renders
+  mirrors report artifacts to NAS. Dated artifacts are always kept, but
+  `*_latest` aliases are updated only by final post-close reports; intraday or
+  manual partial reports cannot overwrite the local or NAS latest entry point.
+  The status JSON and CSV record which symbols are eligible for high-confidence
+  reporting based on regular-session coverage, liquidity, duplicate sequence
+  rate, and spread. The report also renders
   validation progress by side, including sample counts, signal-day counts,
   hit-rate, alpha, Wilson lower bound, concentration, and each side's gate
   reason, so warmup reports show exactly why high-confidence language is still
@@ -505,7 +508,10 @@ Implemented status as of 2026-06-01:
   feed, validation gate, report artifacts, data-quality gate, and launchd
   services. When run from the daily wrapper it writes dated/latest readiness
   JSON snapshots locally and mirrors them to the NAS `readiness/` archive. The
-  snapshot separates pipeline health (`ok`) from `high_confidence_ready`, which
+  report-artifact check requires the report latest alias only for final reports,
+  because partial reports intentionally leave latest pointing at the last final
+  session. The snapshot separates pipeline health (`ok`) from
+  `high_confidence_ready`, which
   requires both a promoted validation gate and a passing report data-quality
   gate. Manifest readiness also audits per-symbol channel coverage across
   trades, order-book, and quotes so a missing data stream is visible before it

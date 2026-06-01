@@ -176,7 +176,10 @@ def check_report(base_dir: str | Path, *, date: str) -> dict[str, Any]:
         issues.append(f"report status unreadable: {error}")
     if not html_path.exists():
         issues.append(f"report HTML missing: {html_path}")
-    if not latest_html.exists():
+    is_final_report = bool(payload.get("is_final_report", True)) if payload else True
+    latest_required = is_final_report
+    latest_html_exists = latest_html.exists()
+    if latest_required and not latest_html_exists:
         issues.append(f"latest report HTML missing: {latest_html}")
     high_count = int(payload.get("high_count") or 0) if payload else 0
     data_quality = payload.get("data_quality", {}) if payload else {}
@@ -189,6 +192,9 @@ def check_report(base_dir: str | Path, *, date: str) -> dict[str, Any]:
         "status_path": str(status_path),
         "html_path": str(html_path),
         "latest_html_path": str(latest_html),
+        "latest_html_exists": latest_html_exists,
+        "latest_required": latest_required,
+        "is_final_report": is_final_report,
         "exists": status_path.exists() and html_path.exists(),
         "signal_count": int(payload.get("signal_count") or 0) if payload else 0,
         "high_count": high_count,

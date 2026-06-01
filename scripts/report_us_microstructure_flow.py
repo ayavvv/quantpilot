@@ -814,25 +814,35 @@ def _write_outputs(
     markdown: str,
     html_report: str,
     status: dict,
+    write_latest: bool,
 ) -> dict[str, Path]:
+    outputs: dict[str, Path] = {}
     feature_path = write_feature_table(features, base_dir, date=date)
+    outputs["features"] = feature_path
+
     signal_dir = base_dir / "signals" / f"date={date}"
     signal_dir.mkdir(parents=True, exist_ok=True)
     signal_csv = signal_dir / "us_major_flow_signals.csv"
     signals.to_csv(signal_csv, index=False)
-    latest_csv = base_dir / "signals" / "us_major_flow_signals_latest.csv"
-    latest_csv.parent.mkdir(parents=True, exist_ok=True)
-    signals.to_csv(latest_csv, index=False)
+    outputs["signals"] = signal_csv
+    if write_latest:
+        latest_csv = base_dir / "signals" / "us_major_flow_signals_latest.csv"
+        latest_csv.parent.mkdir(parents=True, exist_ok=True)
+        signals.to_csv(latest_csv, index=False)
+        outputs["signals_latest"] = latest_csv
 
     quality_dir = base_dir / "quality" / f"date={date}"
     quality_dir.mkdir(parents=True, exist_ok=True)
     quality_csv = quality_dir / "us_microstructure_data_quality.csv"
-    quality_latest = base_dir / "quality" / "us_microstructure_data_quality_latest.csv"
-    quality_latest.parent.mkdir(parents=True, exist_ok=True)
     quality_rows = status.get("data_quality", {}).get("symbols", []) if isinstance(status.get("data_quality"), dict) else []
     quality_frame = pd.DataFrame(quality_rows if isinstance(quality_rows, list) else [])
     quality_frame.to_csv(quality_csv, index=False)
-    quality_frame.to_csv(quality_latest, index=False)
+    outputs["data_quality"] = quality_csv
+    if write_latest:
+        quality_latest = base_dir / "quality" / "us_microstructure_data_quality_latest.csv"
+        quality_latest.parent.mkdir(parents=True, exist_ok=True)
+        quality_frame.to_csv(quality_latest, index=False)
+        outputs["data_quality_latest"] = quality_latest
 
     report_dir = base_dir / "reports" / f"date={date}"
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -840,29 +850,25 @@ def _write_outputs(
     html_path = report_dir / "us_microstructure_flow_report.html"
     markdown_path.write_text(markdown, encoding="utf-8")
     html_path.write_text(html_report, encoding="utf-8")
-    latest_html = base_dir / "reports" / "us_microstructure_flow_report_latest.html"
-    latest_md = base_dir / "reports" / "us_microstructure_flow_report_latest.md"
-    latest_html.parent.mkdir(parents=True, exist_ok=True)
-    latest_html.write_text(html_report, encoding="utf-8")
-    latest_md.write_text(markdown, encoding="utf-8")
+    outputs["markdown"] = markdown_path
+    outputs["html"] = html_path
+    if write_latest:
+        latest_html = base_dir / "reports" / "us_microstructure_flow_report_latest.html"
+        latest_md = base_dir / "reports" / "us_microstructure_flow_report_latest.md"
+        latest_html.parent.mkdir(parents=True, exist_ok=True)
+        latest_html.write_text(html_report, encoding="utf-8")
+        latest_md.write_text(markdown, encoding="utf-8")
+        outputs["html_latest"] = latest_html
+        outputs["markdown_latest"] = latest_md
 
     status_path = report_dir / "status.json"
-    latest_status = base_dir / "reports" / "us_microstructure_flow_status_latest.json"
     status_path.write_text(json.dumps(status, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    latest_status.write_text(json.dumps(status, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return {
-        "features": feature_path,
-        "signals": signal_csv,
-        "signals_latest": latest_csv,
-        "data_quality": quality_csv,
-        "data_quality_latest": quality_latest,
-        "markdown": markdown_path,
-        "html": html_path,
-        "html_latest": latest_html,
-        "markdown_latest": latest_md,
-        "status": status_path,
-        "status_latest": latest_status,
-    }
+    outputs["status"] = status_path
+    if write_latest:
+        latest_status = base_dir / "reports" / "us_microstructure_flow_status_latest.json"
+        latest_status.write_text(json.dumps(status, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        outputs["status_latest"] = latest_status
+    return outputs
 
 
 def _sync_outputs(paths: Iterable[Path], *, base_dir: Path, nas_host: str, nas_dir: str) -> list[dict[str, str]]:
@@ -936,6 +942,7 @@ def main(argv: list[str] | None = None) -> int:
         "date": args.date,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "is_final_report": bool(is_final_report),
+        "latest_alias_updated": bool(is_final_report),
         "base_dir": str(base_dir),
         "raw_counts": raw_counts,
         "coverage": _coverage_summary(features),
@@ -975,6 +982,7 @@ def main(argv: list[str] | None = None) -> int:
         markdown=markdown,
         html_report=html_report,
         status=status,
+        write_latest=bool(is_final_report),
     )
     nas_results = []
     if not args.no_nas_sync:
@@ -982,7 +990,8 @@ def main(argv: list[str] | None = None) -> int:
     if nas_results:
         status["nas_sync"] = nas_results
         outputs["status"].write_text(json.dumps(status, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        outputs["status_latest"].write_text(json.dumps(status, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        if "status_latest" in outputs:
+            outputs["status_latest"].write_text(json.dumps(status, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     if args.send_email:
         from reporter.send_report import send_email
@@ -999,6 +1008,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Wrote signals: {outputs['signals']}")
     print(f"Wrote data quality: {outputs['data_quality']}")
     print(f"Wrote report: {outputs['html']}")
+    print(f"Updated latest aliases: {status['latest_alias_updated']}")
     print(f"State={gate.get('state')} high={status['high_count']} watch={status['watch_count']}")
     return 0
 
