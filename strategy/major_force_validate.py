@@ -35,6 +35,16 @@ class ValidationCriteria:
     train_candidate_limit_per_side: int = 20
 
 
+@dataclass(frozen=True)
+class _PreparedEvalRows:
+    columns: set[str]
+    signal_side: np.ndarray
+    stage: np.ndarray
+    date_codes: np.ndarray
+    date_count: int
+    numeric: dict[str, np.ndarray]
+
+
 def _num(value: object, default: float = np.nan) -> float:
     try:
         result = float(value)
@@ -156,6 +166,103 @@ def _evaluate_filtered(rows: pd.DataFrame, side: str) -> dict[str, float | int]:
         "avg_return": float(selected_return.mean()),
         "avg_universe_return": float(universe_return.mean()),
         "avg_alpha": float(alpha.mean()),
+        "avg_hit_rate": hit_rate,
+        "win_rate_days": win_rate_days,
+    }
+
+
+def _empty_metrics() -> dict[str, float | int]:
+    return {
+        "date_count": 0,
+        "avg_selected_count": 0.0,
+        "avg_return": 0.0,
+        "avg_universe_return": 0.0,
+        "avg_alpha": 0.0,
+        "avg_hit_rate": 0.0,
+        "win_rate_days": 0.0,
+    }
+
+
+def _prepare_eval_arrays(rows: pd.DataFrame) -> _PreparedEvalRows:
+    eval_dates = rows["eval_date"].astype(str)
+    date_codes, unique_dates = pd.factorize(eval_dates, sort=True)
+    string_cols = {"code", "date", "eval_date", "signal_side", "stage", "reason"}
+    numeric = {
+        col: pd.to_numeric(rows[col], errors="coerce").to_numpy(dtype=float, copy=False)
+        for col in rows.columns
+        if col not in string_cols
+    }
+    return _PreparedEvalRows(
+        columns=set(rows.columns),
+        signal_side=rows["signal_side"].astype(str).str.lower().to_numpy(dtype=object, copy=False),
+        stage=rows["stage"].astype(str).to_numpy(dtype=object, copy=False)
+        if "stage" in rows.columns
+        else np.array([""] * len(rows), dtype=object),
+        date_codes=date_codes.astype(int, copy=False),
+        date_count=len(unique_dates),
+        numeric=numeric,
+    )
+
+
+def _rule_mask(prep: _PreparedEvalRows, rule: dict[str, object]) -> np.ndarray:
+    side = str(rule.get("side", "")).lower()
+    mask = prep.signal_side == side
+    mask &= prep.numeric["horizon"] == int(rule["horizon"])
+    mask &= prep.numeric["rank"] <= int(rule["rank_n"])
+    mask &= prep.numeric["side_score"] >= float(rule["min_score"])
+
+    stages = rule.get("stages")
+    if isinstance(stages, list) and stages and "stage" in prep.columns:
+        mask &= np.isin(prep.stage, [str(value) for value in stages])
+
+    for key, value in rule.items():
+        if key in {"side", "horizon", "rank_n", "min_score", "stages"}:
+            continue
+        if key.startswith("min_"):
+            field = key[4:]
+            values = prep.numeric.get(field)
+            if values is not None:
+                mask &= values >= float(value)
+        elif key.startswith("max_"):
+            field = key[4:]
+            values = prep.numeric.get(field)
+            if values is not None:
+                mask &= values <= float(value)
+    return mask
+
+
+def _evaluate_rule(prep: _PreparedEvalRows, rule: dict[str, object], side: str) -> dict[str, float | int]:
+    mask = _rule_mask(prep, rule)
+    if not bool(mask.any()):
+        return _empty_metrics()
+
+    date_codes = prep.date_codes[mask]
+    returns = prep.numeric["fwd_return"][mask]
+    universe_returns = prep.numeric["universe_return"][mask]
+    counts = np.bincount(date_codes, minlength=prep.date_count).astype(float)
+    selected = counts > 0
+    if not bool(selected.any()):
+        return _empty_metrics()
+
+    return_sums = np.bincount(date_codes, weights=returns, minlength=prep.date_count)
+    universe_sums = np.bincount(date_codes, weights=universe_returns, minlength=prep.date_count)
+    selected_return = return_sums[selected] / counts[selected]
+    universe_return = universe_sums[selected] / counts[selected]
+    if side == "sell":
+        alpha = universe_return - selected_return
+        hit_rate = float((returns < 0).mean())
+        win_rate_days = float((selected_return < 0).mean())
+    else:
+        alpha = selected_return - universe_return
+        hit_rate = float((returns > 0).mean())
+        win_rate_days = float((selected_return > 0).mean())
+
+    return {
+        "date_count": int(selected_return.shape[0]),
+        "avg_selected_count": float(counts[selected].mean()),
+        "avg_return": float(np.nanmean(selected_return)),
+        "avg_universe_return": float(np.nanmean(universe_return)),
+        "avg_alpha": float(np.nanmean(alpha)),
         "avg_hit_rate": hit_rate,
         "win_rate_days": win_rate_days,
     }
@@ -356,6 +463,9 @@ def validate_major_force_eval(
     train_rows = rows[rows["eval_date"].astype(str).isin(train_dates)]
     test_rows = rows[rows["eval_date"].astype(str).isin(test_dates)]
     recent_rows = rows[rows["eval_date"].astype(str).isin(recent_dates)]
+    train_prepared = _prepare_eval_arrays(train_rows)
+    test_prepared = _prepare_eval_arrays(test_rows)
+    recent_prepared = _prepare_eval_arrays(recent_rows)
     train_passed: list[dict[str, object]] = []
     candidate_rule_count = 0
     candidate_rule_count_by_side = {"buy": 0, "sell": 0}
@@ -366,7 +476,7 @@ def validate_major_force_eval(
         side = str(rule["side"])
         if side in candidate_rule_count_by_side:
             candidate_rule_count_by_side[side] += 1
-        train_metrics = _evaluate_filtered(_filter_rows(train_rows, rule), side)
+        train_metrics = _evaluate_rule(train_prepared, rule, side)
         if train_metrics["date_count"] < cfg.min_train_dates:
             continue
         if train_metrics["avg_alpha"] < cfg.min_train_alpha:
@@ -375,8 +485,8 @@ def validate_major_force_eval(
             continue
         if train_metrics["win_rate_days"] < cfg.min_train_win_rate_days:
             continue
-        test_metrics = _evaluate_filtered(_filter_rows(test_rows, rule), side)
-        recent_metrics = _evaluate_filtered(_filter_rows(recent_rows, rule), side)
+        test_metrics = _evaluate_rule(test_prepared, rule, side)
+        recent_metrics = _evaluate_rule(recent_prepared, rule, side)
         record = {
             **rule,
             "train": train_metrics,

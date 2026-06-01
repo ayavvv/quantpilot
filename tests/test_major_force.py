@@ -3,7 +3,14 @@ import pandas as pd
 from converter.incremental import QlibDirectWriter
 from strategy.major_force_eval import MajorForceEvalConfig, evaluate_major_force_forward_returns
 from strategy.major_force import MajorForceConfig, scan_major_force
-from strategy.major_force_validate import ValidationCriteria, validate_major_force_eval
+from strategy.major_force_validate import (
+    ValidationCriteria,
+    _evaluate_filtered,
+    _evaluate_rule,
+    _filter_rows,
+    _prepare_eval_arrays,
+    validate_major_force_eval,
+)
 
 
 def _records(dates, pattern):
@@ -204,6 +211,69 @@ def test_validate_major_force_eval_exports_validated_rule(tmp_path):
     assert payload["candidate_rule_count_by_side"]["buy"] > 0
     assert payload["train_passed_count_by_side"]["buy"] > 0
     assert payload["best_rules_by_side"]["buy"][0]["side"] == "buy"
+
+
+def test_validate_major_force_fast_metrics_match_dataframe_path():
+    rows = pd.DataFrame(
+        [
+            {
+                "eval_date": "2026-01-02",
+                "signal_side": "buy",
+                "horizon": 10,
+                "rank": 1,
+                "side_score": 91,
+                "amount_ratio_5_20": 1.3,
+                "cmf_20": 0.2,
+                "close_location_10": 0.7,
+                "breakout_20": 0.01,
+                "fwd_return": 0.02,
+                "universe_return": 0.0,
+                "stage": "stealth_accumulation",
+            },
+            {
+                "eval_date": "2026-01-02",
+                "signal_side": "buy",
+                "horizon": 10,
+                "rank": 2,
+                "side_score": 89,
+                "amount_ratio_5_20": 1.1,
+                "cmf_20": 0.1,
+                "close_location_10": 0.6,
+                "breakout_20": -0.01,
+                "fwd_return": -0.01,
+                "universe_return": 0.0,
+                "stage": "watch",
+            },
+            {
+                "eval_date": "2026-01-09",
+                "signal_side": "buy",
+                "horizon": 10,
+                "rank": 1,
+                "side_score": 92,
+                "amount_ratio_5_20": 1.4,
+                "cmf_20": 0.3,
+                "close_location_10": 0.8,
+                "breakout_20": 0.02,
+                "fwd_return": 0.03,
+                "universe_return": 0.01,
+                "stage": "stealth_accumulation",
+            },
+        ]
+    )
+    rule = {
+        "side": "buy",
+        "horizon": 10,
+        "rank_n": 2,
+        "min_score": 80.0,
+        "min_amount_ratio_5_20": 1.2,
+        "min_cmf_20": 0.12,
+        "stages": ["stealth_accumulation"],
+    }
+
+    slow = _evaluate_filtered(_filter_rows(rows, rule), "buy")
+    fast = _evaluate_rule(_prepare_eval_arrays(rows), rule, "buy")
+
+    assert fast == slow
 
 
 def test_validate_major_force_eval_requires_recent_robustness(tmp_path):
