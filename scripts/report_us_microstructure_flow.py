@@ -871,6 +871,13 @@ def _write_outputs(
     return outputs
 
 
+def _write_status_outputs(outputs: dict[str, Path], status: dict) -> None:
+    text = json.dumps(status, ensure_ascii=False, indent=2) + "\n"
+    outputs["status"].write_text(text, encoding="utf-8")
+    if "status_latest" in outputs:
+        outputs["status_latest"].write_text(text, encoding="utf-8")
+
+
 def _sync_outputs(paths: Iterable[Path], *, base_dir: Path, nas_host: str, nas_dir: str) -> list[dict[str, str]]:
     results = []
     if not nas_host or not nas_dir:
@@ -989,9 +996,11 @@ def main(argv: list[str] | None = None) -> int:
         nas_results = _sync_outputs(outputs.values(), base_dir=base_dir, nas_host=args.nas_host, nas_dir=args.nas_dir)
     if nas_results:
         status["nas_sync"] = nas_results
-        outputs["status"].write_text(json.dumps(status, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        _write_status_outputs(outputs, status)
+        status_paths = [outputs["status"]]
         if "status_latest" in outputs:
-            outputs["status_latest"].write_text(json.dumps(status, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            status_paths.append(outputs["status_latest"])
+        _sync_outputs(status_paths, base_dir=base_dir, nas_host=args.nas_host, nas_dir=args.nas_dir)
 
     if args.send_email:
         from reporter.send_report import send_email
