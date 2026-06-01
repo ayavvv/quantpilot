@@ -83,6 +83,7 @@ Mac mini hot cache:
   raw_buffer/
   features_1m/
   signals/
+  quality/
   validation/
   readiness/
   logs/
@@ -94,6 +95,7 @@ NAS authoritative archive:
   quotes/
   features_1m/
   signals/
+  quality/
   validation/
   readiness/
   logs/
@@ -469,10 +471,11 @@ Implemented status as of 2026-06-01:
   `date,symbol,close` price CSV and/or Qlib daily close data. By default it
   auto-detects `validation/prices/us_daily_prices.csv`.
 - `scripts/report_us_microstructure_flow.py` writes feature parquet, signal CSV,
-  status JSON, and Markdown/HTML reports, then mirrors report artifacts to NAS.
-  The status JSON includes a `data_quality` block that records which symbols
-  are eligible for high-confidence reporting based on coverage, liquidity,
-  duplicate sequence rate, and spread.
+  per-symbol data-quality CSV, status JSON, and Markdown/HTML reports, then
+  mirrors report artifacts to NAS. The status JSON and CSV record which symbols
+  are eligible for high-confidence reporting based on regular-session coverage,
+  liquidity, duplicate sequence rate, and spread. The CSV is also attached to
+  emailed reports for daily audit.
 - `scripts/us_microstructure_readiness.py` checks the latest manifest, price
   feed, validation gate, report artifacts, data-quality gate, and launchd
   services. When run from the daily wrapper it writes dated/latest readiness

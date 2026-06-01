@@ -259,6 +259,36 @@ def _markdown_table(rows: pd.DataFrame) -> str:
     return header + sep + "\n".join(body) + "\n"
 
 
+def _quality_markdown_table(data_quality: dict[str, object]) -> str:
+    rows = data_quality.get("symbols", [])
+    if not isinstance(rows, list) or not rows:
+        return "No data-quality rows.\n"
+    header = (
+        "| Symbol | Eligible | Coverage | Trade Cov | Book Cov | Quote Cov | "
+        "Trades | Dollar Vol | Dup Seq | Spread bps |\n"
+    )
+    sep = "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n"
+    body = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        body.append(
+            "| {symbol} | {eligible} | {coverage} | {trade_cov} | {book_cov} | {quote_cov} | {trades} | {dollar} | {dup} | {spread} |".format(
+                symbol=row.get("symbol", ""),
+                eligible="yes" if row.get("eligible") else "no",
+                coverage=_pct(row.get("coverage_ratio_regular")),
+                trade_cov=_pct(row.get("trade_coverage_ratio_regular")),
+                book_cov=_pct(row.get("book_coverage_ratio_regular")),
+                quote_cov=_pct(row.get("quote_coverage_ratio_regular")),
+                trades=int(row.get("trade_count") or 0),
+                dollar=_money(row.get("dollar_volume")),
+                dup=_pct(row.get("duplicate_sequence_rate")),
+                spread=_bps(row.get("spread_bps")),
+            )
+        )
+    return header + sep + "\n".join(body) + "\n"
+
+
 def render_markdown_report(
     *,
     date: str,
@@ -303,6 +333,10 @@ def render_markdown_report(
         "## Candidates",
         "",
         _markdown_table(view),
+        "",
+        "## Data Quality By Symbol",
+        "",
+        _quality_markdown_table(data_quality),
     ]
     return "\n".join(lines)
 
@@ -336,6 +370,41 @@ def _html_table(rows: pd.DataFrame) -> str:
         "<table><tr><th>Rank</th><th>Symbol</th><th>Side</th><th>Score</th><th>Confidence</th>"
         "<th>Stage</th><th>Dollar Vol</th><th>Net Active</th><th>Buy Ratio</th>"
         "<th>VWAP bps</th><th>Spread bps</th><th>Reason</th></tr>"
+        + "\n".join(table_rows)
+        + "</table>"
+    )
+
+
+def _quality_html_table(data_quality: dict[str, object]) -> str:
+    rows = data_quality.get("symbols", [])
+    if not isinstance(rows, list) or not rows:
+        return "<p>No data-quality rows.</p>"
+    table_rows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        cls = "buy" if row.get("eligible") else "sell"
+        table_rows.append(
+            "<tr class='{cls}'><td>{symbol}</td><td>{eligible}</td><td>{coverage}</td>"
+            "<td>{trade_cov}</td><td>{book_cov}</td><td>{quote_cov}</td><td>{trades}</td>"
+            "<td>{dollar}</td><td>{dup}</td><td>{spread}</td></tr>".format(
+                cls=cls,
+                symbol=html.escape(str(row.get("symbol") or "")),
+                eligible="yes" if row.get("eligible") else "no",
+                coverage=_pct(row.get("coverage_ratio_regular")),
+                trade_cov=_pct(row.get("trade_coverage_ratio_regular")),
+                book_cov=_pct(row.get("book_coverage_ratio_regular")),
+                quote_cov=_pct(row.get("quote_coverage_ratio_regular")),
+                trades=int(row.get("trade_count") or 0),
+                dollar=_money(row.get("dollar_volume")),
+                dup=_pct(row.get("duplicate_sequence_rate")),
+                spread=_bps(row.get("spread_bps")),
+            )
+        )
+    return (
+        "<table><tr><th>Symbol</th><th>Eligible</th><th>Coverage</th><th>Trade Cov</th>"
+        "<th>Book Cov</th><th>Quote Cov</th><th>Trades</th><th>Dollar Vol</th>"
+        "<th>Dup Seq</th><th>Spread bps</th></tr>"
         + "\n".join(table_rows)
         + "</table>"
     )
@@ -389,6 +458,8 @@ tr.sell {{ background: #fff1f2; }}
 <p>Raw trades={raw_counts.get('trades', 0)}, order_book={raw_counts.get('order_book', 0)}, quotes={raw_counts.get('quotes', 0)}. Regular trade/book/quote minutes={coverage['regular_trade_minutes']} / {coverage['regular_book_minutes']} / {coverage['regular_quote_minutes']}.</p>
 <h2>Candidates</h2>
 {_html_table(view)}
+<h2>Data Quality By Symbol</h2>
+{_quality_html_table(data_quality)}
 </body>
 </html>
 """
@@ -413,6 +484,16 @@ def _write_outputs(
     latest_csv.parent.mkdir(parents=True, exist_ok=True)
     signals.to_csv(latest_csv, index=False)
 
+    quality_dir = base_dir / "quality" / f"date={date}"
+    quality_dir.mkdir(parents=True, exist_ok=True)
+    quality_csv = quality_dir / "us_microstructure_data_quality.csv"
+    quality_latest = base_dir / "quality" / "us_microstructure_data_quality_latest.csv"
+    quality_latest.parent.mkdir(parents=True, exist_ok=True)
+    quality_rows = status.get("data_quality", {}).get("symbols", []) if isinstance(status.get("data_quality"), dict) else []
+    quality_frame = pd.DataFrame(quality_rows if isinstance(quality_rows, list) else [])
+    quality_frame.to_csv(quality_csv, index=False)
+    quality_frame.to_csv(quality_latest, index=False)
+
     report_dir = base_dir / "reports" / f"date={date}"
     report_dir.mkdir(parents=True, exist_ok=True)
     markdown_path = report_dir / "us_microstructure_flow_report.md"
@@ -433,6 +514,8 @@ def _write_outputs(
         "features": feature_path,
         "signals": signal_csv,
         "signals_latest": latest_csv,
+        "data_quality": quality_csv,
+        "data_quality_latest": quality_latest,
         "markdown": markdown_path,
         "html": html_path,
         "html_latest": latest_html,
@@ -557,11 +640,12 @@ def main(argv: list[str] | None = None) -> int:
             _subject(signals, gate),
             report_filename=outputs["html"].name,
             report_dir=outputs["html"].parent,
-            attachment_paths=[outputs["signals"], outputs["status"]],
+            attachment_paths=[outputs["signals"], outputs["data_quality"], outputs["status"]],
         )
 
     print(f"Wrote features: {outputs['features']}")
     print(f"Wrote signals: {outputs['signals']}")
+    print(f"Wrote data quality: {outputs['data_quality']}")
     print(f"Wrote report: {outputs['html']}")
     print(f"State={gate.get('state')} high={status['high_count']} watch={status['watch_count']}")
     return 0

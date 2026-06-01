@@ -339,12 +339,18 @@ def test_report_script_writes_warmup_artifacts(tmp_path):
 
     assert (tmp_path / "features_1m/date=2026-06-01/part-us-microstructure-features.parquet").exists()
     assert (tmp_path / "signals/date=2026-06-01/us_major_flow_signals.csv").exists()
+    assert (tmp_path / "quality/date=2026-06-01/us_microstructure_data_quality.csv").exists()
+    assert (tmp_path / "quality/us_microstructure_data_quality_latest.csv").exists()
     assert (tmp_path / "reports/date=2026-06-01/us_microstructure_flow_report.html").exists()
     status = json.loads((tmp_path / "reports/date=2026-06-01/status.json").read_text(encoding="utf-8"))
     assert status["validation_gate"]["state"] == "warmup"
     assert status["high_count"] == 0
     assert "data_quality" in status
     assert status["data_quality"]["eligible_symbol_count"] == 0
+    quality = pd.read_csv(tmp_path / "quality/date=2026-06-01/us_microstructure_data_quality.csv")
+    assert quality.iloc[0]["symbol"] == "US.AAPL"
+    html_report = (tmp_path / "reports/date=2026-06-01/us_microstructure_flow_report.html").read_text(encoding="utf-8")
+    assert "Data Quality By Symbol" in html_report
 
 
 def test_read_microstructure_inputs_filters_stale_trades_from_date_partition(tmp_path):
