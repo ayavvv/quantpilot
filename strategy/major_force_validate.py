@@ -27,6 +27,7 @@ class ValidationCriteria:
     min_test_hit_rate: float = 0.53
     min_test_win_rate_days: float = 0.55
     split_ratio: float = 0.67
+    train_candidate_limit_per_side: int = 20
 
 
 def _num(value: object, default: float = np.nan) -> float:
@@ -156,11 +157,20 @@ def _split_dates(rows: pd.DataFrame, split_ratio: float) -> tuple[set[str], set[
     return set(dates[:split_pos]), set(dates[split_pos:])
 
 
+def _train_score(metrics: dict[str, float | int]) -> float:
+    return (
+        float(metrics["avg_alpha"])
+        + float(metrics["avg_hit_rate"]) / 100.0
+        + float(metrics["win_rate_days"]) / 100.0
+        + min(float(metrics["date_count"]), 100.0) / 100_000.0
+    )
+
+
 def _rule_candidates(rows: pd.DataFrame) -> Iterable[dict[str, object]]:
     horizons = sorted(pd.to_numeric(rows["horizon"], errors="coerce").dropna().astype(int).unique())
     for horizon in horizons:
         for side in ["buy", "sell"]:
-            for rank_n in [5, 10, 20, 30, 50]:
+            for rank_n in [5, 10, 20, 30, 50, 100, 200]:
                 for min_score in [80, 85, 88, 90, 92, 94]:
                     for min_amount_ratio in [0.0, 1.2, 1.5, 2.0]:
                         base = {
@@ -219,8 +229,7 @@ def validate_major_force_eval(
     train_dates, test_dates = _split_dates(rows, cfg.split_ratio)
     train_rows = rows[rows["eval_date"].astype(str).isin(train_dates)]
     test_rows = rows[rows["eval_date"].astype(str).isin(test_dates)]
-    best_rows: list[dict[str, object]] = []
-    validated: list[dict[str, object]] = []
+    train_passed: list[dict[str, object]] = []
 
     for rule in _rule_candidates(rows):
         side = str(rule["side"])
@@ -238,46 +247,53 @@ def validate_major_force_eval(
             **rule,
             "train": train_metrics,
             "test": test_metrics,
-            "score": float(test_metrics["avg_alpha"]) + float(test_metrics["avg_hit_rate"]) / 100.0,
+            "score": _train_score(train_metrics),
+            "test_score": float(test_metrics["avg_alpha"]) + float(test_metrics["avg_hit_rate"]) / 100.0,
         }
-        best_rows.append(record)
-        if (
-            test_metrics["date_count"] >= cfg.min_test_dates
-            and test_metrics["avg_alpha"] >= cfg.min_test_alpha
-            and test_metrics["avg_hit_rate"] >= cfg.min_test_hit_rate
-            and test_metrics["win_rate_days"] >= cfg.min_test_win_rate_days
-        ):
-            validated.append({**record, "status": "validated"})
+        train_passed.append(record)
 
     best_rows = sorted(
-        best_rows,
+        train_passed,
         key=lambda item: (
+            -float(item["score"]),
             str(item.get("side")),
-            -float(item["test"]["avg_alpha"]),
-            -float(item["test"]["avg_hit_rate"]),
-            -int(item["test"]["date_count"]),
+            -float(item["train"]["avg_alpha"]),
+            -float(item["train"]["avg_hit_rate"]),
+            -int(item["train"]["date_count"]),
         ),
     )
     chosen: list[dict[str, object]] = []
     for side in ["buy", "sell"]:
-        side_rules = [
+        side_train_rules = [
             item
-            for item in validated
+            for item in train_passed
             if str(item.get("side")) == side
         ]
-        side_rules = sorted(
-            side_rules,
+        side_train_rules = sorted(
+            side_train_rules,
             key=lambda item: (
-                -float(item["test"]["avg_alpha"]),
-                -float(item["test"]["avg_hit_rate"]),
-                -int(item["test"]["date_count"]),
+                -float(item["score"]),
+                -float(item["train"]["avg_alpha"]),
+                -float(item["train"]["avg_hit_rate"]),
+                -int(item["train"]["date_count"]),
             ),
-        )
-        chosen.extend(side_rules[:max_rules_per_side])
+        )[: max(1, cfg.train_candidate_limit_per_side)]
+        side_validated = []
+        for item in side_train_rules:
+            test_metrics = item["test"]
+            if (
+                test_metrics["date_count"] >= cfg.min_test_dates
+                and test_metrics["avg_alpha"] >= cfg.min_test_alpha
+                and test_metrics["avg_hit_rate"] >= cfg.min_test_hit_rate
+                and test_metrics["win_rate_days"] >= cfg.min_test_win_rate_days
+            ):
+                side_validated.append({**item, "status": "validated"})
+        chosen.extend(side_validated[:max_rules_per_side])
 
     message = (
         f"Validated {len(chosen)} rule(s) with train/test split "
-        f"{len(train_dates)}/{len(test_dates)} dates."
+        f"{len(train_dates)}/{len(test_dates)} dates; "
+        f"tested top {cfg.train_candidate_limit_per_side} train-selected candidate(s) per side."
     )
     return {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -285,6 +301,7 @@ def validate_major_force_eval(
         "criteria": asdict(cfg),
         "train_date_count": len(train_dates),
         "test_date_count": len(test_dates),
+        "train_passed_count": len(train_passed),
         "rules": chosen,
         "best_rules": best_rows[:20],
         "message": message,
@@ -307,6 +324,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--min-test-hit-rate", type=float, default=0.53)
     parser.add_argument("--min-test-win-rate-days", type=float, default=0.55)
     parser.add_argument("--split-ratio", type=float, default=0.67)
+    parser.add_argument("--train-candidate-limit-per-side", type=int, default=20)
     parser.add_argument("--max-rules-per-side", type=int, default=1)
     return parser.parse_args(argv)
 
@@ -323,6 +341,7 @@ def main(argv: list[str] | None = None) -> int:
         min_test_hit_rate=args.min_test_hit_rate,
         min_test_win_rate_days=args.min_test_win_rate_days,
         split_ratio=max(0.1, min(0.9, args.split_ratio)),
+        train_candidate_limit_per_side=max(1, args.train_candidate_limit_per_side),
     )
     payload = validate_major_force_eval(
         args.eval_dir,
