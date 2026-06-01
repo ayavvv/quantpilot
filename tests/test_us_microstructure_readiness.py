@@ -32,8 +32,12 @@ def test_readiness_snapshot_accepts_ready_warmup_system(tmp_path):
             "state": "warmup",
             "validated": False,
             "validated_sides": {"accumulation": False, "distribution": False},
+            "side_reasons": {"accumulation": "missing 5d validation metrics"},
+            "criteria": {"promotion_horizon": 5, "min_observations_per_side": 100},
+            "signal_file_count": 2,
             "event_count": 0,
             "forward_return_count": 0,
+            "price_symbol_count": 15,
             "reason": "collecting samples",
         },
     )
@@ -62,6 +66,10 @@ def test_readiness_snapshot_accepts_ready_warmup_system(tmp_path):
     assert snapshot["checks"]["manifest"]["row_counts"]["trades"] == 100
     assert snapshot["checks"]["manifest"]["symbol_count"] == 0
     assert snapshot["checks"]["validation_gate"]["state"] == "warmup"
+    assert snapshot["checks"]["validation_gate"]["side_reasons"]["accumulation"] == "missing 5d validation metrics"
+    assert snapshot["checks"]["validation_gate"]["criteria"]["promotion_horizon"] == 5
+    assert snapshot["checks"]["validation_gate"]["signal_file_count"] == 2
+    assert snapshot["checks"]["validation_gate"]["price_symbol_count"] == 15
 
 
 def test_readiness_snapshot_marks_high_confidence_ready_when_gates_pass(tmp_path):

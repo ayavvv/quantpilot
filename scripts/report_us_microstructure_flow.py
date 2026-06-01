@@ -100,6 +100,20 @@ def _score(value: object) -> str:
         return "n/a"
 
 
+def _number(value: object, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _count(value: object) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _raw_counts(inputs: dict[str, pd.DataFrame]) -> dict[str, int]:
     return {kind: int(len(frame)) for kind, frame in inputs.items()}
 
@@ -259,6 +273,106 @@ def _candidate_view(signals: pd.DataFrame, *, top_n: int, min_score: float) -> p
     return view.head(top_n)
 
 
+def _validation_progress(validation_gate: dict[str, object]) -> dict[str, object]:
+    criteria = validation_gate.get("criteria", {})
+    if not isinstance(criteria, dict):
+        criteria = {}
+    side_reasons = validation_gate.get("side_reasons", {})
+    if not isinstance(side_reasons, dict):
+        side_reasons = {}
+    side_metrics = validation_gate.get("side_metrics", {})
+    if not isinstance(side_metrics, dict):
+        side_metrics = {}
+    validated_sides = validation_gate.get("validated_sides", {})
+    if not isinstance(validated_sides, dict):
+        validated_sides = {}
+    default_side_validated = bool(validation_gate.get("validated")) and not validated_sides
+
+    sides = []
+    for side in ("accumulation", "distribution"):
+        metrics = side_metrics.get(side, {})
+        if not isinstance(metrics, dict):
+            metrics = {}
+        observations = _count(metrics.get("observation_count"))
+        signal_days = _count(metrics.get("signal_day_count"))
+        min_observations = _count(criteria.get("min_observations_per_side"))
+        min_signal_days = _count(criteria.get("min_signal_days_per_side"))
+        sides.append(
+            {
+                "side": side,
+                "validated": bool(validated_sides.get(side, default_side_validated)),
+                "reason": str(side_reasons.get(side) or ""),
+                "observation_count": observations,
+                "min_observations": min_observations,
+                "observation_progress": observations / min_observations if min_observations > 0 else 0.0,
+                "signal_day_count": signal_days,
+                "min_signal_days": min_signal_days,
+                "signal_day_progress": signal_days / min_signal_days if min_signal_days > 0 else 0.0,
+                "avg_alpha": _number(metrics.get("avg_alpha"), 0.0),
+                "min_alpha": _number(criteria.get("min_alpha"), 0.0),
+                "hit_rate": _number(metrics.get("hit_rate"), 0.0),
+                "min_hit_rate": _number(criteria.get("min_hit_rate"), 0.0),
+                "recent_hit_rate": _number(metrics.get("recent_hit_rate"), 0.0),
+                "min_recent_hit_rate": _number(criteria.get("min_recent_hit_rate"), 0.0),
+                "wilson_lower": _number(metrics.get("wilson_lower"), 0.0),
+                "min_wilson_lower": _number(criteria.get("min_wilson_lower"), 0.0),
+                "max_symbol_sample_share": _number(metrics.get("max_symbol_sample_share"), 0.0),
+                "max_allowed_symbol_sample_share": _number(criteria.get("max_symbol_sample_share"), 0.0),
+            }
+        )
+
+    return {
+        "state": str(validation_gate.get("state") or "warmup"),
+        "validated": bool(validation_gate.get("validated")),
+        "reason": str(validation_gate.get("reason") or ""),
+        "signal_file_count": _count(validation_gate.get("signal_file_count")),
+        "event_count": _count(validation_gate.get("event_count")),
+        "forward_return_count": _count(validation_gate.get("forward_return_count")),
+        "price_symbol_count": _count(validation_gate.get("price_symbol_count")),
+        "promotion_horizon": _count(criteria.get("promotion_horizon")),
+        "benchmark": str(criteria.get("benchmark") or ""),
+        "sides": sides,
+        "criteria": criteria,
+    }
+
+
+def _validation_markdown_table(progress: dict[str, object]) -> str:
+    rows = progress.get("sides", [])
+    if not isinstance(rows, list) or not rows:
+        return "No validation-side rows.\n"
+    header = (
+        "| Side | Validated | Reason | Obs | Days | Alpha | Hit | Recent Hit | "
+        "Wilson | Max Symbol |\n"
+    )
+    sep = "|---|---:|---|---:|---:|---:|---:|---:|---:|---:|\n"
+    body = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        body.append(
+            "| {side} | {validated} | {reason} | {obs}/{min_obs} | {days}/{min_days} | {alpha}/{min_alpha} | {hit}/{min_hit} | {recent}/{min_recent} | {wilson}/{min_wilson} | {max_symbol}/{max_allowed} |".format(
+                side=row.get("side", ""),
+                validated="yes" if row.get("validated") else "no",
+                reason=str(row.get("reason") or "").replace("|", "/"),
+                obs=int(row.get("observation_count") or 0),
+                min_obs=int(row.get("min_observations") or 0),
+                days=int(row.get("signal_day_count") or 0),
+                min_days=int(row.get("min_signal_days") or 0),
+                alpha=_pct(row.get("avg_alpha")),
+                min_alpha=_pct(row.get("min_alpha")),
+                hit=_pct(row.get("hit_rate")),
+                min_hit=_pct(row.get("min_hit_rate")),
+                recent=_pct(row.get("recent_hit_rate")),
+                min_recent=_pct(row.get("min_recent_hit_rate")),
+                wilson=_pct(row.get("wilson_lower")),
+                min_wilson=_pct(row.get("min_wilson_lower")),
+                max_symbol=_pct(row.get("max_symbol_sample_share")),
+                max_allowed=_pct(row.get("max_allowed_symbol_sample_share")),
+            )
+        )
+    return header + sep + "\n".join(body) + "\n"
+
+
 def _markdown_table(rows: pd.DataFrame) -> str:
     if rows.empty:
         return "No candidates.\n"
@@ -344,6 +458,7 @@ def render_markdown_report(
 ) -> str:
     view = _candidate_view(signals, top_n=top_n, min_score=min_score)
     coverage = _coverage_summary(features)
+    validation_progress = _validation_progress(validation_gate)
     high_count = int((signals.get("confidence", pd.Series(dtype=str)) == "high").sum()) if not signals.empty else 0
     state = str(validation_gate.get("state") or "warmup")
     lines = [
@@ -359,9 +474,15 @@ def render_markdown_report(
         "",
         f"- Gate validated: `{bool(validation_gate.get('validated'))}`",
         f"- Gate reason: {validation_gate.get('reason', '')}",
+        f"- Validation samples: `{validation_progress.get('event_count', 0)}` events, `{validation_progress.get('forward_return_count', 0)}` forward-return rows",
+        f"- Promotion horizon: `{validation_progress.get('promotion_horizon', 0)}d`; benchmark: `{validation_progress.get('benchmark') or 'n/a'}`",
         f"- Symbols eligible for high-confidence reporting: `{data_quality.get('eligible_symbol_count', 0)}` / `{data_quality.get('symbol_count', 0)}`",
         f"- Median trade/book coverage: `{_pct(data_quality.get('median_trade_coverage_ratio_regular'))}` / `{_pct(data_quality.get('median_book_coverage_ratio_regular'))}`",
         f"- Duplicate sequence rows: `{data_quality.get('duplicate_sequence_count', 0)}` / `{data_quality.get('raw_trade_count', 0)}` (`{_pct(data_quality.get('duplicate_sequence_rate'))}`)",
+        "",
+        "## Validation Progress By Side",
+        "",
+        _validation_markdown_table(validation_progress),
         "",
         "## Data Coverage",
         "",
@@ -455,6 +576,48 @@ def _quality_html_table(data_quality: dict[str, object]) -> str:
     )
 
 
+def _validation_html_table(progress: dict[str, object]) -> str:
+    rows = progress.get("sides", [])
+    if not isinstance(rows, list) or not rows:
+        return "<p>No validation-side rows.</p>"
+    table_rows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        cls = "buy" if row.get("validated") else "sell"
+        table_rows.append(
+            "<tr class='{cls}'><td>{side}</td><td>{validated}</td><td>{reason}</td>"
+            "<td>{obs}/{min_obs}</td><td>{days}/{min_days}</td><td>{alpha}/{min_alpha}</td>"
+            "<td>{hit}/{min_hit}</td><td>{recent}/{min_recent}</td><td>{wilson}/{min_wilson}</td>"
+            "<td>{max_symbol}/{max_allowed}</td></tr>".format(
+                cls=cls,
+                side=html.escape(str(row.get("side") or "")),
+                validated="yes" if row.get("validated") else "no",
+                reason=html.escape(str(row.get("reason") or "")),
+                obs=int(row.get("observation_count") or 0),
+                min_obs=int(row.get("min_observations") or 0),
+                days=int(row.get("signal_day_count") or 0),
+                min_days=int(row.get("min_signal_days") or 0),
+                alpha=_pct(row.get("avg_alpha")),
+                min_alpha=_pct(row.get("min_alpha")),
+                hit=_pct(row.get("hit_rate")),
+                min_hit=_pct(row.get("min_hit_rate")),
+                recent=_pct(row.get("recent_hit_rate")),
+                min_recent=_pct(row.get("min_recent_hit_rate")),
+                wilson=_pct(row.get("wilson_lower")),
+                min_wilson=_pct(row.get("min_wilson_lower")),
+                max_symbol=_pct(row.get("max_symbol_sample_share")),
+                max_allowed=_pct(row.get("max_allowed_symbol_sample_share")),
+            )
+        )
+    return (
+        "<table><tr><th>Side</th><th>Validated</th><th>Reason</th><th>Obs</th><th>Days</th>"
+        "<th>Alpha</th><th>Hit</th><th>Recent Hit</th><th>Wilson</th><th>Max Symbol</th></tr>"
+        + "\n".join(table_rows)
+        + "</table>"
+    )
+
+
 def render_html_report(
     *,
     date: str,
@@ -468,6 +631,7 @@ def render_html_report(
 ) -> str:
     view = _candidate_view(signals, top_n=top_n, min_score=min_score)
     coverage = _coverage_summary(features)
+    validation_progress = _validation_progress(validation_gate)
     high_count = int((signals.get("confidence", pd.Series(dtype=str)) == "high").sum()) if not signals.empty else 0
     state = html.escape(str(validation_gate.get("state") or "warmup"))
     reason = html.escape(str(validation_gate.get("reason") or ""))
@@ -498,8 +662,11 @@ tr.sell {{ background: #fff1f2; }}
 <div class="metric"><div class="value">{coverage['minute_count']}</div><div class="label">Feature Minutes</div></div>
 <p class="muted">Uses Futu OpenD tick prints, order-book snapshots, and quotes. It does not claim account-level institutional identity.</p>
 <div class="gate"><strong>Validation gate:</strong> validated={bool(validation_gate.get('validated'))}; {reason}</div>
+<div class="gate"><strong>Validation samples:</strong> events={validation_progress.get('event_count', 0)}; forward_returns={validation_progress.get('forward_return_count', 0)}; promotion_horizon={validation_progress.get('promotion_horizon', 0)}d; benchmark={html.escape(str(validation_progress.get('benchmark') or 'n/a'))}</div>
 <div class="gate"><strong>Data quality gate:</strong> eligible_symbols={data_quality.get('eligible_symbol_count', 0)}/{data_quality.get('symbol_count', 0)}; median trade/book coverage={_pct(data_quality.get('median_trade_coverage_ratio_regular'))}/{_pct(data_quality.get('median_book_coverage_ratio_regular'))}</div>
 <div class="gate"><strong>Duplicate audit:</strong> duplicate_sequence_rows={data_quality.get('duplicate_sequence_count', 0)}/{data_quality.get('raw_trade_count', 0)} ({_pct(data_quality.get('duplicate_sequence_rate'))})</div>
+<h2>Validation Progress By Side</h2>
+{_validation_html_table(validation_progress)}
 <h2>Data Coverage</h2>
 <p>Raw trades={raw_counts.get('trades', 0)}, order_book={raw_counts.get('order_book', 0)}, quotes={raw_counts.get('quotes', 0)}. Regular trade/book/quote minutes={coverage['regular_trade_minutes']} / {coverage['regular_book_minutes']} / {coverage['regular_quote_minutes']}.</p>
 <h2>Candidates</h2>
@@ -633,6 +800,7 @@ def main(argv: list[str] | None = None) -> int:
         signals["is_final_report"] = bool(is_final_report)
     raw_counts = _raw_counts(inputs)
     data_quality = _data_quality_summary(features, signal_cfg)
+    validation_progress = _validation_progress(gate)
     status = {
         "date": args.date,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -645,6 +813,7 @@ def main(argv: list[str] | None = None) -> int:
         "high_count": int((signals.get("confidence", pd.Series(dtype=str)) == "high").sum()) if not signals.empty else 0,
         "watch_count": int((signals.get("confidence", pd.Series(dtype=str)) == "watch").sum()) if not signals.empty else 0,
         "validation_gate": gate,
+        "validation_progress": validation_progress,
     }
     markdown = render_markdown_report(
         date=args.date,

@@ -488,8 +488,11 @@ Implemented status as of 2026-06-01:
   per-symbol data-quality CSV, status JSON, and Markdown/HTML reports, then
   mirrors report artifacts to NAS. The status JSON and CSV record which symbols
   are eligible for high-confidence reporting based on regular-session coverage,
-  liquidity, duplicate sequence rate, and spread. The CSV is also attached to
-  emailed reports for daily audit.
+  liquidity, duplicate sequence rate, and spread. The report also renders
+  validation progress by side, including sample counts, signal-day counts,
+  hit-rate, alpha, Wilson lower bound, concentration, and each side's gate
+  reason, so warmup reports show exactly why high-confidence language is still
+  withheld. The CSV is also attached to emailed reports for daily audit.
 - `scripts/us_microstructure_readiness.py` checks the latest manifest, price
   feed, validation gate, report artifacts, data-quality gate, and launchd
   services. When run from the daily wrapper it writes dated/latest readiness

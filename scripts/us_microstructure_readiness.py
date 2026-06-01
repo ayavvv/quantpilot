@@ -150,8 +150,13 @@ def check_validation_gate(base_dir: str | Path) -> dict[str, Any]:
         "state": str(payload.get("state") or "") if payload else "",
         "validated": bool(payload.get("validated")) if payload else False,
         "validated_sides": payload.get("validated_sides", {}) if payload else {},
+        "side_reasons": payload.get("side_reasons", {}) if payload else {},
+        "side_metrics": payload.get("side_metrics", {}) if payload else {},
+        "criteria": payload.get("criteria", {}) if payload else {},
+        "signal_file_count": int(payload.get("signal_file_count") or 0) if payload else 0,
         "event_count": int(payload.get("event_count") or 0) if payload else 0,
         "forward_return_count": int(payload.get("forward_return_count") or 0) if payload else 0,
+        "price_symbol_count": int(payload.get("price_symbol_count") or 0) if payload else 0,
         "reason": str(payload.get("reason") or "") if payload else "",
         "issues": issues,
     }

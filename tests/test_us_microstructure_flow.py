@@ -419,6 +419,11 @@ def _write_raw(base: Path, kind: str, symbol: str, rows: list[dict]):
     pd.DataFrame(rows).to_parquet(path, index=False)
 
 
+def _write_json(path: Path, payload: dict):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
 def test_report_script_writes_warmup_artifacts(tmp_path):
     trades = []
     for idx in range(5):
@@ -458,6 +463,45 @@ def test_report_script_writes_warmup_artifacts(tmp_path):
         "US.AAPL",
         [{"symbol": "US.AAPL", "recv_time": "2026-06-01T13:30:06.000+00:00", "last_price": 100.1}],
     )
+    _write_json(
+        tmp_path / "validation" / "active_gate.json",
+        {
+            "state": "warmup",
+            "validated": False,
+            "validated_sides": {"accumulation": False, "distribution": False},
+            "reason": "forward validation sample not promoted yet",
+            "side_reasons": {
+                "accumulation": "missing 5d validation metrics",
+                "distribution": "failed: observations",
+            },
+            "side_metrics": {
+                "distribution": {
+                    "observation_count": 12,
+                    "signal_day_count": 4,
+                    "avg_alpha": 0.002,
+                    "hit_rate": 0.5,
+                    "recent_hit_rate": 0.5,
+                    "wilson_lower": 0.25,
+                    "max_symbol_sample_share": 0.4,
+                }
+            },
+            "criteria": {
+                "benchmark": "US.SPY",
+                "promotion_horizon": 5,
+                "min_signal_days_per_side": 20,
+                "min_observations_per_side": 100,
+                "min_alpha": 0.0075,
+                "min_hit_rate": 0.58,
+                "min_recent_hit_rate": 0.55,
+                "min_wilson_lower": 0.5,
+                "max_symbol_sample_share": 0.2,
+            },
+            "signal_file_count": 3,
+            "event_count": 12,
+            "forward_return_count": 24,
+            "price_symbol_count": 15,
+        },
+    )
 
     report_script.main(
         [
@@ -478,6 +522,9 @@ def test_report_script_writes_warmup_artifacts(tmp_path):
     assert (tmp_path / "reports/date=2026-06-01/us_microstructure_flow_report.html").exists()
     status = json.loads((tmp_path / "reports/date=2026-06-01/status.json").read_text(encoding="utf-8"))
     assert status["validation_gate"]["state"] == "warmup"
+    assert status["validation_progress"]["event_count"] == 12
+    assert status["validation_progress"]["forward_return_count"] == 24
+    assert status["validation_progress"]["sides"][0]["reason"] == "missing 5d validation metrics"
     assert status["high_count"] == 0
     assert "data_quality" in status
     assert status["data_quality"]["eligible_symbol_count"] == 0
@@ -488,6 +535,8 @@ def test_report_script_writes_warmup_artifacts(tmp_path):
     html_report = (tmp_path / "reports/date=2026-06-01/us_microstructure_flow_report.html").read_text(encoding="utf-8")
     assert "Data Quality By Symbol" in html_report
     assert "Duplicate audit" in html_report
+    assert "Validation Progress By Side" in html_report
+    assert "missing 5d validation metrics" in html_report
 
 
 def test_read_microstructure_inputs_filters_stale_trades_from_date_partition(tmp_path):
