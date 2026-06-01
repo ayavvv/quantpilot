@@ -4,8 +4,17 @@ from pathlib import Path
 import pandas as pd
 
 from scripts import report_us_microstructure_flow as report_script
+from scripts import validate_us_microstructure_flow as validate_script
 from strategy.us_microstructure_features import compute_microstructure_features
 from strategy.us_microstructure_signals import MicrostructureSignalConfig, score_microstructure_signals
+from strategy.us_microstructure_validation import (
+    ForwardValidationConfig,
+    build_active_gate,
+    build_rule_metrics,
+    compute_forward_returns,
+    load_price_history_from_csv,
+    load_signal_events,
+)
 
 
 def test_feature_builder_aligns_futu_eastern_trades_with_utc_book():
@@ -90,6 +99,52 @@ def test_signal_scoring_keeps_strong_candidate_warmup_without_validation_gate():
     assert row["report_state"] == "warmup"
 
 
+def test_signal_scoring_requires_side_specific_validation_for_high_confidence():
+    minutes = pd.date_range("2026-06-01 13:30:00+00:00", periods=6, freq="min")
+    features = pd.DataFrame(
+        {
+            "symbol": ["US.AAPL"] * len(minutes),
+            "minute": minutes,
+            "trade_count": [100] * len(minutes),
+            "dollar_volume": [1_000_000.0] * len(minutes),
+            "active_buy_dollar": [700_000.0] * len(minutes),
+            "active_sell_dollar": [300_000.0] * len(minutes),
+            "has_trade_data": [True] * len(minutes),
+            "has_book_data": [True] * len(minutes),
+            "coverage_ratio_regular": [1.0] * len(minutes),
+            "reference_price": [100, 100.1, 100.2, 100.25, 100.3, 100.35],
+            "vwap_deviation_bps": [20] * len(minutes),
+            "price_impact_bps_per_musd": [5] * len(minutes),
+            "spread_bps": [2] * len(minutes),
+            "depth_imbalance_1": [0.50] * len(minutes),
+            "depth_imbalance_5": [0.40] * len(minutes),
+            "bid_replenish_1": [900] * len(minutes),
+            "ask_replenish_1": [0] * len(minutes),
+            "dollar_volume_z": [3] * len(minutes),
+            "odd_lot_ratio": [0.1] * len(minutes),
+            "duplicate_sequence_rate": [0.0] * len(minutes),
+        }
+    )
+
+    signals = score_microstructure_signals(
+        features,
+        config=MicrostructureSignalConfig(
+            min_trade_count=100,
+            min_dollar_volume=1_000,
+            min_data_coverage=0.1,
+            high_score=70,
+        ),
+        validation_gate={
+            "state": "validated",
+            "validated": True,
+            "validated_sides": {"accumulation": True, "distribution": False},
+        },
+    )
+
+    assert signals.iloc[0]["side"] == "accumulation"
+    assert signals.iloc[0]["confidence"] == "high"
+
+
 def _write_raw(base: Path, kind: str, symbol: str, rows: list[dict]):
     path = base / kind / "date=2026-06-01" / f"symbol={symbol}" / "part-test.parquet"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -154,3 +209,93 @@ def test_report_script_writes_warmup_artifacts(tmp_path):
     status = json.loads((tmp_path / "reports/date=2026-06-01/status.json").read_text(encoding="utf-8"))
     assert status["validation_gate"]["state"] == "warmup"
     assert status["high_count"] == 0
+
+
+def _write_signal(base: Path, date: str, rows: list[dict]):
+    path = base / "signals" / f"date={date}" / "us_major_flow_signals.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_csv(path, index=False)
+    return path
+
+
+def test_forward_validation_builds_active_gate_from_price_csv(tmp_path):
+    signal_path = _write_signal(
+        tmp_path,
+        "2026-01-02",
+        [
+            {
+                "symbol": "US.AAPL",
+                "side": "accumulation",
+                "side_score": 88,
+                "rank": 1,
+                "confidence": "watch",
+                "stage": "accumulation_watch",
+                "reason": "test",
+            },
+            {
+                "symbol": "US.MSFT",
+                "side": "accumulation",
+                "side_score": 86,
+                "rank": 2,
+                "confidence": "watch",
+                "stage": "accumulation_watch",
+                "reason": "test",
+            },
+        ],
+    )
+    price_rows = []
+    dates = pd.bdate_range("2026-01-02", periods=8)
+    for idx, day in enumerate(dates):
+        date = day.strftime("%Y-%m-%d")
+        price_rows.append({"date": date, "symbol": "US.AAPL", "close": 100 + idx * 2})
+        price_rows.append({"date": date, "symbol": "US.MSFT", "close": 200 + idx * 3})
+        price_rows.append({"date": date, "symbol": "US.SPY", "close": 500 + idx * 1})
+    price_csv = tmp_path / "prices.csv"
+    pd.DataFrame(price_rows).to_csv(price_csv, index=False)
+
+    events = load_signal_events([signal_path], min_event_score=70)
+    prices = load_price_history_from_csv(price_csv)
+    cfg = ForwardValidationConfig(
+        horizons=(5,),
+        min_signal_days_per_side=1,
+        min_observations_per_side=2,
+        min_alpha=0.001,
+        min_hit_rate=0.5,
+        min_recent_hit_rate=0.5,
+        min_wilson_lower=0.2,
+        max_symbol_sample_share=0.51,
+    )
+    returns = compute_forward_returns(events, prices, config=cfg)
+    metrics = build_rule_metrics(returns, config=cfg)
+    gate = build_active_gate(metrics, config=cfg)
+
+    assert len(events) == 2
+    assert len(returns) == 2
+    assert gate["validated"] is True
+    assert gate["validated_sides"]["accumulation"] is True
+
+
+def test_validation_script_writes_warmup_gate_without_future_prices(tmp_path):
+    _write_signal(
+        tmp_path,
+        "2026-01-02",
+        [
+            {
+                "symbol": "US.AAPL",
+                "side": "accumulation",
+                "side_score": 88,
+                "rank": 1,
+                "confidence": "watch",
+                "stage": "accumulation_watch",
+                "reason": "test",
+            }
+        ],
+    )
+
+    validate_script.main(["--base-dir", str(tmp_path), "--qlib-dir", str(tmp_path / "missing_qlib"), "--no-nas-sync"])
+
+    gate = json.loads((tmp_path / "validation" / "active_gate.json").read_text(encoding="utf-8"))
+    assert gate["state"] == "warmup"
+    assert gate["validated"] is False
+    assert gate["event_count"] == 1
+    assert gate["forward_return_count"] == 0

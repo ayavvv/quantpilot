@@ -275,15 +275,20 @@ def _attach_side(row: pd.Series, cfg: MicrostructureSignalConfig, gate: dict[str
         and _finite(row.get("duplicate_sequence_rate"), 0.0) < 0.01
     )
     gate_validated = bool(gate.get("validated"))
-    if side_score >= cfg.high_score and evidence_blocks >= 2 and has_data_quality and gate_validated:
+    validated_sides = gate.get("validated_sides")
+    if isinstance(validated_sides, dict):
+        side_validated = bool(validated_sides.get(side, False))
+    else:
+        side_validated = gate_validated
+    if side_score >= cfg.high_score and evidence_blocks >= 2 and has_data_quality and side_validated:
         confidence = "high"
         report_state = "validated"
     elif side_score >= cfg.watch_score and evidence_blocks >= 2:
         confidence = "watch"
-        report_state = "warmup" if not gate_validated else "validated"
+        report_state = "warmup" if not side_validated else "validated"
     else:
         confidence = "diagnostic"
-        report_state = "warmup" if not gate_validated else "validated"
+        report_state = "warmup" if not side_validated else "validated"
 
     stage = {
         ("accumulation", "high"): "stealth_accumulation",

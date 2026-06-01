@@ -413,7 +413,9 @@ Build:
 - `scripts/collect_us_microstructure.py`
 - `strategy/us_microstructure_features.py`
 - `strategy/us_microstructure_signals.py`
+- `strategy/us_microstructure_validation.py`
 - `scripts/report_us_microstructure_flow.py`
+- `scripts/validate_us_microstructure_flow.py`
 - `scripts/run_us_microstructure_report.sh`
 
 Implemented status as of 2026-06-01:
@@ -427,12 +429,21 @@ Implemented status as of 2026-06-01:
   collector receive-time book snapshots.
 - `strategy/us_microstructure_signals.py` scores accumulation and distribution
   candidates, but only emits `high` confidence when a validation gate is
-  promoted. Without `validation/active_gate.json`, candidates stay
+  promoted for that side. Without `validation/active_gate.json`, candidates stay
   `warmup`/`diagnostic` or `watch`.
+- `strategy/us_microstructure_validation.py` maintains the forward validation
+  ledger: `signal_events.parquet`, `forward_returns.parquet`,
+  `rule_metrics.csv`, and `active_gate.json`. It promotes only after the
+  configured sample-size, 5-day alpha, hit-rate, recent hit-rate, Wilson lower
+  bound, and symbol-concentration gates pass.
+- `scripts/validate_us_microstructure_flow.py` updates the validation ledger
+  from archived signal CSV files and daily close prices. It can read a
+  `date,symbol,close` price CSV and/or Qlib daily close data.
 - `scripts/report_us_microstructure_flow.py` writes feature parquet, signal CSV,
   status JSON, and Markdown/HTML reports, then mirrors report artifacts to NAS.
 - `scripts/run_us_microstructure_report.sh` is the Mac-side entrypoint for cron
-  or launchd. It sends email only when `US_MICROSTRUCTURE_SEND_EMAIL=true`.
+  or launchd. It updates validation first, then generates the report. It sends
+  email only when `US_MICROSTRUCTURE_SEND_EMAIL=true`.
 
 Start with a fixed universe file:
 
