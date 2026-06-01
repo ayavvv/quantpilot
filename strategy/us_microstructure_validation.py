@@ -32,6 +32,7 @@ EVENT_AUDIT_COLUMNS = (
     "duplicate_sequence_rate",
     "spread_bps",
     "evidence_blocks",
+    "is_final_report",
     "data_quality_pass",
 )
 
@@ -119,6 +120,10 @@ def load_signal_events(
         events["confidence"] = events["confidence"].astype(str).str.lower()
     else:
         events["confidence"] = ""
+    if "is_final_report" in events.columns:
+        events["is_final_report"] = events["is_final_report"].astype(str).str.lower().isin({"1", "true", "yes", "y"})
+    else:
+        events["is_final_report"] = False
     if "data_quality_pass" in events.columns:
         events["data_quality_pass"] = events["data_quality_pass"].astype(str).str.lower().isin({"1", "true", "yes", "y"})
     else:
@@ -132,6 +137,7 @@ def load_signal_events(
         & (events["side"].isin({"accumulation", "distribution"}))
         & (events["side_score"] >= float(min_event_score))
         & (events["confidence"].isin({"watch", "high"}))
+        & (events["is_final_report"])
         & (events["data_quality_pass"])
     ].copy()
     if events.empty:

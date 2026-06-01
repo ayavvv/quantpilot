@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -385,8 +386,24 @@ def test_read_microstructure_inputs_filters_stale_trades_from_date_partition(tmp
 def _write_signal(base: Path, date: str, rows: list[dict]):
     path = base / "signals" / f"date={date}" / "us_major_flow_signals.csv"
     path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(rows).to_csv(path, index=False)
+    frame = pd.DataFrame(rows)
+    if "is_final_report" not in frame.columns:
+        frame["is_final_report"] = True
+    else:
+        frame["is_final_report"] = frame["is_final_report"].where(frame["is_final_report"].notna(), True)
+    frame.to_csv(path, index=False)
     return path
+
+
+def test_report_final_flag_uses_us_eastern_close_buffer():
+    assert report_script._is_final_report(
+        "2026-06-01",
+        now=datetime(2026, 6, 1, 15, 59, tzinfo=report_script.US_EASTERN),
+    ) is False
+    assert report_script._is_final_report(
+        "2026-06-01",
+        now=datetime(2026, 6, 1, 16, 10, tzinfo=report_script.US_EASTERN),
+    ) is True
 
 
 def test_forward_validation_builds_active_gate_from_price_csv(tmp_path):
@@ -538,6 +555,15 @@ def test_load_signal_events_requires_reportable_quality_signals(tmp_path):
                 "rank": 3,
                 "confidence": "diagnostic",
                 "data_quality_pass": True,
+            },
+            {
+                "symbol": "US.TSLA",
+                "side": "accumulation",
+                "side_score": 93,
+                "rank": 4,
+                "confidence": "watch",
+                "data_quality_pass": True,
+                "is_final_report": False,
             },
         ],
     )

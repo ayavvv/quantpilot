@@ -467,7 +467,9 @@ Implemented status as of 2026-06-01:
   configured sample-size, 5-day alpha, hit-rate, recent hit-rate, Wilson lower
   bound, and symbol-concentration gates pass. The ledger only consumes
   reportable `watch`/`high` signals with `data_quality_pass=true`; diagnostic
-  or low-coverage rows are not allowed to train the confidence gate. Signal
+  or low-coverage rows are not allowed to train the confidence gate. It also
+  requires `is_final_report=true`, so intraday/manual reports cannot train the
+  confidence gate if a final post-close report fails to overwrite them. Signal
   events preserve coverage, liquidity, duplicate-rate, spread, and evidence
   block fields so every validation sample remains auditable.
 - `scripts/update_us_microstructure_prices.py` uses Futu OpenD `K_DAY` data to

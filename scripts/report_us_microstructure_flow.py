@@ -14,6 +14,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -35,6 +36,7 @@ from strategy.us_microstructure_signals import (
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(Path.home() / "quantpilot_data")))
 DEFAULT_BASE_DIR = Path(os.environ.get("US_MICROSTRUCTURE_DIR", str(DATA_DIR / "us_microstructure")))
 DEFAULT_NAS_DIR = "/volume1/docker/quantpilot/us_microstructure"
+US_EASTERN = ZoneInfo("America/New_York")
 
 
 def _parse_symbols(value: str) -> list[str]:
@@ -43,6 +45,22 @@ def _parse_symbols(value: str) -> list[str]:
 
 def _default_date() -> str:
     return datetime.now().strftime("%Y-%m-%d")
+
+
+def _is_final_report(report_date: str, *, now: datetime | None = None, close_buffer_minutes: int = 10) -> bool:
+    session_close = datetime.strptime(report_date, "%Y-%m-%d").replace(
+        hour=16,
+        minute=int(close_buffer_minutes),
+        second=0,
+        microsecond=0,
+        tzinfo=US_EASTERN,
+    )
+    timestamp = now or datetime.now(tz=US_EASTERN)
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=US_EASTERN)
+    else:
+        timestamp = timestamp.astimezone(US_EASTERN)
+    return timestamp >= session_close
 
 
 def _money(value: object) -> str:
@@ -575,17 +593,22 @@ def main(argv: list[str] | None = None) -> int:
         config=MicrostructureFeatureConfig(book_levels=args.book_levels),
     )
     signal_cfg = MicrostructureSignalConfig()
+    is_final_report = _is_final_report(args.date)
     signals = score_microstructure_signals(
         features,
         config=signal_cfg,
         validation_gate=gate,
         include_diagnostic=True,
     )
+    if not signals.empty:
+        signals = signals.copy()
+        signals["is_final_report"] = bool(is_final_report)
     raw_counts = _raw_counts(inputs)
     data_quality = _data_quality_summary(features, signal_cfg)
     status = {
         "date": args.date,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "is_final_report": bool(is_final_report),
         "base_dir": str(base_dir),
         "raw_counts": raw_counts,
         "coverage": _coverage_summary(features),
