@@ -16,7 +16,6 @@ from strategy.major_force import (
     A_SHARE_PREFIXES,
     DEFAULT_FIELDS,
     MajorForceConfig,
-    compute_major_force_metrics,
     score_major_force_frame,
 )
 
@@ -25,6 +24,7 @@ from strategy.major_force import (
 class MajorForceEvalConfig:
     """Configuration for forward-return validation."""
 
+    sides: tuple[str, ...] = ("buy",)
     top_ns: tuple[int, ...] = (10, 30, 50)
     horizons: tuple[int, ...] = (5, 10, 20)
     entry_lag_days: int = 1
@@ -44,6 +44,16 @@ def _parse_int_tuple(raw: str) -> tuple[int, ...]:
     if not values:
         raise ValueError("expected at least one integer")
     return tuple(values)
+
+
+def _parse_str_tuple(raw: str) -> tuple[str, ...]:
+    values = tuple(item.strip().lower() for item in raw.split(",") if item.strip())
+    if not values:
+        raise ValueError("expected at least one value")
+    invalid = [value for value in values if value not in {"buy", "sell"}]
+    if invalid:
+        raise ValueError(f"unsupported side(s): {', '.join(invalid)}")
+    return values
 
 
 def _window_bound(calendar: list[str], date_value: str, offset: int) -> str:
@@ -71,6 +81,17 @@ def _evaluation_dates(
     return dates
 
 
+def _date_from_lookback(calendar: list[str], end_date: str, lookback_days: int) -> str:
+    if not calendar:
+        return end_date
+    try:
+        end_pos = calendar.index(end_date)
+    except ValueError:
+        end_pos = max(0, min(len(calendar) - 1, np.searchsorted(calendar, end_date) - 1))
+    start_pos = max(0, end_pos - max(1, int(lookback_days)) + 1)
+    return calendar[start_pos]
+
+
 def _load_stock_frames(
     reader: QlibBinReader,
     instruments: dict[str, tuple[str, str]],
@@ -91,6 +112,123 @@ def _load_stock_frames(
         if len(df) >= min_rows:
             frames[code] = df
     return frames
+
+
+def _safe_div_series(num: pd.Series, den: pd.Series) -> pd.Series:
+    result = num / den.replace(0, np.nan)
+    return result.replace([np.inf, -np.inf], np.nan)
+
+
+def _limit_up_threshold_pct(code: str) -> float:
+    if code.startswith(("SZ.300", "SZ.301", "SH.688")):
+        return 19.5
+    return 9.5
+
+
+def _precompute_metric_rows_for_dates(
+    code: str,
+    df: pd.DataFrame,
+    eval_dates: set[str],
+    cfg: MajorForceConfig,
+) -> list[dict[str, object]]:
+    if df.empty or not eval_dates:
+        return []
+
+    stock = df.copy().sort_index()
+    stock.index = stock.index.astype(str).str[:10]
+    for field in DEFAULT_FIELDS:
+        if field not in stock.columns:
+            stock[field] = np.nan
+        stock[field] = pd.to_numeric(stock[field], errors="coerce")
+    stock = stock.replace([np.inf, -np.inf], np.nan)
+    stock = stock.dropna(subset=["open", "high", "low", "close", "amount"])
+    if len(stock) < cfg.min_history:
+        return []
+
+    high = stock["high"]
+    low = stock["low"]
+    close = stock["close"]
+    amount = stock["amount"].clip(lower=0)
+    turnover = stock["turnover_rate"]
+    spread = (high - low).replace(0, np.nan)
+    close_location = ((close - low) / spread).clip(0, 1).fillna(0.5)
+    money_flow_amount = (2.0 * close_location - 1.0).clip(-1, 1) * amount
+
+    fw = cfg.fast_window
+    mw = cfg.medium_window
+    flow_w = cfg.flow_window
+    base_w = cfg.baseline_window
+    returns = close.pct_change()
+    today_chg_pct = (close / close.shift(1) - 1.0) * 100.0
+    today_chg_pct = today_chg_pct.fillna(stock["change_rate"])
+    threshold = _limit_up_threshold_pct(code)
+    is_limit_up = today_chg_pct >= threshold
+    is_limit_down = today_chg_pct <= -threshold
+
+    amount_fast = amount.rolling(fw, min_periods=fw).mean()
+    amount_base = amount.rolling(base_w, min_periods=base_w).mean()
+    amount_prev_base = amount.shift(fw).rolling(base_w, min_periods=base_w).mean()
+    turnover_fast = turnover.rolling(fw, min_periods=fw).mean()
+    turnover_base = turnover.rolling(base_w, min_periods=base_w).mean()
+    rolling_high = high.shift(1).rolling(flow_w, min_periods=flow_w).max()
+
+    metrics = pd.DataFrame(
+        {
+            "code": code,
+            "date": stock.index,
+            "close": close.round(4),
+            "amount": amount.round(2),
+            "turnover_rate": stock["turnover_rate"].round(4),
+            "today_chg_pct": today_chg_pct.round(4),
+            "cmf_5": _safe_div_series(
+                money_flow_amount.rolling(fw, min_periods=fw).sum(),
+                amount.rolling(fw, min_periods=fw).sum(),
+            ),
+            "cmf_10": _safe_div_series(
+                money_flow_amount.rolling(mw, min_periods=mw).sum(),
+                amount.rolling(mw, min_periods=mw).sum(),
+            ),
+            "cmf_20": _safe_div_series(
+                money_flow_amount.rolling(flow_w, min_periods=flow_w).sum(),
+                amount.rolling(flow_w, min_periods=flow_w).sum(),
+            ),
+            "amount_ratio_5_20": _safe_div_series(amount_fast, amount_base),
+            "amount_ratio_5_prev20": _safe_div_series(amount_fast, amount_prev_base),
+            "turnover_ratio_5_20": _safe_div_series(turnover_fast, turnover_base),
+            "close_location_today": close_location,
+            "close_location_10": close_location.rolling(mw, min_periods=mw).mean(),
+            "positive_flow_days_20": (money_flow_amount > 0).astype(float).rolling(flow_w, min_periods=flow_w).mean(),
+            "up_days_10": (returns > 0).astype(float).rolling(mw, min_periods=mw).mean(),
+            "price_change_10": close / close.shift(mw) - 1.0,
+            "price_change_20": close / close.shift(flow_w) - 1.0,
+            "breakout_20": _safe_div_series(close, rolling_high) - 1.0,
+            "drawdown_10": np.nan,
+            "volatility_20": returns.rolling(flow_w, min_periods=flow_w).std(),
+            "avg_range_10": ((high - low) / close.replace(0, np.nan)).rolling(mw, min_periods=mw).mean(),
+            "is_limit_up": is_limit_up.astype(bool),
+            "is_limit_down": is_limit_down.astype(bool),
+            "_is_st": stock["is_st"],
+            "_history_count": np.arange(1, len(stock) + 1),
+        },
+        index=stock.index,
+    )
+    metrics["cmf_accel_5_20"] = metrics["cmf_5"] - metrics["cmf_20"]
+
+    mask = metrics.index.isin(eval_dates)
+    mask &= metrics["_history_count"] >= cfg.min_history
+    mask &= pd.to_numeric(metrics["close"], errors="coerce") >= cfg.min_close
+    mask &= pd.to_numeric(metrics["amount"], errors="coerce") >= cfg.min_amount
+    if cfg.exclude_st:
+        mask &= pd.to_numeric(metrics["_is_st"], errors="coerce").fillna(0.0) < 0.5
+    if cfg.exclude_limit_up:
+        mask &= ~metrics["is_limit_up"]
+    if cfg.exclude_limit_down:
+        mask &= ~metrics["is_limit_down"]
+
+    metrics = metrics.loc[mask].drop(columns=["_is_st", "_history_count"])
+    if metrics.empty:
+        return []
+    return metrics.to_dict("records")
 
 
 def _forward_return(
@@ -136,6 +274,59 @@ def _returns_for_ranked(
     if not rows:
         return pd.DataFrame(columns=["code", "fwd_return"])
     return pd.DataFrame(rows)
+
+
+def _rank_for_side(
+    ranked: pd.DataFrame,
+    *,
+    side: str,
+    min_score: float | None,
+    stages: tuple[str, ...] | None,
+) -> pd.DataFrame:
+    result = ranked.copy()
+    side_name = str(side or "buy").lower()
+    if side_name == "sell":
+        score_col = "distribution_score"
+        rank_col = "distribution_rank"
+        default_stages = {"distribution_risk", "washout_or_risk"}
+    else:
+        score_col = "score"
+        rank_col = "rank"
+        default_stages = {"accumulation_candidate", "watch"}
+
+    if score_col not in result.columns:
+        return pd.DataFrame(columns=result.columns)
+    if "stage" not in result.columns:
+        result["stage"] = ""
+    if stages:
+        result = result[result["stage"].isin(stages)]
+    elif side_name == "sell":
+        result = result[(result["stage"].isin(default_stages)) | (pd.to_numeric(result[score_col], errors="coerce") >= 70)]
+    else:
+        result = result[result["stage"].isin(default_stages)]
+    if min_score is not None:
+        result = result[pd.to_numeric(result[score_col], errors="coerce") >= min_score]
+    result = result.sort_values([score_col, "amount"], ascending=[False, False], kind="stable").reset_index(drop=True)
+    result["rank"] = np.arange(1, len(result) + 1)
+    result["signal_side"] = side_name
+    result["side_score"] = pd.to_numeric(result[score_col], errors="coerce")
+    if rank_col in result.columns:
+        result["source_rank"] = pd.to_numeric(result[rank_col], errors="coerce")
+    else:
+        result["source_rank"] = np.nan
+    return result
+
+
+def _side_hit_rate(returns: pd.Series, side: str) -> float:
+    if side == "sell":
+        return float((returns < 0).mean())
+    return float((returns > 0).mean())
+
+
+def _side_alpha(selected_return: float, universe_return: float, side: str) -> float:
+    if side == "sell":
+        return universe_return - selected_return
+    return selected_return - universe_return
 
 
 def evaluate_major_force_forward_returns(
@@ -203,17 +394,17 @@ def evaluate_major_force_forward_returns(
         )
 
     max_top_n = max(eval_cfg.top_ns)
+    eval_date_set = set(dates)
+    metrics_by_date: dict[str, list[dict[str, object]]] = {date: [] for date in dates}
+    for code, df in frames.items():
+        for row in _precompute_metric_rows_for_dates(code, df, eval_date_set, scan_cfg):
+            metrics_by_date.setdefault(str(row.get("date", ""))[:10], []).append(row)
+
     daily_rows: list[dict[str, object]] = []
     pick_rows: list[dict[str, object]] = []
 
     for date_idx, date in enumerate(dates, start=1):
-        metric_rows = []
-        for code, df in frames.items():
-            if date not in df.index:
-                continue
-            metrics = compute_major_force_metrics(code, df, as_of_date=date, config=scan_cfg)
-            if metrics is not None:
-                metric_rows.append(metrics)
+        metric_rows = metrics_by_date.get(date, [])
         if not metric_rows:
             if progress:
                 print(f"[major_force_eval] {date_idx}/{len(dates)} {date}: no candidates", flush=True)
@@ -225,73 +416,82 @@ def evaluate_major_force_forward_returns(
                 print(f"[major_force_eval] {date_idx}/{len(dates)} {date}: empty universe ranking", flush=True)
             continue
 
-        ranked = all_ranked.copy()
-        if eval_cfg.stages:
-            ranked = ranked[ranked["stage"].isin(eval_cfg.stages)]
-        if eval_cfg.min_score is not None:
-            ranked = ranked[ranked["score"] >= eval_cfg.min_score]
-        ranked = ranked.reset_index(drop=True)
-        ranked["rank"] = np.arange(1, len(ranked) + 1)
-        if ranked.empty:
-            if progress:
-                print(f"[major_force_eval] {date_idx}/{len(dates)} {date}: empty ranking", flush=True)
-            continue
-        if progress:
-            print(
-                f"[major_force_eval] {date_idx}/{len(dates)} {date}: "
-                f"candidates={len(ranked)} universe={len(all_ranked)}",
-                flush=True,
-            )
-
-        top_picks = ranked.head(max_top_n).copy()
-        top_picks["eval_date"] = date
         for horizon in eval_cfg.horizons:
             returns_df = _returns_for_ranked(all_ranked, frames, date, horizon, eval_cfg.entry_lag_days)
             if returns_df.empty:
                 continue
-            selected_returns = ranked.merge(returns_df, on="code", how="inner")
             universe_ret = float(returns_df["fwd_return"].mean())
             universe_count = int(len(returns_df))
 
-            pick_ret_map = dict(zip(returns_df["code"], returns_df["fwd_return"]))
-            top_picks[f"fwd_return_{horizon}d"] = top_picks["code"].map(pick_ret_map)
-
-            for top_n in eval_cfg.top_ns:
-                selected = selected_returns.head(top_n)
-                if selected.empty:
-                    continue
-                selected_ret = float(selected["fwd_return"].mean())
-                daily_rows.append(
-                    {
-                        "date": date,
-                        "horizon": horizon,
-                        "top_n": top_n,
-                        "selected_count": int(len(selected)),
-                        "universe_count": universe_count,
-                        "avg_score": float(selected["score"].mean()),
-                        "selected_return": selected_ret,
-                        "universe_return": universe_ret,
-                        "alpha": selected_ret - universe_ret,
-                        "hit_rate": float((selected["fwd_return"] > 0).mean()),
-                    }
+            for side in eval_cfg.sides:
+                ranked = _rank_for_side(
+                    all_ranked,
+                    side=side,
+                    min_score=eval_cfg.min_score,
+                    stages=eval_cfg.stages,
                 )
+                if ranked.empty:
+                    if progress:
+                        print(
+                            f"[major_force_eval] {date_idx}/{len(dates)} {date}: "
+                            f"empty {side} ranking",
+                            flush=True,
+                        )
+                    continue
+                if progress and horizon == eval_cfg.horizons[0]:
+                    print(
+                        f"[major_force_eval] {date_idx}/{len(dates)} {date}: "
+                        f"{side}_candidates={len(ranked)} universe={len(all_ranked)}",
+                        flush=True,
+                    )
+                selected_returns = ranked.merge(returns_df, on="code", how="inner")
+                pick_ret_map = dict(zip(returns_df["code"], returns_df["fwd_return"]))
+                top_picks = ranked.head(max_top_n).copy()
+                top_picks["eval_date"] = date
+                top_picks["signal_side"] = side
+                top_picks[f"fwd_return_{horizon}d"] = top_picks["code"].map(pick_ret_map)
 
-        pick_cols = [
-            "eval_date",
-            "rank",
-            "code",
-            "date",
-            "score",
-            "stage",
-            "close",
-            "today_chg_pct",
-            "amount_ratio_5_20",
-            "cmf_20",
-            "close_location_10",
-            "breakout_20",
-            "reason",
-        ] + [f"fwd_return_{horizon}d" for horizon in eval_cfg.horizons]
-        pick_rows.extend(top_picks[[col for col in pick_cols if col in top_picks.columns]].to_dict("records"))
+                for top_n in eval_cfg.top_ns:
+                    selected = selected_returns.head(top_n)
+                    if selected.empty:
+                        continue
+                    selected_ret = float(selected["fwd_return"].mean())
+                    daily_rows.append(
+                        {
+                            "date": date,
+                            "signal_side": side,
+                            "horizon": horizon,
+                            "top_n": top_n,
+                            "selected_count": int(len(selected)),
+                            "universe_count": universe_count,
+                            "avg_score": float(selected["side_score"].mean()),
+                            "selected_return": selected_ret,
+                            "universe_return": universe_ret,
+                            "alpha": _side_alpha(selected_ret, universe_ret, side),
+                            "win_day": _side_hit_rate(pd.Series([selected_ret]), side),
+                            "hit_rate": _side_hit_rate(selected["fwd_return"], side),
+                        }
+                    )
+                pick_cols = [
+                    "eval_date",
+                    "signal_side",
+                    "rank",
+                    "source_rank",
+                    "code",
+                    "date",
+                    "side_score",
+                    "score",
+                    "distribution_score",
+                    "stage",
+                    "close",
+                    "today_chg_pct",
+                    "amount_ratio_5_20",
+                    "cmf_20",
+                    "close_location_10",
+                    "breakout_20",
+                    "reason",
+                ] + [f"fwd_return_{horizon}d"]
+                pick_rows.extend(top_picks[[col for col in pick_cols if col in top_picks.columns]].to_dict("records"))
 
     daily = pd.DataFrame(daily_rows)
     picks = pd.DataFrame(pick_rows)
@@ -299,7 +499,7 @@ def evaluate_major_force_forward_returns(
         return pd.DataFrame(), daily, picks
 
     summary = (
-        daily.groupby(["top_n", "horizon"], as_index=False)
+        daily.groupby(["signal_side", "top_n", "horizon"], as_index=False)
         .agg(
             date_count=("date", "nunique"),
             avg_selected_count=("selected_count", "mean"),
@@ -308,10 +508,10 @@ def evaluate_major_force_forward_returns(
             median_return=("selected_return", "median"),
             avg_universe_return=("universe_return", "mean"),
             avg_alpha=("alpha", "mean"),
-            win_rate_days=("selected_return", lambda s: float((s > 0).mean())),
+            win_rate_days=("win_day", "mean"),
             avg_hit_rate=("hit_rate", "mean"),
         )
-        .sort_values(["horizon", "top_n"])
+        .sort_values(["signal_side", "horizon", "top_n"])
         .reset_index(drop=True)
     )
     return summary, daily, picks
@@ -320,9 +520,11 @@ def evaluate_major_force_forward_returns(
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate A-share major-flow proxy forward returns.")
     parser.add_argument("--qlib-dir", default=os.environ.get("QLIB_DATA_DIR", "~/quantpilot_data/qlib_data"))
-    parser.add_argument("--start-date", required=True)
-    parser.add_argument("--end-date", required=True)
+    parser.add_argument("--start-date", default=os.environ.get("MAJOR_FORCE_EVAL_START_DATE", ""))
+    parser.add_argument("--end-date", default=os.environ.get("MAJOR_FORCE_EVAL_END_DATE", ""))
+    parser.add_argument("--lookback-days", type=int, default=int(os.environ.get("MAJOR_FORCE_EVAL_LOOKBACK_DAYS", "252")))
     parser.add_argument("--output-dir", default=os.environ.get("MAJOR_FORCE_EVAL_DIR", "~/quantpilot_data/output/major_force_eval"))
+    parser.add_argument("--sides", default=os.environ.get("MAJOR_FORCE_EVAL_SIDES", "buy"))
     parser.add_argument("--top-ns", default="10,30,50")
     parser.add_argument("--horizons", default="5,10,20")
     parser.add_argument("--entry-lag-days", type=int, default=1)
@@ -342,6 +544,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
+    qlib_dir = Path(args.qlib_dir).expanduser()
+    if args.start_date and args.end_date:
+        start_date = args.start_date
+        end_date = args.end_date
+    else:
+        reader = QlibBinReader(qlib_dir)
+        calendar = reader.calendar
+        end_date = args.end_date or (calendar[-1] if calendar else "")
+        start_date = args.start_date or _date_from_lookback(calendar, end_date, args.lookback_days)
+    if not start_date or not end_date:
+        raise ValueError("start/end date could not be resolved from qlib calendar")
     scan_cfg = MajorForceConfig(
         min_amount=args.min_amount,
         min_history=args.min_history,
@@ -350,6 +563,7 @@ def main(argv: list[str] | None = None) -> int:
         exclude_st=not args.include_st,
     )
     eval_cfg = MajorForceEvalConfig(
+        sides=_parse_str_tuple(args.sides),
         top_ns=_parse_int_tuple(args.top_ns),
         horizons=_parse_int_tuple(args.horizons),
         entry_lag_days=max(0, args.entry_lag_days),
@@ -360,9 +574,9 @@ def main(argv: list[str] | None = None) -> int:
         stages=tuple(item.strip() for item in args.stages.split(",") if item.strip()) or None,
     )
     summary, daily, picks = evaluate_major_force_forward_returns(
-        Path(args.qlib_dir).expanduser(),
-        args.start_date,
-        args.end_date,
+        qlib_dir,
+        start_date,
+        end_date,
         scan_config=scan_cfg,
         eval_config=eval_cfg,
         progress=not args.quiet,

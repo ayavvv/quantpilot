@@ -17,6 +17,13 @@ def _records(dates, pattern):
             high = close * 1.002
             amount = 40_000_000 if idx < len(dates) - 10 else 95_000_000
             turnover_rate = 0.8 if idx < len(dates) - 10 else 1.8
+        elif pattern == "distribution":
+            close *= 1.001 if idx < len(dates) - 20 else 0.992
+            open_price = close * 1.014
+            low = close * 0.998
+            high = open_price * 1.004
+            amount = 45_000_000 if idx < len(dates) - 20 else 130_000_000
+            turnover_rate = 0.8 if idx < len(dates) - 20 else 2.2
         else:
             close *= 0.999
             open_price = close * 1.008
@@ -108,3 +115,40 @@ def test_evaluate_major_force_forward_returns_outputs_summary(tmp_path):
     assert row["top_n"] == 1
     assert row["horizon"] == 5
     assert row["avg_return"] > row["avg_universe_return"]
+
+
+def test_evaluate_major_force_forward_returns_scores_sell_side(tmp_path):
+    qlib_dir = tmp_path / "qlib"
+    writer = QlibDirectWriter(qlib_dir)
+    dates = pd.bdate_range("2026-01-01", periods=100)
+    writer.write_stock_records("SH.600000", _records(dates, "distribution"))
+    writer.write_stock_records("SZ.000001", _records(dates, "weak"))
+    writer.flush()
+
+    summary, daily, picks = evaluate_major_force_forward_returns(
+        qlib_dir,
+        start_date=dates[72].strftime("%Y-%m-%d"),
+        end_date=dates[88].strftime("%Y-%m-%d"),
+        scan_config=MajorForceConfig(
+            min_amount=0,
+            min_history=40,
+            lookback_days=60,
+            exclude_limit_down=False,
+        ),
+        eval_config=MajorForceEvalConfig(
+            sides=("sell",),
+            top_ns=(1,),
+            horizons=(5,),
+            entry_lag_days=1,
+            min_active_stocks=1,
+            min_score=50,
+            stages=("weak", "watch", "distribution_risk"),
+        ),
+    )
+
+    assert not summary.empty
+    assert set(summary["signal_side"]) == {"sell"}
+    row = summary.iloc[0]
+    assert row["avg_hit_rate"] > 0.5
+    assert row["win_rate_days"] > 0.5
+    assert picks["signal_side"].unique().tolist() == ["sell"]

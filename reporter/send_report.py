@@ -49,6 +49,18 @@ MAJOR_MONEY_DIGEST_JSON = Path(
         str(SIGNAL_DIR.parent / "output" / "major_money_digest_latest.json"),
     )
 )
+MAJOR_FORCE_CSV = Path(
+    os.environ.get(
+        "MAJOR_FORCE_CSV",
+        str(SIGNAL_DIR.parent / "output" / "major_force_latest.csv"),
+    )
+)
+MAJOR_FORCE_EVAL_SUMMARY_CSV = Path(
+    os.environ.get(
+        "MAJOR_FORCE_EVAL_SUMMARY_CSV",
+        str(SIGNAL_DIR.parent / "output" / "major_force_eval" / "summary.csv"),
+    )
+)
 TRADE_START_TIME = time(14, 50)
 
 REPORT_TEMPLATE = """
@@ -153,7 +165,29 @@ tr:nth-child(even) { background-color: #f8f9fa; }
 <p class="warn">{{ major_money_message }}</p>
 {% endif %}
 
-<h2>4. Futu Capital Flow ({{ capital_flow_date }})</h2>
+<h2>4. Stealth Accumulation / Distribution ({{ stealth_money_date }})</h2>
+{% if stealth_money_available %}
+<p class="muted">{{ stealth_money_message }}</p>
+<p><strong>Backtest:</strong> {{ stealth_money_validation }}</p>
+<p><strong>Likely Buying / Accumulation:</strong></p>
+<table>
+<tr><th>Rank</th><th>Code</th><th>Score</th><th>Stage</th><th>Amount</th><th>Reason</th></tr>
+{% for row in stealth_money_buys %}
+<tr class="flow-confirm"><td>{{ row.rank }}</td><td>{{ row.code }}</td><td>{{ row.score }}</td><td>{{ row.stage }}</td><td>{{ row.amount }}</td><td>{{ row.reason }}</td></tr>
+{% endfor %}
+</table>
+<p><strong>Likely Selling / Distribution:</strong></p>
+<table>
+<tr><th>Rank</th><th>Code</th><th>Score</th><th>Stage</th><th>Amount</th><th>Reason</th></tr>
+{% for row in stealth_money_sells %}
+<tr class="flow-risk"><td>{{ row.rank }}</td><td>{{ row.code }}</td><td>{{ row.score }}</td><td>{{ row.stage }}</td><td>{{ row.amount }}</td><td>{{ row.reason }}</td></tr>
+{% endfor %}
+</table>
+{% else %}
+<p class="warn">{{ stealth_money_message }}</p>
+{% endif %}
+
+<h2>5. Futu Capital Flow ({{ capital_flow_date }})</h2>
 {% if capital_flow_available %}
 <p class="muted">{{ capital_flow_message }}</p>
 <table>
@@ -179,7 +213,7 @@ tr:nth-child(even) { background-color: #f8f9fa; }
 <p class="warn">{{ capital_flow_message }}</p>
 {% endif %}
 
-<h2>5. Capital Flow Validation</h2>
+<h2>6. Capital Flow Validation</h2>
 <div class="gate-box {{ capital_flow_gate_class }}">
     <strong>Rule Gate:</strong> {{ capital_flow_gate_message }}
 </div>
@@ -202,7 +236,7 @@ tr:nth-child(even) { background-color: #f8f9fa; }
 <p class="warn">{{ capital_flow_eval_message }}</p>
 {% endif %}
 
-<h2>6. Trading Status</h2>
+<h2>7. Trading Status</h2>
 <p>{{ trade_status }}</p>
 
 <hr>
@@ -534,10 +568,149 @@ def check_major_money_digest_status(
     }
 
 
-def build_report_subject(today: str, major_money_info: dict | None = None) -> str:
+def _read_csv_or_status(path: Path, label: str):
+    if not path.exists():
+        return None, f"No {label} found at {path}."
+    try:
+        return pd.read_csv(path), ""
+    except pd.errors.EmptyDataError:
+        return None, f"{label} is empty."
+    except Exception as exc:
+        return None, f"Could not read {label}: {exc}"
+
+
+def _major_force_row(row, *, side: str, fallback_rank: int) -> dict:
+    if side == "sell":
+        rank = _safe_int(row.get("distribution_rank"), fallback_rank)
+        score = _safe_float(row.get("distribution_score"), 0.0)
+    else:
+        rank = _safe_int(row.get("rank"), fallback_rank)
+        score = _safe_float(row.get("score"), 0.0)
+    return {
+        "rank": rank,
+        "code": row.get("code", "N/A"),
+        "score": f"{score:.1f}",
+        "stage": row.get("stage", ""),
+        "amount": _format_money(row.get("amount")),
+        "reason": row.get("reason", ""),
+    }
+
+
+def _stealth_validation_text(summary: pd.DataFrame) -> str:
+    if summary.empty or "signal_side" not in summary.columns:
+        return "No backtest summary available yet; keep stealth labels advisory."
+    parts = []
+    for side, label in [("buy", "buy"), ("sell", "sell")]:
+        side_rows = summary[summary["signal_side"].astype(str).str.lower() == side].copy()
+        if side_rows.empty:
+            continue
+        if "horizon" in side_rows.columns:
+            side_rows["horizon_abs"] = (pd.to_numeric(side_rows["horizon"], errors="coerce") - 10).abs()
+        else:
+            side_rows["horizon_abs"] = 999
+        if "top_n" in side_rows.columns:
+            side_rows["top_n_abs"] = (pd.to_numeric(side_rows["top_n"], errors="coerce") - 30).abs()
+        else:
+            side_rows["top_n_abs"] = 999
+        row = side_rows.sort_values(["horizon_abs", "top_n_abs", "date_count"], ascending=[True, True, False]).iloc[0]
+        parts.append(
+            f"{label}: {_format_percent(row.get('avg_hit_rate'))} hit, "
+            f"alpha {_format_percent(row.get('avg_alpha'))}, "
+            f"n={_safe_int(row.get('date_count'), 0)} dates/{_safe_int(row.get('horizon'), 0)}d"
+        )
+    return "; ".join(parts) if parts else "No backtest summary available yet; keep stealth labels advisory."
+
+
+def check_stealth_money_status(
+    major_csv: Path | None = None,
+    eval_summary_csv: Path | None = None,
+    top_n: int = 8,
+):
+    """Summarise daily-bar stealth accumulation/distribution candidates."""
+    target = major_csv or Path(os.environ.get("MAJOR_FORCE_CSV", str(MAJOR_FORCE_CSV)))
+    df, error = _read_csv_or_status(target, "stealth money candidate CSV")
+    if error:
+        return {
+            "stealth_money_available": False,
+            "stealth_money_date": "N/A",
+            "stealth_money_message": error,
+            "stealth_money_validation": "",
+            "stealth_money_subject_summary": "",
+            "stealth_money_buys": [],
+            "stealth_money_sells": [],
+        }
+    if df is None or df.empty or "score" not in df.columns:
+        return {
+            "stealth_money_available": False,
+            "stealth_money_date": "N/A",
+            "stealth_money_message": "Stealth money candidate CSV is empty or missing score columns.",
+            "stealth_money_validation": "",
+            "stealth_money_subject_summary": "",
+            "stealth_money_buys": [],
+            "stealth_money_sells": [],
+        }
+
+    work = df.copy()
+    date = "N/A"
+    if "date" in work.columns:
+        dates = sorted(str(value) for value in work["date"].dropna().unique())
+        date = dates[-1] if dates else "N/A"
+    for col in ["score", "distribution_score", "amount", "stage"]:
+        if col not in work.columns:
+            work[col] = ""
+    work["score"] = pd.to_numeric(work["score"], errors="coerce")
+    work["distribution_score"] = pd.to_numeric(work["distribution_score"], errors="coerce")
+    work["amount"] = pd.to_numeric(work["amount"], errors="coerce")
+
+    buy_mask = work["stage"].astype(str).isin({"accumulation_candidate", "watch"})
+    buys = work[buy_mask & (work["score"] >= 75)].sort_values(["score", "amount"], ascending=[False, False]).head(top_n)
+    sell_mask = work["stage"].astype(str).isin({"distribution_risk", "washout_or_risk"})
+    sells = work[sell_mask | (work["distribution_score"] >= 75)]
+    sells = sells.sort_values(["distribution_score", "amount"], ascending=[False, False]).head(top_n)
+
+    summary_path = eval_summary_csv or Path(
+        os.environ.get("MAJOR_FORCE_EVAL_SUMMARY_CSV", str(MAJOR_FORCE_EVAL_SUMMARY_CSV))
+    )
+    summary_df, summary_error = _read_csv_or_status(summary_path, "stealth money backtest summary")
+    if summary_error or summary_df is None:
+        validation = f"{summary_error} Keep stealth labels advisory."
+    else:
+        validation = _stealth_validation_text(summary_df)
+
+    buy_count = int(len(buys))
+    sell_count = int(len(sells))
+    return {
+        "stealth_money_available": True,
+        "stealth_money_date": date,
+        "stealth_money_message": (
+            f"Loaded {len(work)} A-share daily-bar footprint candidate(s). "
+            "These are backtested stealth accumulation/distribution proxies, not account-level proof."
+        ),
+        "stealth_money_validation": validation,
+        "stealth_money_subject_summary": f"Stealth {buy_count} buy/{sell_count} sell",
+        "stealth_money_buys": [
+            _major_force_row(row, side="buy", fallback_rank=idx)
+            for idx, (_, row) in enumerate(buys.iterrows(), start=1)
+        ],
+        "stealth_money_sells": [
+            _major_force_row(row, side="sell", fallback_rank=idx)
+            for idx, (_, row) in enumerate(sells.iterrows(), start=1)
+        ],
+    }
+
+
+def build_report_subject(
+    today: str,
+    major_money_info: dict | None = None,
+    stealth_money_info: dict | None = None,
+) -> str:
     subject = f"QuantPilot Daily Report - {today}"
     if major_money_info and major_money_info.get("major_money_available"):
         summary = str(major_money_info.get("major_money_subject_summary") or "").strip()
+        if summary:
+            subject = f"{subject} | {summary}"
+    if stealth_money_info and stealth_money_info.get("stealth_money_available"):
+        summary = str(stealth_money_info.get("stealth_money_subject_summary") or "").strip()
         if summary:
             subject = f"{subject} | {summary}"
     return subject
@@ -1107,6 +1280,7 @@ def main():
     data_info = check_data_status()
     signal_info = check_signal_status()
     major_money_info = check_major_money_digest_status()
+    stealth_money_info = check_stealth_money_status()
     capital_flow_info = check_capital_flow_status()
     capital_flow_eval_info = check_capital_flow_eval_status()
     capital_flow_gate_info = check_capital_flow_gate_status()
@@ -1123,12 +1297,13 @@ def main():
         **data_info,
         **signal_info,
         **major_money_info,
+        **stealth_money_info,
         **capital_flow_info,
         **capital_flow_eval_info,
         **capital_flow_gate_info,
     )
 
-    subject = build_report_subject(today, major_money_info)
+    subject = build_report_subject(today, major_money_info, stealth_money_info)
     if not send_email(html, subject):
         raise SystemExit(1)
     print("Report generation complete")

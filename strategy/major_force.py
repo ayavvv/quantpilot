@@ -229,12 +229,18 @@ def _build_reason(row: pd.Series) -> str:
     parts: list[str] = []
     if row.get("cmf_20", 0) >= 0.12:
         parts.append("20d_positive_flow")
+    if row.get("cmf_20", 0) <= -0.12:
+        parts.append("20d_negative_flow")
     if row.get("cmf_accel_5_20", 0) > 0:
         parts.append("flow_accelerating")
+    if row.get("cmf_accel_5_20", 0) < 0:
+        parts.append("flow_deteriorating")
     if row.get("amount_ratio_5_20", 0) >= 1.35:
         parts.append("volume_expansion")
     if row.get("close_location_10", 0) >= 0.65:
         parts.append("closes_near_high")
+    if row.get("close_location_10", 1) <= 0.35:
+        parts.append("closes_near_low")
     if row.get("breakout_20", 0) >= 0:
         parts.append("near_20d_breakout")
     if row.get("price_change_10", 0) > 0.18:
@@ -249,7 +255,11 @@ def _build_reason(row: pd.Series) -> str:
 
 
 def _classify_stage(row: pd.Series) -> str:
-    if row.get("cmf_20", 0) <= -0.10 and row.get("amount_ratio_5_20", 0) >= 1.2:
+    if (
+        row.get("distribution_score", 0) >= 75
+        and row.get("cmf_20", 0) <= -0.05
+        and row.get("amount_ratio_5_20", 0) >= 1.1
+    ):
         return "distribution_risk"
     if row.get("score", 0) >= 80 and row.get("today_chg_pct", 0) <= -6.0:
         return "washout_or_risk"
@@ -273,7 +283,7 @@ def score_major_force_frame(metrics: pd.DataFrame) -> pd.DataFrame:
     df["turnover_ratio_log"] = np.log(pd.to_numeric(df["turnover_ratio_5_20"], errors="coerce").clip(lower=1e-9))
     df["overheat_penalty"] = _overheat_penalty(df)
 
-    score_unit = (
+    accumulation_unit = (
         0.28 * _pct_rank(df["cmf_20"])
         + 0.12 * _pct_rank(df["cmf_accel_5_20"])
         + 0.14 * _pct_rank(df["amount_ratio_log"])
@@ -284,7 +294,23 @@ def score_major_force_frame(metrics: pd.DataFrame) -> pd.DataFrame:
         + 0.06 * (1.0 - _pct_rank(df["volatility_20"]))
         - 0.18 * df["overheat_penalty"]
     )
-    df["score"] = (score_unit.clip(lower=0, upper=1) * 100).round(2)
+    distribution_unit = (
+        0.28 * (1.0 - _pct_rank(df["cmf_20"]))
+        + 0.12 * (1.0 - _pct_rank(df["cmf_accel_5_20"]))
+        + 0.14 * _pct_rank(df["amount_ratio_log"])
+        + 0.08 * _pct_rank(df["turnover_ratio_log"])
+        + 0.16 * (1.0 - _pct_rank(df["close_location_10"]))
+        + 0.10 * (1.0 - _pct_rank(df["breakout_20"]))
+        + 0.06 * _pct_rank(df["volatility_20"])
+        + 0.06 * _pct_rank(-pd.to_numeric(df["price_change_10"], errors="coerce").fillna(0.0))
+    )
+    df["score"] = (accumulation_unit.clip(lower=0, upper=1) * 100).round(2)
+    df["accumulation_score"] = df["score"]
+    df["distribution_score"] = (distribution_unit.clip(lower=0, upper=1) * 100).round(2)
+    df["dominant_side"] = np.where(df["distribution_score"] > df["accumulation_score"], "sell", "buy")
+    df["dominant_score"] = df[["accumulation_score", "distribution_score"]].max(axis=1)
+    df = df.sort_values(["distribution_score", "amount"], ascending=[False, False]).reset_index(drop=True)
+    df["distribution_rank"] = np.arange(1, len(df) + 1)
     df = df.sort_values(["score", "amount"], ascending=[False, False]).reset_index(drop=True)
     df["rank"] = np.arange(1, len(df) + 1)
     df["stage"] = df.apply(_classify_stage, axis=1)
@@ -369,6 +395,11 @@ def main(argv: list[str] | None = None) -> int:
         "code",
         "date",
         "score",
+        "accumulation_score",
+        "distribution_rank",
+        "distribution_score",
+        "dominant_side",
+        "dominant_score",
         "stage",
         "close",
         "today_chg_pct",
@@ -381,7 +412,12 @@ def main(argv: list[str] | None = None) -> int:
     if result.empty:
         print("No candidates found.")
     else:
-        print(result[[col for col in display_cols if col in result.columns]].to_string(index=False))
+        display = result[[col for col in display_cols if col in result.columns]]
+        if len(display) > 50:
+            print(display.head(50).to_string(index=False))
+            print(f"Showing top 50 of {len(display)} rows.")
+        else:
+            print(display.to_string(index=False))
 
     if args.output:
         output = Path(args.output).expanduser()

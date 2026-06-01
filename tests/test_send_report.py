@@ -302,6 +302,60 @@ def test_build_report_subject_includes_major_money_summary():
     assert subject == "QuantPilot Daily Report - 2026-05-31 | MM 368 in/783 out; 3/4 src; missing US_OTC"
 
 
+def test_check_stealth_money_status_summarises_candidates_and_accuracy(tmp_path):
+    major_csv = tmp_path / "major_force.csv"
+    major_csv.write_text(
+        "\n".join(
+            [
+                "code,date,score,rank,distribution_score,distribution_rank,stage,amount,reason",
+                "SH.600000,2026-05-29,91,1,20,300,accumulation_candidate,80000000,volume_expansion",
+                "SZ.000001,2026-05-29,45,300,88,2,distribution_risk,90000000,20d_negative_flow",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    summary_csv = tmp_path / "summary.csv"
+    summary_csv.write_text(
+        "\n".join(
+            [
+                "signal_side,top_n,horizon,date_count,avg_hit_rate,avg_alpha",
+                "buy,30,10,80,0.6125,0.013",
+                "sell,30,10,80,0.55,0.009",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    status = send_report.check_stealth_money_status(
+        major_csv=major_csv,
+        eval_summary_csv=summary_csv,
+    )
+
+    assert status["stealth_money_available"] is True
+    assert status["stealth_money_date"] == "2026-05-29"
+    assert status["stealth_money_subject_summary"] == "Stealth 1 buy/1 sell"
+    assert status["stealth_money_buys"][0]["code"] == "SH.600000"
+    assert status["stealth_money_sells"][0]["code"] == "SZ.000001"
+    assert "buy: 61.25% hit" in status["stealth_money_validation"]
+    assert "sell: 55.00% hit" in status["stealth_money_validation"]
+
+
+def test_build_report_subject_includes_stealth_summary():
+    subject = send_report.build_report_subject(
+        "2026-05-31",
+        {
+            "major_money_available": True,
+            "major_money_subject_summary": "MM 10 in/20 out; 4/4 src",
+        },
+        {
+            "stealth_money_available": True,
+            "stealth_money_subject_summary": "Stealth 8 buy/8 sell",
+        },
+    )
+
+    assert subject == "QuantPilot Daily Report - 2026-05-31 | MM 10 in/20 out; 4/4 src | Stealth 8 buy/8 sell"
+
+
 def test_check_major_money_digest_status_subject_includes_partial_markets(monkeypatch, tmp_path):
     monkeypatch.setenv("HEALTHCHECK_MAJOR_MONEY_MAX_ERROR_RATIO", "0.05")
     digest = {
