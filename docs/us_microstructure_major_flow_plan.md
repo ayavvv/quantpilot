@@ -438,7 +438,10 @@ Implemented status as of 2026-06-01:
   `ORDER_BOOK`, and `QUOTE` data into local parquet batches and mirrors them to
   NAS with `ssh+tar`. Ticker rows whose Futu event date does not match the
   collection date are skipped before de-duplication, because OpenD can return
-  the previous trading day's prints before the US open.
+  the previous trading day's prints before the US open. The collection
+  partition date is derived from US Eastern time rather than the China local
+  calendar date, so a collector restart after China midnight still writes to
+  the correct US session partition.
 - `scripts/run_us_microstructure_collect.sh` is the Mac-side collection
   wrapper. It loads `.env`, applies a lock, uses
   `config/us_microstructure_core_symbols.txt` by default, and runs the collector

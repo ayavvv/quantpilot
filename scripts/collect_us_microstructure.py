@@ -19,6 +19,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -26,6 +27,7 @@ import pandas as pd
 DEFAULT_LOCAL_DIR = "~/quantpilot_data/us_microstructure"
 DEFAULT_NAS_DIR = "/volume1/docker/quantpilot/us_microstructure"
 DEFAULT_RSA_KEY = Path(__file__).resolve().parents[1] / "keys" / "futu_rsa_1024.pem"
+US_EASTERN = ZoneInfo("America/New_York")
 DEFAULT_SYMBOLS = (
     "US.SPY",
     "US.QQQ",
@@ -47,6 +49,13 @@ DEFAULT_SYMBOLS = (
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
+def _collection_date_from_utc(value: datetime | None = None) -> str:
+    timestamp = value or datetime.now(timezone.utc)
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return timestamp.astimezone(US_EASTERN).strftime("%Y-%m-%d")
 
 
 def _normalise_symbol(value: str) -> str:
@@ -385,7 +394,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"WARNING: Futu RSA key not found, connecting without encryption: {rsa_key}")
 
     run_id = datetime.now().strftime("%Y%m%dT%H%M%S")
-    date = datetime.now().strftime("%Y-%m-%d")
+    date = _collection_date_from_utc()
     buffers: dict[str, list[dict[str, Any]]] = {
         "trades": [],
         "order_book": [],

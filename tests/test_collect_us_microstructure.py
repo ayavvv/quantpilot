@@ -1,8 +1,10 @@
 from pathlib import Path
+from datetime import datetime, timezone
 
 import pandas as pd
 
 from scripts.collect_us_microstructure import (
+    _collection_date_from_utc,
     _flatten_order_book,
     _normalise_symbols,
     _partition_path,
@@ -18,6 +20,12 @@ def test_normalise_symbols_adds_us_prefix_and_dedupes():
         "US.NVDA",
         "US.SPY",
     ]
+
+
+def test_collection_date_uses_us_eastern_not_china_calendar_date():
+    assert _collection_date_from_utc(datetime(2026, 6, 1, 13, 25, tzinfo=timezone.utc)) == "2026-06-01"
+    assert _collection_date_from_utc(datetime(2026, 6, 1, 19, 0, tzinfo=timezone.utc)) == "2026-06-01"
+    assert _collection_date_from_utc(datetime(2026, 6, 2, 3, 0, tzinfo=timezone.utc)) == "2026-06-01"
 
 
 def test_flatten_order_book_outputs_levels_and_spread():
