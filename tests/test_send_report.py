@@ -325,10 +325,36 @@ def test_check_stealth_money_status_summarises_candidates_and_accuracy(tmp_path)
         ),
         encoding="utf-8",
     )
+    validation_json = tmp_path / "validation.json"
+    validation_json.write_text(
+        send_report.json.dumps(
+            {
+                "validated": True,
+                "rules": [
+                    {
+                        "side": "buy",
+                        "horizon": 10,
+                        "rank_n": 10,
+                        "min_score": 80,
+                        "test": {"avg_hit_rate": 0.6125, "avg_alpha": 0.013, "date_count": 80},
+                    },
+                    {
+                        "side": "sell",
+                        "horizon": 10,
+                        "rank_n": 10,
+                        "min_score": 80,
+                        "test": {"avg_hit_rate": 0.55, "avg_alpha": 0.009, "date_count": 80},
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
 
     status = send_report.check_stealth_money_status(
         major_csv=major_csv,
         eval_summary_csv=summary_csv,
+        validation_json=validation_json,
     )
 
     assert status["stealth_money_available"] is True
@@ -336,8 +362,30 @@ def test_check_stealth_money_status_summarises_candidates_and_accuracy(tmp_path)
     assert status["stealth_money_subject_summary"] == "Stealth 1 buy/1 sell"
     assert status["stealth_money_buys"][0]["code"] == "SH.600000"
     assert status["stealth_money_sells"][0]["code"] == "SZ.000001"
-    assert "buy: 61.25% hit" in status["stealth_money_validation"]
-    assert "sell: 55.00% hit" in status["stealth_money_validation"]
+    assert "buy 10d: 61.25% hit" in status["stealth_money_validation"]
+    assert "sell 10d: 55.00% hit" in status["stealth_money_validation"]
+
+
+def test_check_stealth_money_status_hides_unvalidated_candidates(tmp_path):
+    major_csv = tmp_path / "major_force.csv"
+    major_csv.write_text(
+        "code,date,score,rank,distribution_score,distribution_rank,stage,amount,reason\n"
+        "SH.600000,2026-05-29,91,1,20,300,accumulation_candidate,80000000,volume_expansion\n",
+        encoding="utf-8",
+    )
+    validation_json = tmp_path / "validation.json"
+    validation_json.write_text('{"validated":false,"rules":[],"message":"failed gate"}', encoding="utf-8")
+
+    status = send_report.check_stealth_money_status(
+        major_csv=major_csv,
+        eval_summary_csv=tmp_path / "missing_summary.csv",
+        validation_json=validation_json,
+    )
+
+    assert status["stealth_money_available"] is False
+    assert status["stealth_money_subject_summary"] == ""
+    assert status["stealth_money_buys"] == []
+    assert "No validated stealth rule" in status["stealth_money_message"]
 
 
 def test_build_report_subject_includes_stealth_summary():

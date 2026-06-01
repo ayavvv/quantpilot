@@ -90,12 +90,7 @@ ENABLE_STEALTH_MONEY="${ENABLE_STEALTH_MONEY:-true}"
 MAJOR_FORCE_CSV="${MAJOR_FORCE_CSV:-$DATA_DIR/output/major_force_latest.csv}"
 MAJOR_FORCE_EVAL_DIR="${MAJOR_FORCE_EVAL_DIR:-$DATA_DIR/output/major_force_eval}"
 MAJOR_FORCE_EVAL_SUMMARY_CSV="${MAJOR_FORCE_EVAL_SUMMARY_CSV:-$MAJOR_FORCE_EVAL_DIR/summary.csv}"
-MAJOR_FORCE_EVAL_LOOKBACK_DAYS="${MAJOR_FORCE_EVAL_LOOKBACK_DAYS:-252}"
-MAJOR_FORCE_EVAL_MAX_DATES="${MAJOR_FORCE_EVAL_MAX_DATES:-60}"
-MAJOR_FORCE_EVAL_DATE_STEP="${MAJOR_FORCE_EVAL_DATE_STEP:-5}"
-MAJOR_FORCE_EVAL_TOP_NS="${MAJOR_FORCE_EVAL_TOP_NS:-10,30,50}"
-MAJOR_FORCE_EVAL_HORIZONS="${MAJOR_FORCE_EVAL_HORIZONS:-5,10,20}"
-MAJOR_FORCE_EVAL_SIDES="${MAJOR_FORCE_EVAL_SIDES:-buy,sell}"
+MAJOR_FORCE_VALIDATION_JSON="${MAJOR_FORCE_VALIDATION_JSON:-$DATA_DIR/output/major_force_validation.json}"
 MAJOR_FORCE_MIN_AMOUNT="${MAJOR_FORCE_MIN_AMOUNT:-50000000}"
 MAJOR_FORCE_MIN_HISTORY="${MAJOR_FORCE_MIN_HISTORY:-60}"
 
@@ -395,7 +390,9 @@ else
     log "Step 2d: Skipped market-wide major-money digest"
 fi
 
-# Step 2e: Build stealth accumulation/distribution candidates and validation.
+# Step 2e: Build stealth accumulation/distribution candidates.
+# Historical validation is intentionally offline; reporter reads the latest
+# validation artifact instead of rerunning backtests in the daily pipeline.
 if [ "$ENABLE_STEALTH_MONEY" = "true" ]; then
     log "Step 2e: Building stealth accumulation/distribution candidates..."
     if PYTHONPATH="$PYTHONPATH" \
@@ -410,25 +407,6 @@ if [ "$ENABLE_STEALTH_MONEY" = "true" ]; then
         log "  Stealth candidate scan complete"
     else
         log "  WARNING: stealth candidate scan failed; continuing daily pipeline"
-    fi
-
-    log "  Evaluating stealth candidates with historical forward returns..."
-    if PYTHONPATH="$PYTHONPATH" \
-        "$PYTHON_BIN" -m strategy.major_force_eval \
-            --qlib-dir "$DATA_DIR/qlib_data" \
-            --lookback-days "$MAJOR_FORCE_EVAL_LOOKBACK_DAYS" \
-            --output-dir "$MAJOR_FORCE_EVAL_DIR" \
-            --sides "$MAJOR_FORCE_EVAL_SIDES" \
-            --top-ns "$MAJOR_FORCE_EVAL_TOP_NS" \
-            --horizons "$MAJOR_FORCE_EVAL_HORIZONS" \
-            --date-step "$MAJOR_FORCE_EVAL_DATE_STEP" \
-            --max-dates "$MAJOR_FORCE_EVAL_MAX_DATES" \
-            --min-amount "$MAJOR_FORCE_MIN_AMOUNT" \
-            --min-history "$MAJOR_FORCE_MIN_HISTORY" \
-            --quiet; then
-        log "  Stealth historical validation complete"
-    else
-        log "  WARNING: stealth historical validation failed; continuing daily pipeline"
     fi
 else
     log "Step 2e: Skipped stealth accumulation/distribution"
@@ -446,6 +424,7 @@ if REPORTER_ENV_FILE="$PROJECT_DIR/reporter/.env" \
     MAJOR_MONEY_DIGEST_JSON="$MAJOR_MONEY_DIGEST_JSON" \
     MAJOR_FORCE_CSV="$MAJOR_FORCE_CSV" \
     MAJOR_FORCE_EVAL_SUMMARY_CSV="$MAJOR_FORCE_EVAL_SUMMARY_CSV" \
+    MAJOR_FORCE_VALIDATION_JSON="$MAJOR_FORCE_VALIDATION_JSON" \
     CAPITAL_FLOW_EVAL_SUMMARY_CSV="$A_SHARE_CAPITAL_FLOW_EVAL_OUTPUT_DIR/summary.csv" \
     CAPITAL_FLOW_GATE_JSON="$A_SHARE_CAPITAL_FLOW_EVAL_OUTPUT_DIR/gate.json" \
     TRADE_LOG="$PROJECT_DIR/logs/trade.log" \

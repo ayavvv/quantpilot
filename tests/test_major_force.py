@@ -3,6 +3,7 @@ import pandas as pd
 from converter.incremental import QlibDirectWriter
 from strategy.major_force_eval import MajorForceEvalConfig, evaluate_major_force_forward_returns
 from strategy.major_force import MajorForceConfig, scan_major_force
+from strategy.major_force_validate import ValidationCriteria, validate_major_force_eval
 
 
 def _records(dates, pattern):
@@ -152,3 +153,43 @@ def test_evaluate_major_force_forward_returns_scores_sell_side(tmp_path):
     assert row["avg_hit_rate"] > 0.5
     assert row["win_rate_days"] > 0.5
     assert picks["signal_side"].unique().tolist() == ["sell"]
+
+
+def test_validate_major_force_eval_exports_validated_rule(tmp_path):
+    eval_dir = tmp_path / "eval"
+    eval_dir.mkdir()
+    dates = ["2026-01-02", "2026-01-09", "2026-01-16", "2026-01-23"]
+    daily_rows = [
+        f"{date},buy,10,10,0.0"
+        for date in dates
+    ]
+    (eval_dir / "daily.csv").write_text(
+        "date,signal_side,horizon,top_n,universe_return\n" + "\n".join(daily_rows),
+        encoding="utf-8",
+    )
+    pick_rows = [
+        f"{date},buy,1,90,1.5,0.2,0.7,0.0,0.02"
+        for date in dates
+    ]
+    (eval_dir / "picks.csv").write_text(
+        "eval_date,signal_side,rank,side_score,amount_ratio_5_20,cmf_20,close_location_10,breakout_20,fwd_return_10d\n"
+        + "\n".join(pick_rows),
+        encoding="utf-8",
+    )
+
+    payload = validate_major_force_eval(
+        eval_dir,
+        criteria=ValidationCriteria(
+            min_train_dates=1,
+            min_test_dates=1,
+            min_train_alpha=0.001,
+            min_test_alpha=0.001,
+            min_test_hit_rate=0.5,
+            min_test_win_rate_days=0.5,
+            split_ratio=0.5,
+        ),
+    )
+
+    assert payload["validated"] is True
+    assert payload["rules"][0]["side"] == "buy"
+    assert payload["rules"][0]["test"]["avg_alpha"] > 0

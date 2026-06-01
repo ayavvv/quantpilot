@@ -61,6 +61,12 @@ MAJOR_FORCE_EVAL_SUMMARY_CSV = Path(
         str(SIGNAL_DIR.parent / "output" / "major_force_eval" / "summary.csv"),
     )
 )
+MAJOR_FORCE_VALIDATION_JSON = Path(
+    os.environ.get(
+        "MAJOR_FORCE_VALIDATION_JSON",
+        str(SIGNAL_DIR.parent / "output" / "major_force_validation.json"),
+    )
+)
 TRADE_START_TIME = time(14, 50)
 
 REPORT_TEMPLATE = """
@@ -170,13 +176,18 @@ tr:nth-child(even) { background-color: #f8f9fa; }
 <p class="muted">{{ stealth_money_message }}</p>
 <p><strong>Backtest:</strong> {{ stealth_money_validation }}</p>
 <p><strong>Likely Buying / Accumulation:</strong></p>
+{% if stealth_money_buys %}
 <table>
 <tr><th>Rank</th><th>Code</th><th>Score</th><th>Stage</th><th>Amount</th><th>Reason</th></tr>
 {% for row in stealth_money_buys %}
 <tr class="flow-confirm"><td>{{ row.rank }}</td><td>{{ row.code }}</td><td>{{ row.score }}</td><td>{{ row.stage }}</td><td>{{ row.amount }}</td><td>{{ row.reason }}</td></tr>
 {% endfor %}
 </table>
+{% else %}
+<p class="muted">No validated buying candidates.</p>
+{% endif %}
 <p><strong>Likely Selling / Distribution:</strong></p>
+{% if stealth_money_sells %}
 <table>
 <tr><th>Rank</th><th>Code</th><th>Score</th><th>Stage</th><th>Amount</th><th>Reason</th></tr>
 {% for row in stealth_money_sells %}
@@ -184,7 +195,13 @@ tr:nth-child(even) { background-color: #f8f9fa; }
 {% endfor %}
 </table>
 {% else %}
+<p class="muted">No validated selling candidates.</p>
+{% endif %}
+{% else %}
 <p class="warn">{{ stealth_money_message }}</p>
+{% if stealth_money_validation %}
+<p class="muted">{{ stealth_money_validation }}</p>
+{% endif %}
 {% endif %}
 
 <h2>5. Futu Capital Flow ({{ capital_flow_date }})</h2>
@@ -579,6 +596,15 @@ def _read_csv_or_status(path: Path, label: str):
         return None, f"Could not read {label}: {exc}"
 
 
+def _read_json_or_status(path: Path, label: str):
+    if not path.exists():
+        return None, f"No {label} found at {path}."
+    try:
+        return json.loads(path.read_text(encoding="utf-8")), ""
+    except Exception as exc:
+        return None, f"Could not read {label}: {exc}"
+
+
 def _major_force_row(row, *, side: str, fallback_rank: int) -> dict:
     if side == "sell":
         rank = _safe_int(row.get("distribution_rank"), fallback_rank)
@@ -621,9 +647,82 @@ def _stealth_validation_text(summary: pd.DataFrame) -> str:
     return "; ".join(parts) if parts else "No backtest summary available yet; keep stealth labels advisory."
 
 
+def _stealth_rule_validation_text(payload: dict) -> str:
+    rules = payload.get("rules") if isinstance(payload, dict) else None
+    if not isinstance(rules, list) or not rules:
+        return str(payload.get("message") or "No validated stealth rule available.")
+    parts = []
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        test = rule.get("test") if isinstance(rule.get("test"), dict) else {}
+        side = str(rule.get("side") or "N/A")
+        horizon = _safe_int(rule.get("horizon"), 0)
+        parts.append(
+            f"{side} {horizon}d: {_format_percent(test.get('avg_hit_rate'))} hit, "
+            f"alpha {_format_percent(test.get('avg_alpha'))}, "
+            f"n={_safe_int(test.get('date_count'), 0)} test dates"
+        )
+    return "; ".join(parts) if parts else str(payload.get("message") or "No validated stealth rule available.")
+
+
+def _apply_stealth_rule(work: pd.DataFrame, rule: dict, *, top_n: int) -> pd.DataFrame:
+    side = str(rule.get("side", "")).lower()
+    if side == "sell":
+        score_col = "distribution_score"
+        rank_col = "distribution_rank"
+        default_stages = {"distribution_risk", "washout_or_risk"}
+    else:
+        score_col = "score"
+        rank_col = "rank"
+        default_stages = {"accumulation_candidate", "watch"}
+    if score_col not in work.columns:
+        return pd.DataFrame(columns=work.columns)
+    result = work.copy()
+    stages = rule.get("stages")
+    if isinstance(stages, list) and stages:
+        result = result[result["stage"].astype(str).isin({str(value) for value in stages})]
+    else:
+        result = result[result["stage"].astype(str).isin(default_stages)]
+    result = result[pd.to_numeric(result[score_col], errors="coerce") >= _safe_float(rule.get("min_score"), 0.0)]
+    if rank_col in result.columns and _safe_int(rule.get("rank_n"), 0) > 0:
+        result = result[pd.to_numeric(result[rank_col], errors="coerce") <= _safe_int(rule.get("rank_n"), 0)]
+    if "amount_ratio_5_20" in result.columns and _safe_float(rule.get("min_amount_ratio_5_20"), 0.0) > 0:
+        result = result[
+            pd.to_numeric(result["amount_ratio_5_20"], errors="coerce")
+            >= _safe_float(rule.get("min_amount_ratio_5_20"), 0.0)
+        ]
+    if side == "buy":
+        if "min_cmf_20" in rule and "cmf_20" in result.columns:
+            result = result[pd.to_numeric(result["cmf_20"], errors="coerce") >= _safe_float(rule.get("min_cmf_20"), 0.0)]
+        if "min_close_location_10" in rule and "close_location_10" in result.columns:
+            result = result[
+                pd.to_numeric(result["close_location_10"], errors="coerce")
+                >= _safe_float(rule.get("min_close_location_10"), 0.0)
+            ]
+        if "min_breakout_20" in rule and "breakout_20" in result.columns:
+            result = result[
+                pd.to_numeric(result["breakout_20"], errors="coerce") >= _safe_float(rule.get("min_breakout_20"), 0.0)
+            ]
+    elif side == "sell":
+        if "max_cmf_20" in rule and "cmf_20" in result.columns:
+            result = result[pd.to_numeric(result["cmf_20"], errors="coerce") <= _safe_float(rule.get("max_cmf_20"), 0.0)]
+        if "max_close_location_10" in rule and "close_location_10" in result.columns:
+            result = result[
+                pd.to_numeric(result["close_location_10"], errors="coerce")
+                <= _safe_float(rule.get("max_close_location_10"), 1.0)
+            ]
+        if "max_breakout_20" in rule and "breakout_20" in result.columns:
+            result = result[
+                pd.to_numeric(result["breakout_20"], errors="coerce") <= _safe_float(rule.get("max_breakout_20"), 0.0)
+            ]
+    return result.sort_values([score_col, "amount"], ascending=[False, False]).head(top_n)
+
+
 def check_stealth_money_status(
     major_csv: Path | None = None,
     eval_summary_csv: Path | None = None,
+    validation_json: Path | None = None,
     top_n: int = 8,
 ):
     """Summarise daily-bar stealth accumulation/distribution candidates."""
@@ -662,12 +761,6 @@ def check_stealth_money_status(
     work["distribution_score"] = pd.to_numeric(work["distribution_score"], errors="coerce")
     work["amount"] = pd.to_numeric(work["amount"], errors="coerce")
 
-    buy_mask = work["stage"].astype(str).isin({"accumulation_candidate", "watch"})
-    buys = work[buy_mask & (work["score"] >= 75)].sort_values(["score", "amount"], ascending=[False, False]).head(top_n)
-    sell_mask = work["stage"].astype(str).isin({"distribution_risk", "washout_or_risk"})
-    sells = work[sell_mask | (work["distribution_score"] >= 75)]
-    sells = sells.sort_values(["distribution_score", "amount"], ascending=[False, False]).head(top_n)
-
     summary_path = eval_summary_csv or Path(
         os.environ.get("MAJOR_FORCE_EVAL_SUMMARY_CSV", str(MAJOR_FORCE_EVAL_SUMMARY_CSV))
     )
@@ -677,6 +770,56 @@ def check_stealth_money_status(
     else:
         validation = _stealth_validation_text(summary_df)
 
+    validation_path = validation_json or Path(
+        os.environ.get("MAJOR_FORCE_VALIDATION_JSON", str(MAJOR_FORCE_VALIDATION_JSON))
+    )
+    validation_payload, validation_error = _read_json_or_status(validation_path, "stealth money validation JSON")
+    if validation_error or not isinstance(validation_payload, dict):
+        return {
+            "stealth_money_available": False,
+            "stealth_money_date": date,
+            "stealth_money_message": (
+                f"{validation_error} Daily stealth candidates are hidden until an offline validation gate passes."
+            ),
+            "stealth_money_validation": validation,
+            "stealth_money_subject_summary": "",
+            "stealth_money_buys": [],
+            "stealth_money_sells": [],
+        }
+    rules = validation_payload.get("rules")
+    if not validation_payload.get("validated") or not isinstance(rules, list) or not rules:
+        return {
+            "stealth_money_available": False,
+            "stealth_money_date": date,
+            "stealth_money_message": (
+                "No validated stealth rule is active. Daily candidates are hidden until offline backtest/optimization passes."
+            ),
+            "stealth_money_validation": _stealth_rule_validation_text(validation_payload),
+            "stealth_money_subject_summary": "",
+            "stealth_money_buys": [],
+            "stealth_money_sells": [],
+        }
+
+    buy_frames = []
+    sell_frames = []
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        side = str(rule.get("side", "")).lower()
+        filtered = _apply_stealth_rule(work, rule, top_n=top_n)
+        if side == "sell":
+            sell_frames.append(filtered)
+        elif side == "buy":
+            buy_frames.append(filtered)
+
+    buys = pd.concat(buy_frames, ignore_index=True).drop_duplicates("code") if buy_frames else pd.DataFrame()
+    sells = pd.concat(sell_frames, ignore_index=True).drop_duplicates("code") if sell_frames else pd.DataFrame()
+    if not buys.empty:
+        buys = buys.sort_values(["score", "amount"], ascending=[False, False]).head(top_n)
+    if not sells.empty:
+        sells = sells.sort_values(["distribution_score", "amount"], ascending=[False, False]).head(top_n)
+    validation = _stealth_rule_validation_text(validation_payload)
+
     buy_count = int(len(buys))
     sell_count = int(len(sells))
     return {
@@ -684,7 +827,8 @@ def check_stealth_money_status(
         "stealth_money_date": date,
         "stealth_money_message": (
             f"Loaded {len(work)} A-share daily-bar footprint candidate(s). "
-            "These are backtested stealth accumulation/distribution proxies, not account-level proof."
+            "Showing only candidates that match the latest offline-validated stealth rule(s); "
+            "these remain footprint proxies, not account-level proof."
         ),
         "stealth_money_validation": validation,
         "stealth_money_subject_summary": f"Stealth {buy_count} buy/{sell_count} sell",
