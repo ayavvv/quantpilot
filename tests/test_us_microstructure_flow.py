@@ -438,6 +438,48 @@ def test_manifest_gate_prevents_high_confidence_and_validation_sample():
     assert summary["validation_eligible_count"] == 0
 
 
+def test_intraday_replay_summary_loads_metrics_for_report(tmp_path):
+    replay_dir = tmp_path / "validation" / "intraday_replay" / "date=2026-06-01"
+    replay_dir.mkdir(parents=True)
+    (replay_dir / "status.json").write_text(
+        json.dumps(
+            {
+                "event_count": 2,
+                "quality_event_count": 1,
+                "return_count": 4,
+                "quality_return_count": 2,
+                "cutoff_count": 1,
+                "metric_count": 1,
+                "horizons_minutes": [30],
+            }
+        ),
+        encoding="utf-8",
+    )
+    pd.DataFrame(
+        [
+            {
+                "side": "distribution",
+                "horizon_minutes": 30,
+                "observation_count": 2,
+                "quality_observation_count": 1,
+                "hit_rate": 0.5,
+                "avg_alpha": 0.001,
+                "max_symbol_sample_share": 1.0,
+            }
+        ]
+    ).to_csv(replay_dir / "intraday_replay_metrics.csv", index=False)
+
+    summary = report_script._load_intraday_replay_summary(tmp_path, "2026-06-01")
+    markdown = report_script._intraday_replay_markdown(summary)
+
+    assert summary["exists"] is True
+    assert summary["quality_event_count"] == 1
+    assert summary["quality_return_count"] == 2
+    assert summary["metrics"][0]["side"] == "distribution"
+    assert "distribution" in markdown
+    assert "50.0%" in markdown
+
+
 def test_signal_scoring_ignores_premarket_rows_when_session_flag_exists():
     minutes = pd.to_datetime(["2026-06-01 12:00:00+00:00", "2026-06-01 13:30:00+00:00"])
     features = pd.DataFrame(
@@ -612,6 +654,7 @@ def test_report_script_writes_warmup_artifacts(tmp_path, monkeypatch):
     assert "Duplicate audit" in html_report
     assert "Validation Progress By Side" in html_report
     assert "Validation Event Eligibility" in html_report
+    assert "Intraday Replay Calibration" in html_report
     assert "missing 5d validation metrics" in html_report
 
 

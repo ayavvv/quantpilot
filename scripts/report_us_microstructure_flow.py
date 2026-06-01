@@ -567,6 +567,79 @@ def _markdown_table(rows: pd.DataFrame) -> str:
     return header + sep + "\n".join(body) + "\n"
 
 
+def _load_intraday_replay_summary(base_dir: Path, date: str) -> dict[str, object]:
+    replay_dir = base_dir / "validation" / "intraday_replay" / f"date={date}"
+    status_path = replay_dir / "status.json"
+    metrics_path = replay_dir / "intraday_replay_metrics.csv"
+    status: dict[str, object] = {}
+    metrics: list[dict[str, object]] = []
+    issues: list[str] = []
+    if status_path.exists():
+        try:
+            payload = json.loads(status_path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                status = payload
+            else:
+                issues.append("intraday replay status is not a JSON object")
+        except Exception as exc:
+            issues.append(f"intraday replay status unreadable: {exc}")
+    if metrics_path.exists():
+        try:
+            metrics = pd.read_csv(metrics_path).to_dict("records")
+        except Exception as exc:
+            issues.append(f"intraday replay metrics unreadable: {exc}")
+    return {
+        "exists": status_path.exists(),
+        "status_path": str(status_path),
+        "metrics_path": str(metrics_path),
+        "event_count": int(status.get("event_count") or 0),
+        "quality_event_count": int(status.get("quality_event_count") or 0),
+        "return_count": int(status.get("return_count") or 0),
+        "quality_return_count": int(status.get("quality_return_count") or 0),
+        "cutoff_count": int(status.get("cutoff_count") or 0),
+        "metric_count": int(status.get("metric_count") or 0),
+        "horizons_minutes": status.get("horizons_minutes", []),
+        "metrics": metrics,
+        "issues": issues,
+    }
+
+
+def _intraday_replay_markdown(summary: dict[str, object]) -> str:
+    lines = [
+        f"- Replay available: `{bool(summary.get('exists'))}`",
+        f"- Cutoffs / events / returns: `{summary.get('cutoff_count', 0)}` / `{summary.get('quality_event_count', 0)}` quality of `{summary.get('event_count', 0)}` / `{summary.get('quality_return_count', 0)}` quality of `{summary.get('return_count', 0)}`",
+        f"- Horizons: `{summary.get('horizons_minutes') or []}`",
+    ]
+    issues = summary.get("issues", [])
+    if isinstance(issues, list) and issues:
+        lines.append("- Issues: " + "; ".join(str(item) for item in issues))
+    metrics = summary.get("metrics", [])
+    if not isinstance(metrics, list) or not metrics:
+        return "\n".join(lines) + "\n"
+    lines.extend(
+        [
+            "",
+            "| Side | Horizon min | Obs | Quality Obs | Hit | Avg Alpha | Max Symbol |",
+            "|---|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for row in metrics:
+        if not isinstance(row, dict):
+            continue
+        lines.append(
+            "| {side} | {horizon} | {obs} | {quality} | {hit} | {alpha} | {symbol_share} |".format(
+                side=str(row.get("side") or ""),
+                horizon=int(row.get("horizon_minutes") or 0),
+                obs=int(row.get("observation_count") or 0),
+                quality=int(row.get("quality_observation_count") or 0),
+                hit=_pct(row.get("hit_rate")),
+                alpha=_pct(row.get("avg_alpha")),
+                symbol_share=_pct(row.get("max_symbol_sample_share")),
+            )
+        )
+    return "\n".join(lines) + "\n"
+
+
 def _quality_markdown_table(data_quality: dict[str, object]) -> str:
     rows = data_quality.get("symbols", [])
     if not isinstance(rows, list) or not rows:
@@ -607,6 +680,7 @@ def render_markdown_report(
     raw_counts: dict[str, int],
     validation_gate: dict,
     data_quality: dict[str, object],
+    intraday_replay: dict[str, object],
     top_n: int,
     min_score: float,
 ) -> str:
@@ -647,6 +721,10 @@ def render_markdown_report(
         "## Validation Event Eligibility",
         "",
         _eligibility_markdown(eligibility),
+        "",
+        "## Intraday Replay Calibration",
+        "",
+        _intraday_replay_markdown(intraday_replay),
         "",
         "## Data Coverage",
         "",
@@ -806,6 +884,54 @@ def _eligibility_html(summary: dict[str, object]) -> str:
     )
 
 
+def _intraday_replay_html(summary: dict[str, object]) -> str:
+    metrics = summary.get("metrics", [])
+    if not isinstance(metrics, list) or not metrics:
+        table = "<p>No intraday replay metric rows.</p>"
+    else:
+        rows = []
+        for row in metrics:
+            if not isinstance(row, dict):
+                continue
+            rows.append(
+                "<tr><td>{side}</td><td>{horizon}</td><td>{obs}</td><td>{quality}</td>"
+                "<td>{hit}</td><td>{alpha}</td><td>{symbol_share}</td></tr>".format(
+                    side=html.escape(str(row.get("side") or "")),
+                    horizon=int(row.get("horizon_minutes") or 0),
+                    obs=int(row.get("observation_count") or 0),
+                    quality=int(row.get("quality_observation_count") or 0),
+                    hit=_pct(row.get("hit_rate")),
+                    alpha=_pct(row.get("avg_alpha")),
+                    symbol_share=_pct(row.get("max_symbol_sample_share")),
+                )
+            )
+        table = (
+            "<table><tr><th>Side</th><th>Horizon min</th><th>Obs</th><th>Quality Obs</th>"
+            "<th>Hit</th><th>Avg Alpha</th><th>Max Symbol</th></tr>"
+            + "\n".join(rows)
+            + "</table>"
+        )
+    issues = summary.get("issues", [])
+    issue_text = ""
+    if isinstance(issues, list) and issues:
+        issue_text = "; issues=" + html.escape("; ".join(str(item) for item in issues))
+    return (
+        "<div class='gate'><strong>Intraday replay:</strong> available={exists}; "
+        "cutoffs={cutoffs}; quality_events={quality_events}/{events}; "
+        "quality_returns={quality_returns}/{returns}; horizons={horizons}{issues}</div>{table}"
+    ).format(
+        exists=bool(summary.get("exists")),
+        cutoffs=int(summary.get("cutoff_count") or 0),
+        quality_events=int(summary.get("quality_event_count") or 0),
+        events=int(summary.get("event_count") or 0),
+        quality_returns=int(summary.get("quality_return_count") or 0),
+        returns=int(summary.get("return_count") or 0),
+        horizons=html.escape(str(summary.get("horizons_minutes") or [])),
+        issues=issue_text,
+        table=table,
+    )
+
+
 def render_html_report(
     *,
     date: str,
@@ -814,6 +940,7 @@ def render_html_report(
     raw_counts: dict[str, int],
     validation_gate: dict,
     data_quality: dict[str, object],
+    intraday_replay: dict[str, object],
     top_n: int,
     min_score: float,
 ) -> str:
@@ -862,6 +989,8 @@ tr.sell {{ background: #fff1f2; }}
 {_validation_html_table(validation_progress)}
 <h2>Validation Event Eligibility</h2>
 {_eligibility_html(eligibility)}
+<h2>Intraday Replay Calibration</h2>
+{_intraday_replay_html(intraday_replay)}
 <h2>Data Coverage</h2>
 <p>Raw trades={raw_counts.get('trades', 0)}, order_book={raw_counts.get('order_book', 0)}, quotes={raw_counts.get('quotes', 0)}. Regular trade/book/quote minutes={coverage['regular_trade_minutes']} / {coverage['regular_book_minutes']} / {coverage['regular_quote_minutes']}.</p>
 <h2>Candidates</h2>
@@ -1011,6 +1140,7 @@ def main(argv: list[str] | None = None) -> int:
         signals["is_final_report"] = bool(is_final_report)
     raw_counts = _raw_counts(inputs)
     data_quality = _data_quality_summary_with_manifest(features, signal_cfg, manifest_quality=manifest_quality)
+    intraday_replay = _load_intraday_replay_summary(base_dir, args.date)
     validation_progress = _validation_progress(report_gate)
     validation_eligibility = _validation_eligibility_summary(
         signals,
@@ -1025,6 +1155,7 @@ def main(argv: list[str] | None = None) -> int:
         "raw_counts": raw_counts,
         "coverage": _coverage_summary(features),
         "data_quality": data_quality,
+        "intraday_replay": intraday_replay,
         "manifest_quality": manifest_quality,
         "signal_count": int(len(signals)),
         "high_count": int((signals.get("confidence", pd.Series(dtype=str)) == "high").sum()) if not signals.empty else 0,
@@ -1040,6 +1171,7 @@ def main(argv: list[str] | None = None) -> int:
         raw_counts=raw_counts,
         validation_gate=report_gate,
         data_quality=data_quality,
+        intraday_replay=intraday_replay,
         top_n=args.top_n,
         min_score=args.min_score,
     )
@@ -1050,6 +1182,7 @@ def main(argv: list[str] | None = None) -> int:
         raw_counts=raw_counts,
         validation_gate=report_gate,
         data_quality=data_quality,
+        intraday_replay=intraday_replay,
         top_n=args.top_n,
         min_score=args.min_score,
     )

@@ -158,11 +158,11 @@ if [ "$US_MICROSTRUCTURE_RUN_VALIDATION" = "true" ]; then
     fi
     PYTHONPATH="$PYTHONPATH" DATA_DIR="$DATA_DIR" QLIB_DATA_DIR="$QLIB_DATA_DIR" "$PYTHON_BIN" -m scripts.validate_us_microstructure_flow "${validation_args[@]}"
 fi
-PYTHONPATH="$PYTHONPATH" DATA_DIR="$DATA_DIR" "$PYTHON_BIN" -m scripts.report_us_microstructure_flow "${args[@]}"
 if [ "$US_MICROSTRUCTURE_RUN_INTRADAY_REPLAY" = "true" ]; then
     replay_args=(
         --base-dir "$US_MICROSTRUCTURE_DIR"
         --date "$US_MICROSTRUCTURE_DATE"
+        --rebuild-features
         --nas-host "$US_MICROSTRUCTURE_NAS_HOST"
         --nas-dir "$US_MICROSTRUCTURE_NAS_DIR"
     )
@@ -171,6 +171,7 @@ if [ "$US_MICROSTRUCTURE_RUN_INTRADAY_REPLAY" = "true" ]; then
     fi
     PYTHONPATH="$PYTHONPATH" DATA_DIR="$DATA_DIR" "$PYTHON_BIN" -m scripts.replay_us_microstructure_intraday "${replay_args[@]}"
 fi
+PYTHONPATH="$PYTHONPATH" DATA_DIR="$DATA_DIR" "$PYTHON_BIN" -m scripts.report_us_microstructure_flow "${args[@]}"
 if [ "$US_MICROSTRUCTURE_RUN_READINESS" = "true" ]; then
     PYTHONPATH="$PYTHONPATH" DATA_DIR="$DATA_DIR" "$PYTHON_BIN" -m scripts.us_microstructure_readiness \
         --base-dir "$US_MICROSTRUCTURE_DIR" \
