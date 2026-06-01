@@ -72,6 +72,7 @@ def test_us_microstructure_report_launchd_plist_is_scheduled_china_mornings():
     assert {item["Weekday"] for item in intervals} == {2, 3, 4, 5, 6}
     assert {item["Hour"] for item in intervals} == {8}
     assert {item["Minute"] for item in intervals} == {30}
+    assert payload["EnvironmentVariables"]["US_MICROSTRUCTURE_SEND_EMAIL"] == "true"
 
 
 def test_us_microstructure_install_script_installs_both_launch_daemons():
