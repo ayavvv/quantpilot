@@ -441,6 +441,7 @@ def test_manifest_gate_prevents_high_confidence_and_validation_sample():
 def test_intraday_replay_summary_loads_metrics_for_report(tmp_path):
     replay_dir = tmp_path / "validation" / "intraday_replay" / "date=2026-06-01"
     replay_dir.mkdir(parents=True)
+    cumulative_dir = tmp_path / "validation" / "intraday_replay"
     (replay_dir / "status.json").write_text(
         json.dumps(
             {
@@ -468,16 +469,53 @@ def test_intraday_replay_summary_loads_metrics_for_report(tmp_path):
             }
         ]
     ).to_csv(replay_dir / "intraday_replay_metrics.csv", index=False)
+    (cumulative_dir / "cumulative_status.json").write_text(
+        json.dumps(
+            {
+                "date_count": 3,
+                "first_date": "2026-05-28",
+                "last_date": "2026-06-01",
+                "event_count": 12,
+                "quality_event_count": 8,
+                "return_count": 24,
+                "quality_return_count": 16,
+                "metric_count": 1,
+                "horizons_minutes": [30],
+            }
+        ),
+        encoding="utf-8",
+    )
+    pd.DataFrame(
+        [
+            {
+                "side": "accumulation",
+                "horizon_minutes": 30,
+                "observation_count": 10,
+                "quality_observation_count": 8,
+                "hit_rate": 0.7,
+                "avg_alpha": 0.002,
+                "max_symbol_sample_share": 0.4,
+            }
+        ]
+    ).to_csv(cumulative_dir / "cumulative_metrics.csv", index=False)
 
     summary = report_script._load_intraday_replay_summary(tmp_path, "2026-06-01")
     markdown = report_script._intraday_replay_markdown(summary)
+    html = report_script._intraday_replay_html(summary)
 
     assert summary["exists"] is True
     assert summary["quality_event_count"] == 1
     assert summary["quality_return_count"] == 2
     assert summary["metrics"][0]["side"] == "distribution"
+    assert summary["cumulative_date_count"] == 3
+    assert summary["cumulative_quality_return_count"] == 16
+    assert summary["cumulative_metrics"][0]["side"] == "accumulation"
     assert "distribution" in markdown
     assert "50.0%" in markdown
+    assert "Cumulative metrics" in markdown
+    assert "70.0%" in markdown
+    assert "Intraday replay cumulative" in html
+    assert "2026-05-28 to 2026-06-01" in html
 
 
 def test_signal_scoring_ignores_premarket_rows_when_session_flag_exists():

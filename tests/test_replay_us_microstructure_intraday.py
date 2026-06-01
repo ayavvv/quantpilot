@@ -105,3 +105,76 @@ def test_write_intraday_replay_outputs_writes_latest_status(tmp_path):
     latest = tmp_path / "validation" / "intraday_replay" / "latest_status.json"
     assert latest.exists()
     assert json.loads(latest.read_text(encoding="utf-8"))["event_count"] == 1
+
+
+def test_write_cumulative_intraday_replay_outputs_combines_date_returns(tmp_path):
+    root = tmp_path / "validation" / "intraday_replay"
+    date1 = root / "date=2026-06-01"
+    date2 = root / "date=2026-06-02"
+    date1.mkdir(parents=True)
+    date2.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {
+                "event_id": "e1",
+                "signal_date": "2026-06-01",
+                "cutoff_time": "2026-06-01T14:30:00+00:00",
+                "symbol": "US.AAPL",
+                "side": "accumulation",
+                "horizon_minutes": 30,
+                "data_quality_pass": True,
+                "fwd_return": 0.01,
+                "directional_alpha": 0.004,
+                "directional_hit": True,
+            },
+            {
+                "event_id": "e2",
+                "signal_date": "2026-06-01",
+                "cutoff_time": "2026-06-01T15:00:00+00:00",
+                "symbol": "US.TSLA",
+                "side": "distribution",
+                "horizon_minutes": 30,
+                "data_quality_pass": False,
+                "fwd_return": 0.02,
+                "directional_alpha": -0.01,
+                "directional_hit": False,
+            },
+        ]
+    ).to_parquet(date1 / "intraday_replay_returns.parquet", index=False)
+    pd.DataFrame(
+        [
+            {
+                "event_id": "e1",
+                "signal_date": "2026-06-02",
+                "cutoff_time": "2026-06-02T14:30:00+00:00",
+                "symbol": "US.AAPL",
+                "side": "accumulation",
+                "horizon_minutes": 30,
+                "data_quality_pass": True,
+                "fwd_return": 0.03,
+                "directional_alpha": 0.02,
+                "directional_hit": True,
+            }
+        ]
+    ).to_parquet(date2 / "intraday_replay_returns.parquet", index=False)
+
+    loaded = replay.load_intraday_replay_returns(tmp_path)
+    outputs, status = replay.write_cumulative_intraday_replay_outputs(
+        tmp_path,
+        generated_at="2026-06-03T00:00:00+00:00",
+    )
+
+    assert len(loaded) == 2
+    assert outputs["cumulative_returns"].exists()
+    assert outputs["cumulative_metrics"].exists()
+    assert outputs["cumulative_status"].exists()
+    assert status["date_count"] == 2
+    assert status["first_date"] == "2026-06-01"
+    assert status["last_date"] == "2026-06-02"
+    assert status["event_count"] == 2
+    assert status["quality_event_count"] == 1
+    assert status["return_count"] == 2
+    assert status["quality_return_count"] == 1
+    assert status["horizons_minutes"] == [30]
+    metrics = pd.read_csv(outputs["cumulative_metrics"])
+    assert set(metrics["side"]) == {"accumulation", "distribution"}

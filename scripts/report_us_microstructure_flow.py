@@ -571,8 +571,12 @@ def _load_intraday_replay_summary(base_dir: Path, date: str) -> dict[str, object
     replay_dir = base_dir / "validation" / "intraday_replay" / f"date={date}"
     status_path = replay_dir / "status.json"
     metrics_path = replay_dir / "intraday_replay_metrics.csv"
+    cumulative_status_path = base_dir / "validation" / "intraday_replay" / "cumulative_status.json"
+    cumulative_metrics_path = base_dir / "validation" / "intraday_replay" / "cumulative_metrics.csv"
     status: dict[str, object] = {}
+    cumulative_status: dict[str, object] = {}
     metrics: list[dict[str, object]] = []
+    cumulative_metrics: list[dict[str, object]] = []
     issues: list[str] = []
     if status_path.exists():
         try:
@@ -588,10 +592,27 @@ def _load_intraday_replay_summary(base_dir: Path, date: str) -> dict[str, object
             metrics = pd.read_csv(metrics_path).to_dict("records")
         except Exception as exc:
             issues.append(f"intraday replay metrics unreadable: {exc}")
+    if cumulative_status_path.exists():
+        try:
+            payload = json.loads(cumulative_status_path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                cumulative_status = payload
+            else:
+                issues.append("cumulative intraday replay status is not a JSON object")
+        except Exception as exc:
+            issues.append(f"cumulative intraday replay status unreadable: {exc}")
+    if cumulative_metrics_path.exists():
+        try:
+            cumulative_metrics = pd.read_csv(cumulative_metrics_path).to_dict("records")
+        except Exception as exc:
+            issues.append(f"cumulative intraday replay metrics unreadable: {exc}")
     return {
         "exists": status_path.exists(),
         "status_path": str(status_path),
         "metrics_path": str(metrics_path),
+        "cumulative_exists": cumulative_status_path.exists(),
+        "cumulative_status_path": str(cumulative_status_path),
+        "cumulative_metrics_path": str(cumulative_metrics_path),
         "event_count": int(status.get("event_count") or 0),
         "quality_event_count": int(status.get("quality_event_count") or 0),
         "return_count": int(status.get("return_count") or 0),
@@ -600,29 +621,27 @@ def _load_intraday_replay_summary(base_dir: Path, date: str) -> dict[str, object
         "metric_count": int(status.get("metric_count") or 0),
         "horizons_minutes": status.get("horizons_minutes", []),
         "metrics": metrics,
+        "cumulative_date_count": int(cumulative_status.get("date_count") or 0),
+        "cumulative_first_date": str(cumulative_status.get("first_date") or ""),
+        "cumulative_last_date": str(cumulative_status.get("last_date") or ""),
+        "cumulative_event_count": int(cumulative_status.get("event_count") or 0),
+        "cumulative_quality_event_count": int(cumulative_status.get("quality_event_count") or 0),
+        "cumulative_return_count": int(cumulative_status.get("return_count") or 0),
+        "cumulative_quality_return_count": int(cumulative_status.get("quality_return_count") or 0),
+        "cumulative_metric_count": int(cumulative_status.get("metric_count") or 0),
+        "cumulative_horizons_minutes": cumulative_status.get("horizons_minutes", []),
+        "cumulative_metrics": cumulative_metrics,
         "issues": issues,
     }
 
 
-def _intraday_replay_markdown(summary: dict[str, object]) -> str:
-    lines = [
-        f"- Replay available: `{bool(summary.get('exists'))}`",
-        f"- Cutoffs / events / returns: `{summary.get('cutoff_count', 0)}` / `{summary.get('quality_event_count', 0)}` quality of `{summary.get('event_count', 0)}` / `{summary.get('quality_return_count', 0)}` quality of `{summary.get('return_count', 0)}`",
-        f"- Horizons: `{summary.get('horizons_minutes') or []}`",
-    ]
-    issues = summary.get("issues", [])
-    if isinstance(issues, list) and issues:
-        lines.append("- Issues: " + "; ".join(str(item) for item in issues))
-    metrics = summary.get("metrics", [])
+def _intraday_metric_table_markdown(metrics: object) -> list[str]:
     if not isinstance(metrics, list) or not metrics:
-        return "\n".join(lines) + "\n"
-    lines.extend(
-        [
-            "",
-            "| Side | Horizon min | Obs | Quality Obs | Hit | Avg Alpha | Max Symbol |",
-            "|---|---:|---:|---:|---:|---:|---:|",
-        ]
-    )
+        return ["No intraday replay metric rows."]
+    lines = [
+        "| Side | Horizon min | Obs | Quality Obs | Hit | Avg Alpha | Max Symbol |",
+        "|---|---:|---:|---:|---:|---:|---:|",
+    ]
     for row in metrics:
         if not isinstance(row, dict):
             continue
@@ -637,6 +656,24 @@ def _intraday_replay_markdown(summary: dict[str, object]) -> str:
                 symbol_share=_pct(row.get("max_symbol_sample_share")),
             )
         )
+    return lines
+
+
+def _intraday_replay_markdown(summary: dict[str, object]) -> str:
+    lines = [
+        f"- Today replay available: `{bool(summary.get('exists'))}`",
+        f"- Today cutoffs / events / returns: `{summary.get('cutoff_count', 0)}` / `{summary.get('quality_event_count', 0)}` quality of `{summary.get('event_count', 0)}` / `{summary.get('quality_return_count', 0)}` quality of `{summary.get('return_count', 0)}`",
+        f"- Today horizons: `{summary.get('horizons_minutes') or []}`",
+        f"- Cumulative dates / events / returns: `{summary.get('cumulative_date_count', 0)}` / `{summary.get('cumulative_quality_event_count', 0)}` quality of `{summary.get('cumulative_event_count', 0)}` / `{summary.get('cumulative_quality_return_count', 0)}` quality of `{summary.get('cumulative_return_count', 0)}`",
+        f"- Cumulative window: `{summary.get('cumulative_first_date') or 'n/a'}` to `{summary.get('cumulative_last_date') or 'n/a'}`; horizons `{summary.get('cumulative_horizons_minutes') or []}`",
+    ]
+    issues = summary.get("issues", [])
+    if isinstance(issues, list) and issues:
+        lines.append("- Issues: " + "; ".join(str(item) for item in issues))
+    lines.extend(["", "Today metrics:"])
+    lines.extend(_intraday_metric_table_markdown(summary.get("metrics", [])))
+    lines.extend(["", "Cumulative metrics:"])
+    lines.extend(_intraday_metric_table_markdown(summary.get("cumulative_metrics", [])))
     return "\n".join(lines) + "\n"
 
 
@@ -884,41 +921,58 @@ def _eligibility_html(summary: dict[str, object]) -> str:
     )
 
 
-def _intraday_replay_html(summary: dict[str, object]) -> str:
-    metrics = summary.get("metrics", [])
+def _intraday_metric_table_html(metrics: object) -> str:
     if not isinstance(metrics, list) or not metrics:
-        table = "<p>No intraday replay metric rows.</p>"
-    else:
-        rows = []
-        for row in metrics:
-            if not isinstance(row, dict):
-                continue
-            rows.append(
-                "<tr><td>{side}</td><td>{horizon}</td><td>{obs}</td><td>{quality}</td>"
-                "<td>{hit}</td><td>{alpha}</td><td>{symbol_share}</td></tr>".format(
-                    side=html.escape(str(row.get("side") or "")),
-                    horizon=int(row.get("horizon_minutes") or 0),
-                    obs=int(row.get("observation_count") or 0),
-                    quality=int(row.get("quality_observation_count") or 0),
-                    hit=_pct(row.get("hit_rate")),
-                    alpha=_pct(row.get("avg_alpha")),
-                    symbol_share=_pct(row.get("max_symbol_sample_share")),
-                )
+        return "<p>No intraday replay metric rows.</p>"
+    rows = []
+    for row in metrics:
+        if not isinstance(row, dict):
+            continue
+        rows.append(
+            "<tr><td>{side}</td><td>{horizon}</td><td>{obs}</td><td>{quality}</td>"
+            "<td>{hit}</td><td>{alpha}</td><td>{symbol_share}</td></tr>".format(
+                side=html.escape(str(row.get("side") or "")),
+                horizon=int(row.get("horizon_minutes") or 0),
+                obs=int(row.get("observation_count") or 0),
+                quality=int(row.get("quality_observation_count") or 0),
+                hit=_pct(row.get("hit_rate")),
+                alpha=_pct(row.get("avg_alpha")),
+                symbol_share=_pct(row.get("max_symbol_sample_share")),
             )
-        table = (
-            "<table><tr><th>Side</th><th>Horizon min</th><th>Obs</th><th>Quality Obs</th>"
-            "<th>Hit</th><th>Avg Alpha</th><th>Max Symbol</th></tr>"
-            + "\n".join(rows)
-            + "</table>"
         )
+    if not rows:
+        return "<p>No intraday replay metric rows.</p>"
+    return (
+        "<table><tr><th>Side</th><th>Horizon min</th><th>Obs</th><th>Quality Obs</th>"
+        "<th>Hit</th><th>Avg Alpha</th><th>Max Symbol</th></tr>"
+        + "\n".join(rows)
+        + "</table>"
+    )
+
+
+def _intraday_replay_html(summary: dict[str, object]) -> str:
+    today_table = _intraday_metric_table_html(summary.get("metrics", []))
+    cumulative_table = _intraday_metric_table_html(summary.get("cumulative_metrics", []))
     issues = summary.get("issues", [])
     issue_text = ""
     if isinstance(issues, list) and issues:
         issue_text = "; issues=" + html.escape("; ".join(str(item) for item in issues))
+    if summary.get("cumulative_first_date") or summary.get("cumulative_last_date"):
+        cumulative_window = "{first} to {last}".format(
+            first=html.escape(str(summary.get("cumulative_first_date") or "n/a")),
+            last=html.escape(str(summary.get("cumulative_last_date") or "n/a")),
+        )
+    else:
+        cumulative_window = "n/a"
     return (
-        "<div class='gate'><strong>Intraday replay:</strong> available={exists}; "
+        "<div class='gate'><strong>Intraday replay today:</strong> available={exists}; "
         "cutoffs={cutoffs}; quality_events={quality_events}/{events}; "
-        "quality_returns={quality_returns}/{returns}; horizons={horizons}{issues}</div>{table}"
+        "quality_returns={quality_returns}/{returns}; horizons={horizons}{issues}</div>"
+        "<h3>Today Metrics</h3>{today_table}"
+        "<div class='gate'><strong>Intraday replay cumulative:</strong> dates={cum_dates}; "
+        "window={cum_window}; quality_events={cum_quality_events}/{cum_events}; "
+        "quality_returns={cum_quality_returns}/{cum_returns}; horizons={cum_horizons}</div>"
+        "<h3>Cumulative Metrics</h3>{cumulative_table}"
     ).format(
         exists=bool(summary.get("exists")),
         cutoffs=int(summary.get("cutoff_count") or 0),
@@ -928,7 +982,15 @@ def _intraday_replay_html(summary: dict[str, object]) -> str:
         returns=int(summary.get("return_count") or 0),
         horizons=html.escape(str(summary.get("horizons_minutes") or [])),
         issues=issue_text,
-        table=table,
+        today_table=today_table,
+        cum_dates=int(summary.get("cumulative_date_count") or 0),
+        cum_window=cumulative_window,
+        cum_quality_events=int(summary.get("cumulative_quality_event_count") or 0),
+        cum_events=int(summary.get("cumulative_event_count") or 0),
+        cum_quality_returns=int(summary.get("cumulative_quality_return_count") or 0),
+        cum_returns=int(summary.get("cumulative_return_count") or 0),
+        cum_horizons=html.escape(str(summary.get("cumulative_horizons_minutes") or [])),
+        cumulative_table=cumulative_table,
     )
 
 

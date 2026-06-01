@@ -345,15 +345,33 @@ def test_intraday_replay_check_reports_calibration_counts(tmp_path):
         },
     )
     _write_json(tmp_path / "validation" / "intraday_replay" / "latest_status.json", {"event_count": 4})
+    _write_json(
+        tmp_path / "validation" / "intraday_replay" / "cumulative_status.json",
+        {
+            "date_count": 5,
+            "first_date": "2026-05-27",
+            "last_date": "2026-06-01",
+            "event_count": 20,
+            "quality_event_count": 14,
+            "return_count": 40,
+            "quality_return_count": 28,
+            "metric_count": 4,
+            "horizons_minutes": [30, 60],
+        },
+    )
 
     result = readiness.check_intraday_replay(tmp_path, date="2026-06-01")
 
     assert result["ok"] is True
     assert result["exists"] is True
     assert result["latest_exists"] is True
+    assert result["cumulative_exists"] is True
     assert result["event_count"] == 4
     assert result["quality_return_count"] == 6
     assert result["cutoff_count"] == 2
+    assert result["cumulative_date_count"] == 5
+    assert result["cumulative_quality_return_count"] == 28
+    assert result["cumulative_horizons_minutes"] == [30, 60]
 
 
 def test_sync_readiness_outputs_copies_snapshots_to_nas(tmp_path, monkeypatch):

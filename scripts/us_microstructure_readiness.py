@@ -216,22 +216,37 @@ def check_intraday_replay(base_dir: str | Path, *, date: str) -> dict[str, Any]:
     base = Path(base_dir).expanduser()
     status_path = base / "validation" / "intraday_replay" / f"date={date}" / "status.json"
     latest_status_path = base / "validation" / "intraday_replay" / "latest_status.json"
+    cumulative_status_path = base / "validation" / "intraday_replay" / "cumulative_status.json"
     payload, error = _read_json(status_path)
+    cumulative_payload, cumulative_error = _read_json(cumulative_status_path)
     issues: list[str] = []
     if error and status_path.exists():
         issues.append(f"intraday replay status unreadable: {error}")
+    if cumulative_error and cumulative_status_path.exists():
+        issues.append(f"cumulative intraday replay status unreadable: {cumulative_error}")
     return {
         "ok": not issues,
         "status_path": str(status_path),
         "latest_status_path": str(latest_status_path),
+        "cumulative_status_path": str(cumulative_status_path),
         "exists": status_path.exists(),
         "latest_exists": latest_status_path.exists(),
+        "cumulative_exists": cumulative_status_path.exists(),
         "event_count": int(payload.get("event_count") or 0) if payload else 0,
         "quality_event_count": int(payload.get("quality_event_count") or 0) if payload else 0,
         "return_count": int(payload.get("return_count") or 0) if payload else 0,
         "quality_return_count": int(payload.get("quality_return_count") or 0) if payload else 0,
         "cutoff_count": int(payload.get("cutoff_count") or 0) if payload else 0,
         "metric_count": int(payload.get("metric_count") or 0) if payload else 0,
+        "cumulative_date_count": int(cumulative_payload.get("date_count") or 0) if cumulative_payload else 0,
+        "cumulative_first_date": str(cumulative_payload.get("first_date") or "") if cumulative_payload else "",
+        "cumulative_last_date": str(cumulative_payload.get("last_date") or "") if cumulative_payload else "",
+        "cumulative_event_count": int(cumulative_payload.get("event_count") or 0) if cumulative_payload else 0,
+        "cumulative_quality_event_count": int(cumulative_payload.get("quality_event_count") or 0) if cumulative_payload else 0,
+        "cumulative_return_count": int(cumulative_payload.get("return_count") or 0) if cumulative_payload else 0,
+        "cumulative_quality_return_count": int(cumulative_payload.get("quality_return_count") or 0) if cumulative_payload else 0,
+        "cumulative_metric_count": int(cumulative_payload.get("metric_count") or 0) if cumulative_payload else 0,
+        "cumulative_horizons_minutes": cumulative_payload.get("horizons_minutes", []) if cumulative_payload else [],
         "issues": issues,
     }
 

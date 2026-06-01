@@ -502,7 +502,10 @@ Implemented status as of 2026-06-01:
   multiple regular-session cutoff times using only features visible up to each
   cutoff, scores candidates, and labels 30/60-minute forward returns from later
   one-minute reference prices. These replay samples are written under
-  `validation/intraday_replay/date=.../` and are reported in readiness as
+  `validation/intraday_replay/date=.../`, then rolled into
+  `validation/intraday_replay/cumulative_returns.parquet`,
+  `cumulative_metrics.csv`, and `cumulative_status.json`. The report and
+  readiness output show both today's replay and the cumulative replay ledger as
   calibration evidence; they do not by themselves promote the official daily
   high-confidence gate.
 - `scripts/report_us_microstructure_flow.py` writes feature parquet, signal CSV,

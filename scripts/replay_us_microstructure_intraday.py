@@ -343,6 +343,113 @@ def build_intraday_replay_metrics(returns: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values(["side", "horizon_minutes"]).reset_index(drop=True)
 
 
+def _date_from_replay_path(path: Path) -> str:
+    for part in path.parts:
+        if part.startswith("date="):
+            return part.split("=", 1)[1][:10]
+    return ""
+
+
+def discover_intraday_replay_return_files(
+    base_dir: str | Path,
+    *,
+    start_date: str = "",
+    end_date: str = "",
+) -> list[Path]:
+    root = Path(base_dir).expanduser() / "validation" / "intraday_replay"
+    if not root.exists():
+        return []
+    result: list[Path] = []
+    for path in sorted(root.glob("date=*/intraday_replay_returns.parquet")):
+        date = _date_from_replay_path(path)
+        if start_date and date < start_date:
+            continue
+        if end_date and date > end_date:
+            continue
+        result.append(path)
+    return result
+
+
+def load_intraday_replay_returns(
+    base_dir: str | Path,
+    *,
+    start_date: str = "",
+    end_date: str = "",
+) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    for path in discover_intraday_replay_return_files(base_dir, start_date=start_date, end_date=end_date):
+        frame = pd.read_parquet(path)
+        if frame.empty:
+            continue
+        if "signal_date" not in frame.columns:
+            frame["signal_date"] = _date_from_replay_path(path)
+        frame["source_file"] = str(path)
+        frames.append(frame)
+    if not frames:
+        return pd.DataFrame()
+    combined = pd.concat(frames, ignore_index=True)
+    if "event_id" in combined.columns and "horizon_minutes" in combined.columns:
+        combined = combined.drop_duplicates(["event_id", "horizon_minutes"], keep="last")
+    return combined.reset_index(drop=True)
+
+
+def build_cumulative_intraday_replay_status(
+    returns: pd.DataFrame,
+    metrics: pd.DataFrame,
+    *,
+    generated_at: str,
+) -> dict[str, object]:
+    if returns.empty:
+        return {
+            "generated_at": generated_at,
+            "date_count": 0,
+            "first_date": "",
+            "last_date": "",
+            "event_count": 0,
+            "quality_event_count": 0,
+            "return_count": 0,
+            "quality_return_count": 0,
+            "metric_count": int(len(metrics)),
+        }
+    signal_dates = sorted(returns.get("signal_date", pd.Series(dtype=str)).dropna().astype(str).str[:10].unique())
+    event_count = int(returns["event_id"].nunique()) if "event_id" in returns.columns else int(len(returns))
+    quality = returns[returns["data_quality_pass"].astype(bool)] if "data_quality_pass" in returns.columns else returns
+    quality_event_count = int(quality["event_id"].nunique()) if not quality.empty and "event_id" in quality.columns else int(len(quality))
+    return {
+        "generated_at": generated_at,
+        "date_count": int(len(signal_dates)),
+        "first_date": signal_dates[0] if signal_dates else "",
+        "last_date": signal_dates[-1] if signal_dates else "",
+        "event_count": event_count,
+        "quality_event_count": quality_event_count,
+        "return_count": int(len(returns)),
+        "quality_return_count": int(len(quality)),
+        "metric_count": int(len(metrics)),
+        "horizons_minutes": sorted(pd.to_numeric(returns.get("horizon_minutes", pd.Series(dtype=float)), errors="coerce").dropna().astype(int).unique().tolist()),
+    }
+
+
+def write_cumulative_intraday_replay_outputs(
+    base_dir: str | Path,
+    *,
+    generated_at: str,
+) -> tuple[dict[str, Path], dict[str, object]]:
+    replay_dir = Path(base_dir).expanduser() / "validation" / "intraday_replay"
+    replay_dir.mkdir(parents=True, exist_ok=True)
+    returns = load_intraday_replay_returns(base_dir)
+    metrics = build_intraday_replay_metrics(returns)
+    status = build_cumulative_intraday_replay_status(returns, metrics, generated_at=generated_at)
+    outputs = {
+        "cumulative_returns": replay_dir / "cumulative_returns.parquet",
+        "cumulative_metrics": replay_dir / "cumulative_metrics.csv",
+        "cumulative_status": replay_dir / "cumulative_status.json",
+    }
+    returns.to_parquet(outputs["cumulative_returns"], index=False)
+    metrics.to_csv(outputs["cumulative_metrics"], index=False)
+    outputs["cumulative_status"].write_text(json.dumps(status, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return outputs, status
+
+
 def _parse_int_tuple(raw: str) -> tuple[int, ...]:
     result = []
     for item in str(raw or "").split(","):
@@ -458,6 +565,14 @@ def main(argv: list[str] | None = None) -> int:
         metrics=metrics,
         status=status,
     )
+    cumulative_outputs, cumulative_status = write_cumulative_intraday_replay_outputs(
+        base_dir,
+        generated_at=str(status["generated_at"]),
+    )
+    outputs.update(cumulative_outputs)
+    status["cumulative"] = cumulative_status
+    outputs["status"].write_text(json.dumps(status, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    outputs["latest_status"].write_text(json.dumps(status, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if not args.no_nas_sync:
         sync_results = _sync_outputs(list(outputs.values()), base_dir=base_dir, nas_host=args.nas_host, nas_dir=args.nas_dir)
         status["nas_sync"] = sync_results
