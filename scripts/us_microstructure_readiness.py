@@ -212,6 +212,30 @@ def check_report(base_dir: str | Path, *, date: str) -> dict[str, Any]:
     }
 
 
+def check_intraday_replay(base_dir: str | Path, *, date: str) -> dict[str, Any]:
+    base = Path(base_dir).expanduser()
+    status_path = base / "validation" / "intraday_replay" / f"date={date}" / "status.json"
+    latest_status_path = base / "validation" / "intraday_replay" / "latest_status.json"
+    payload, error = _read_json(status_path)
+    issues: list[str] = []
+    if error and status_path.exists():
+        issues.append(f"intraday replay status unreadable: {error}")
+    return {
+        "ok": not issues,
+        "status_path": str(status_path),
+        "latest_status_path": str(latest_status_path),
+        "exists": status_path.exists(),
+        "latest_exists": latest_status_path.exists(),
+        "event_count": int(payload.get("event_count") or 0) if payload else 0,
+        "quality_event_count": int(payload.get("quality_event_count") or 0) if payload else 0,
+        "return_count": int(payload.get("return_count") or 0) if payload else 0,
+        "quality_return_count": int(payload.get("quality_return_count") or 0) if payload else 0,
+        "cutoff_count": int(payload.get("cutoff_count") or 0) if payload else 0,
+        "metric_count": int(payload.get("metric_count") or 0) if payload else 0,
+        "issues": issues,
+    }
+
+
 def _launchctl_print(label: str) -> tuple[int, str]:
     uid = str(os.getuid())
     result = subprocess.run(
@@ -280,6 +304,7 @@ def build_readiness_snapshot(
         "prices": check_prices(base_dir),
         "validation_gate": check_validation_gate(base_dir),
         "report": check_report(base_dir, date=date),
+        "intraday_replay": check_intraday_replay(base_dir, date=date),
     }
     if include_launchd:
         checks["launchd"] = check_launchd(runner=launchd_runner)

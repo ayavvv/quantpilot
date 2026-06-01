@@ -332,6 +332,30 @@ def test_report_check_does_not_require_latest_alias_for_non_final_report(tmp_pat
     assert result["latest_html_exists"] is False
 
 
+def test_intraday_replay_check_reports_calibration_counts(tmp_path):
+    _write_json(
+        tmp_path / "validation" / "intraday_replay" / "date=2026-06-01" / "status.json",
+        {
+            "event_count": 4,
+            "quality_event_count": 3,
+            "return_count": 8,
+            "quality_return_count": 6,
+            "cutoff_count": 2,
+            "metric_count": 2,
+        },
+    )
+    _write_json(tmp_path / "validation" / "intraday_replay" / "latest_status.json", {"event_count": 4})
+
+    result = readiness.check_intraday_replay(tmp_path, date="2026-06-01")
+
+    assert result["ok"] is True
+    assert result["exists"] is True
+    assert result["latest_exists"] is True
+    assert result["event_count"] == 4
+    assert result["quality_return_count"] == 6
+    assert result["cutoff_count"] == 2
+
+
 def test_sync_readiness_outputs_copies_snapshots_to_nas(tmp_path, monkeypatch):
     dated_path = tmp_path / "readiness" / "us_microstructure_readiness_20260601.json"
     latest_path = tmp_path / "readiness" / "us_microstructure_readiness_latest.json"

@@ -497,6 +497,14 @@ Implemented status as of 2026-06-01:
   to NAS. The report wrapper runs this before scoring so transient NAS/SSH
   failures do not permanently block a session when the local hot-cache files
   are still available.
+- `scripts/replay_us_microstructure_intraday.py` builds a forward-collected
+  intraday calibration ledger from the same Futu tick/book archive. It replays
+  multiple regular-session cutoff times using only features visible up to each
+  cutoff, scores candidates, and labels 30/60-minute forward returns from later
+  one-minute reference prices. These replay samples are written under
+  `validation/intraday_replay/date=.../` and are reported in readiness as
+  calibration evidence; they do not by themselves promote the official daily
+  high-confidence gate.
 - `scripts/report_us_microstructure_flow.py` writes feature parquet, signal CSV,
   per-symbol data-quality CSV, status JSON, and Markdown/HTML reports, then
   mirrors report artifacts to NAS. Dated artifacts are always kept, but
@@ -531,13 +539,14 @@ Implemented status as of 2026-06-01:
 - `scripts/run_us_microstructure_report.sh` is the Mac-side entrypoint for cron
   or launchd. It updates daily prices, repairs any non-`ok` NAS uploads still
   recoverable from local hot-cache files, updates validation, generates the
-  report, then writes the readiness snapshot. If `US_MICROSTRUCTURE_DATE` is not
-  set, it resolves the latest available collection partition instead of using
-  the China morning calendar date, so the 08:30 report reads the previous
-  evening's US session. Validation defaults to ending one calendar day before
-  the report date, because validation runs before the current day's final report
-  is written; this prevents intraday/manual same-date signal files from entering
-  the forward ledger. It sends email only when `US_MICROSTRUCTURE_SEND_EMAIL=true`.
+  report, builds intraday replay calibration samples, then writes the readiness
+  snapshot. If `US_MICROSTRUCTURE_DATE` is not set, it resolves the latest
+  available collection partition instead of using the China morning calendar
+  date, so the 08:30 report reads the previous evening's US session. Validation
+  defaults to ending one calendar day before the report date, because validation
+  runs before the current day's final report is written; this prevents
+  intraday/manual same-date signal files from entering the forward ledger. It
+  sends email only when `US_MICROSTRUCTURE_SEND_EMAIL=true`.
 - Launchd templates are available for weekday evening collection and
   China-morning report generation. `scripts/install_us_microstructure_launchd.sh`
   renders both templates into `/Library/LaunchDaemons` when passwordless sudo is
