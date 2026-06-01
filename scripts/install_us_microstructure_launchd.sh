@@ -27,7 +27,7 @@ render_and_install() {
     local target_dir="$TARGET_DIR"
     local target_path
     local tmp_path
-    tmp_path="$(mktemp "/tmp/${label}.XXXXXX.plist")"
+    tmp_path="$(mktemp "/tmp/${label}.plist.XXXXXX")"
 
     if [ "$INSTALL_MODE" = "agent" ]; then
         target_dir="$AGENT_TARGET_DIR"

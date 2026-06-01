@@ -79,6 +79,7 @@ def test_us_microstructure_install_script_installs_both_launch_daemons():
     content = INSTALL_SCRIPT.read_text(encoding="utf-8")
     assert 'TARGET_DIR="/Library/LaunchDaemons"' in content
     assert 'AGENT_TARGET_DIR="$HOME_DIR/Library/LaunchAgents"' in content
+    assert 'mktemp "/tmp/${label}.plist.XXXXXX"' in content
     assert 'US_MICROSTRUCTURE_LAUNCHD_MODE' in content
     assert 'sudo -n true' in content
     assert 'render_and_install "com.quantpilot.us_microstructure.collect"' in content
