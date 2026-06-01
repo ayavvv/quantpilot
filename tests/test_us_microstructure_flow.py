@@ -513,6 +513,15 @@ def test_load_signal_events_requires_reportable_quality_signals(tmp_path):
                 "rank": 1,
                 "confidence": "watch",
                 "data_quality_pass": True,
+                "coverage_ratio_regular": 0.95,
+                "trade_coverage_ratio_regular": 0.95,
+                "book_coverage_ratio_regular": 0.94,
+                "quote_coverage_ratio_regular": 0.93,
+                "trade_count": 12_000,
+                "dollar_volume": 90_000_000.0,
+                "duplicate_sequence_rate": 0.0,
+                "spread_bps": 2.5,
+                "evidence_blocks": 2,
             },
             {
                 "symbol": "US.NVDA",
@@ -536,6 +545,13 @@ def test_load_signal_events_requires_reportable_quality_signals(tmp_path):
     events = load_signal_events([signal_path], min_event_score=70)
 
     assert events["symbol"].tolist() == ["US.AAPL"]
+    row = events.iloc[0]
+    assert bool(row["data_quality_pass"]) is True
+    assert row["coverage_ratio_regular"] == 0.95
+    assert row["book_coverage_ratio_regular"] == 0.94
+    assert row["trade_count"] == 12_000
+    assert row["dollar_volume"] == 90_000_000.0
+    assert row["spread_bps"] == 2.5
 
 
 def test_update_price_history_merges_existing_and_fetcher_rows(tmp_path):

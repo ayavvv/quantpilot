@@ -467,7 +467,9 @@ Implemented status as of 2026-06-01:
   configured sample-size, 5-day alpha, hit-rate, recent hit-rate, Wilson lower
   bound, and symbol-concentration gates pass. The ledger only consumes
   reportable `watch`/`high` signals with `data_quality_pass=true`; diagnostic
-  or low-coverage rows are not allowed to train the confidence gate.
+  or low-coverage rows are not allowed to train the confidence gate. Signal
+  events preserve coverage, liquidity, duplicate-rate, spread, and evidence
+  block fields so every validation sample remains auditable.
 - `scripts/update_us_microstructure_prices.py` uses Futu OpenD `K_DAY` data to
   maintain `validation/prices/us_daily_prices.csv` and parquet. This is the
   daily close-price source used to turn signal events into forward-return labels.

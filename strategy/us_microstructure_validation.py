@@ -22,6 +22,20 @@ from converter.incremental import QlibBinReader
 from strategy.us_microstructure_features import normalize_us_symbol
 
 
+EVENT_AUDIT_COLUMNS = (
+    "coverage_ratio_regular",
+    "trade_coverage_ratio_regular",
+    "book_coverage_ratio_regular",
+    "quote_coverage_ratio_regular",
+    "trade_count",
+    "dollar_volume",
+    "duplicate_sequence_rate",
+    "spread_bps",
+    "evidence_blocks",
+    "data_quality_pass",
+)
+
+
 @dataclass(frozen=True)
 class ForwardValidationConfig:
     horizons: tuple[int, ...] = (1, 3, 5)
@@ -109,6 +123,9 @@ def load_signal_events(
         events["data_quality_pass"] = events["data_quality_pass"].astype(str).str.lower().isin({"1", "true", "yes", "y"})
     else:
         events["data_quality_pass"] = False
+    for column in EVENT_AUDIT_COLUMNS:
+        if column in events.columns and column != "data_quality_pass":
+            events[column] = pd.to_numeric(events[column], errors="coerce")
     events = events[
         (events["symbol"] != "")
         & (events["signal_date"].str.len() == 10)
@@ -130,8 +147,7 @@ def load_signal_events(
         "confidence",
         "stage",
         "reason",
-        "data_quality_pass",
-    ]
+    ] + list(EVENT_AUDIT_COLUMNS)
     for column in keep_order:
         if column not in events.columns:
             events[column] = np.nan
