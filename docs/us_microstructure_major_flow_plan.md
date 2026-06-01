@@ -303,6 +303,8 @@ Data-quality gates:
 - Median order-book snapshot interval within the configured sampling interval
   plus 2 seconds.
 - NAS upload completeness at 100% for all files used in the report.
+  Readiness and report gating must evaluate the full session's manifest records,
+  not only the latest collector batch.
 
 Slippage assumptions:
 
@@ -489,6 +491,12 @@ Implemented status as of 2026-06-01:
   and `shadow_rule_metrics.csv`). Shadow rows are not allowed to promote
   `active_gate.json`; they exist only to calibrate whether the strict official
   score/confidence filters are starving validation samples.
+- `scripts/repair_us_microstructure_nas_uploads.py` retries failed, skipped, or
+  otherwise non-`ok` raw-file uploads recorded in manifest rows, updates the
+  manifest rows after successful repair, and mirrors the repaired manifest back
+  to NAS. The report wrapper runs this before scoring so transient NAS/SSH
+  failures do not permanently block a session when the local hot-cache files
+  are still available.
 - `scripts/report_us_microstructure_flow.py` writes feature parquet, signal CSV,
   per-symbol data-quality CSV, status JSON, and Markdown/HTML reports, then
   mirrors report artifacts to NAS. Dated artifacts are always kept, but
@@ -496,7 +504,10 @@ Implemented status as of 2026-06-01:
   manual partial reports cannot overwrite the local or NAS latest entry point.
   The status JSON and CSV record which symbols are eligible for high-confidence
   reporting based on regular-session coverage, liquidity, duplicate sequence
-  rate, and spread. The report also renders
+  rate, spread, and full-session NAS raw-upload completeness. If the raw
+  manifest has missing, failed, skipped, or otherwise non-`ok` NAS upload rows,
+  report signals are not allowed to remain high-confidence or enter the
+  validation ledger as data-quality-passing samples. The report also renders
   validation progress by side, including sample counts, signal-day counts,
   hit-rate, alpha, Wilson lower bound, concentration, and each side's gate
   reason, so warmup reports show exactly why high-confidence language is still
@@ -512,15 +523,17 @@ Implemented status as of 2026-06-01:
   because partial reports intentionally leave latest pointing at the last final
   session. The snapshot separates pipeline health (`ok`) from
   `high_confidence_ready`, which
-  requires both a promoted validation gate and a passing report data-quality
-  gate. Manifest readiness also audits per-symbol channel coverage across
+  requires a promoted validation gate, a passing report data-quality gate, and
+  a full-session manifest check with all NAS uploads marked `ok`. Manifest
+  readiness also audits per-symbol channel coverage across
   trades, order-book, and quotes so a missing data stream is visible before it
   reaches scoring.
 - `scripts/run_us_microstructure_report.sh` is the Mac-side entrypoint for cron
-  or launchd. It updates daily prices, updates validation, generates the
-  report, then writes the readiness snapshot. If `US_MICROSTRUCTURE_DATE` is
-  not set, it resolves the latest available collection partition instead of
-  using the China morning calendar date, so the 08:30 report reads the previous
+  or launchd. It updates daily prices, repairs any non-`ok` NAS uploads still
+  recoverable from local hot-cache files, updates validation, generates the
+  report, then writes the readiness snapshot. If `US_MICROSTRUCTURE_DATE` is not
+  set, it resolves the latest available collection partition instead of using
+  the China morning calendar date, so the 08:30 report reads the previous
   evening's US session. Validation defaults to ending one calendar day before
   the report date, because validation runs before the current day's final report
   is written; this prevents intraday/manual same-date signal files from entering

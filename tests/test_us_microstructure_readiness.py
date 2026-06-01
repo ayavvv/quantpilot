@@ -121,6 +121,65 @@ def test_readiness_snapshot_marks_high_confidence_ready_when_gates_pass(tmp_path
     assert snapshot["high_confidence_ready"] is True
     assert snapshot["high_confidence_requirements"]["validation_gate_validated"] is True
     assert snapshot["high_confidence_requirements"]["data_quality_gate_ready"] is True
+    assert snapshot["high_confidence_requirements"]["nas_uploads_complete"] is True
+
+
+def test_readiness_snapshot_requires_full_session_manifest_for_high_confidence(tmp_path):
+    manifest_dir = tmp_path / "manifests" / "date=2026-06-01"
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "manifest-20260601T010000.jsonl").write_text(
+        json.dumps({"kind": "trades", "symbol": "US.AAPL", "batch_index": 1, "row_count": 1, "nas_upload_status": "failed"})
+        + "\n",
+        encoding="utf-8",
+    )
+    (manifest_dir / "manifest-20260601T020000.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"kind": "trades", "symbol": "US.AAPL", "batch_index": 2, "row_count": 100, "nas_upload_status": "ok"}),
+                json.dumps({"kind": "order_book", "symbol": "US.AAPL", "batch_index": 2, "row_count": 5, "nas_upload_status": "ok"}),
+                json.dumps({"kind": "quotes", "symbol": "US.AAPL", "batch_index": 2, "row_count": 5, "nas_upload_status": "ok"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _write_json(
+        tmp_path / "validation" / "prices" / "us_daily_prices_status.json",
+        {"status": "ok", "symbol_count": 2, "price_row_count": 10, "errors": {}},
+    )
+    _write_json(
+        tmp_path / "validation" / "active_gate.json",
+        {"state": "validated", "validated": True, "validated_sides": {"accumulation": True}},
+    )
+    _write_json(
+        tmp_path / "reports" / "date=2026-06-01" / "status.json",
+        {
+            "signal_count": 1,
+            "high_count": 1,
+            "watch_count": 0,
+            "data_quality": {"high_confidence_data_quality_ok": True, "eligible_symbol_count": 1},
+        },
+    )
+    (tmp_path / "reports" / "date=2026-06-01" / "us_microstructure_flow_report.html").write_text(
+        "<html></html>",
+        encoding="utf-8",
+    )
+    (tmp_path / "reports" / "us_microstructure_flow_report_latest.html").write_text("<html></html>", encoding="utf-8")
+
+    def fake_launchd(label):
+        return 0, "state = not running\nruns = 1\n"
+
+    snapshot = readiness.build_readiness_snapshot(
+        base_dir=tmp_path,
+        date="2026-06-01",
+        launchd_runner=fake_launchd,
+    )
+
+    assert snapshot["checks"]["manifest"]["ok"] is True
+    assert snapshot["checks"]["manifest_full_session"]["ok"] is False
+    assert snapshot["high_confidence_ready"] is False
+    assert snapshot["high_confidence_requirements"]["nas_uploads_complete"] is False
+    assert any("manifest_full_session" in issue and "failed NAS uploads" in issue for issue in snapshot["issues"])
 
 
 def test_readiness_snapshot_flags_failed_upload_and_missing_launchd(tmp_path):
@@ -196,6 +255,21 @@ def test_manifest_check_flags_missing_kind_coverage_by_symbol(tmp_path):
     assert result["batch_count"] == 1
     assert result["missing_kind_symbols"] == {"order_book": ["US.NVDA"]}
     assert any("missing kind coverage" in issue for issue in result["issues"])
+
+
+def test_manifest_check_flags_skipped_nas_uploads(tmp_path):
+    manifest_dir = tmp_path / "manifests" / "date=2026-06-01"
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "manifest-run.jsonl").write_text(
+        json.dumps({"kind": "trades", "symbol": "US.AAPL", "row_count": 10, "nas_upload_status": "skipped"}) + "\n",
+        encoding="utf-8",
+    )
+
+    result = readiness.check_manifest(tmp_path, date="2026-06-01")
+
+    assert result["ok"] is False
+    assert result["non_ok_upload_count"] == 1
+    assert any("non-ok NAS uploads" in issue for issue in result["issues"])
 
 
 def test_write_readiness_snapshot_writes_latest_and_dated_file(tmp_path):

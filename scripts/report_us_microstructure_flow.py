@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from scripts.collect_us_microstructure import _copy_to_nas
+from scripts.us_microstructure_readiness import check_manifest
 from strategy.us_microstructure_features import (
     MicrostructureFeatureConfig,
     compute_microstructure_features,
@@ -178,11 +179,29 @@ def _sum_numeric(part: pd.DataFrame, column: str, default: float = 0.0) -> float
 
 
 def _data_quality_summary(features: pd.DataFrame, cfg: MicrostructureSignalConfig) -> dict[str, object]:
+    return _data_quality_summary_with_manifest(features, cfg, manifest_quality=None)
+
+
+def _data_quality_summary_with_manifest(
+    features: pd.DataFrame,
+    cfg: MicrostructureSignalConfig,
+    *,
+    manifest_quality: dict[str, object] | None,
+) -> dict[str, object]:
+    manifest_checked = manifest_quality is not None
+    nas_upload_complete = bool(manifest_quality.get("ok")) if manifest_quality is not None else True
+    manifest_status_counts = manifest_quality.get("status_counts", {}) if isinstance(manifest_quality, dict) else {}
+    manifest_issues = manifest_quality.get("issues", []) if isinstance(manifest_quality, dict) else []
     if features.empty:
         return {
             "symbol_count": 0,
             "eligible_symbol_count": 0,
             "high_confidence_data_quality_ok": False,
+            "nas_manifest_checked": manifest_checked,
+            "nas_upload_complete": nas_upload_complete,
+            "manifest_count": int(manifest_quality.get("manifest_count") or 0) if isinstance(manifest_quality, dict) else 0,
+            "manifest_status_counts": manifest_status_counts if isinstance(manifest_status_counts, dict) else {},
+            "manifest_issues": manifest_issues if isinstance(manifest_issues, list) else [],
             "min_required_coverage": float(cfg.min_data_coverage),
             "min_required_trade_count": int(cfg.min_trade_count),
             "min_required_dollar_volume": float(cfg.min_dollar_volume),
@@ -247,7 +266,12 @@ def _data_quality_summary(features: pd.DataFrame, cfg: MicrostructureSignalConfi
     return {
         "symbol_count": len(rows),
         "eligible_symbol_count": int(eligible_count),
-        "high_confidence_data_quality_ok": eligible_count > 0,
+        "high_confidence_data_quality_ok": eligible_count > 0 and nas_upload_complete,
+        "nas_manifest_checked": manifest_checked,
+        "nas_upload_complete": nas_upload_complete,
+        "manifest_count": int(manifest_quality.get("manifest_count") or 0) if isinstance(manifest_quality, dict) else 0,
+        "manifest_status_counts": manifest_status_counts if isinstance(manifest_status_counts, dict) else {},
+        "manifest_issues": manifest_issues if isinstance(manifest_issues, list) else [],
         "raw_trade_count": int(raw_trade_count),
         "duplicate_sequence_count": int(duplicate_sequence_count),
         "duplicate_sequence_rate": duplicate_sequence_count / raw_trade_count if raw_trade_count > 0 else 0.0,
@@ -262,6 +286,49 @@ def _data_quality_summary(features: pd.DataFrame, cfg: MicrostructureSignalConfi
         "median_book_coverage_ratio_regular": float(pd.Series(book_ratios).median()) if book_ratios else 0.0,
         "symbols": rows,
     }
+
+
+def _manifest_gate_reason(manifest_quality: dict[str, object]) -> str:
+    issues = manifest_quality.get("issues", [])
+    if isinstance(issues, list) and issues:
+        return "; ".join(str(issue) for issue in issues)
+    return "NAS raw upload manifest gate did not pass"
+
+
+def _gate_for_report(gate: dict[str, object], manifest_quality: dict[str, object]) -> dict[str, object]:
+    if bool(manifest_quality.get("ok")) or not bool(gate.get("validated")):
+        return gate
+    updated = dict(gate)
+    reason = f"NAS/raw manifest gate failed: {_manifest_gate_reason(manifest_quality)}"
+    updated["validated"] = False
+    updated["state"] = "disabled"
+    updated["reason"] = reason
+    validated_sides = updated.get("validated_sides")
+    if isinstance(validated_sides, dict):
+        updated["validated_sides"] = {side: False for side in validated_sides}
+    side_reasons = updated.get("side_reasons")
+    if isinstance(side_reasons, dict):
+        updated["side_reasons"] = {side: reason for side in side_reasons}
+    return updated
+
+
+def _apply_manifest_quality_to_signals(
+    signals: pd.DataFrame,
+    manifest_quality: dict[str, object],
+) -> pd.DataFrame:
+    if signals.empty:
+        return signals
+    result = signals.copy()
+    manifest_ok = bool(manifest_quality.get("ok"))
+    result["nas_upload_complete"] = manifest_ok
+    if manifest_ok:
+        return result
+    reason = f"NAS/raw manifest gate failed: {_manifest_gate_reason(manifest_quality)}"
+    result["data_quality_pass"] = False
+    result["validation_reason"] = reason
+    if "confidence" in result.columns:
+        result.loc[result["confidence"].astype(str).str.lower() == "high", "confidence"] = "watch"
+    return result
 
 
 def _candidate_view(signals: pd.DataFrame, *, top_n: int, min_score: float) -> pd.DataFrame:
@@ -569,6 +636,7 @@ def render_markdown_report(
         f"- Shadow calibration samples: `{validation_progress.get('shadow_event_count', 0)}` events, `{validation_progress.get('shadow_forward_return_count', 0)}` forward-return rows; min score `{_score(validation_progress.get('shadow_min_event_score'))}`",
         f"- Promotion horizon: `{validation_progress.get('promotion_horizon', 0)}d`; benchmark: `{validation_progress.get('benchmark') or 'n/a'}`",
         f"- Symbols eligible for high-confidence reporting: `{data_quality.get('eligible_symbol_count', 0)}` / `{data_quality.get('symbol_count', 0)}`",
+        f"- NAS raw uploads complete: `{bool(data_quality.get('nas_upload_complete'))}`; manifest rows: `{data_quality.get('manifest_count', 0)}`",
         f"- Median trade/book coverage: `{_pct(data_quality.get('median_trade_coverage_ratio_regular'))}` / `{_pct(data_quality.get('median_book_coverage_ratio_regular'))}`",
         f"- Duplicate sequence rows: `{data_quality.get('duplicate_sequence_count', 0)}` / `{data_quality.get('raw_trade_count', 0)}` (`{_pct(data_quality.get('duplicate_sequence_rate'))}`)",
         "",
@@ -788,7 +856,7 @@ tr.sell {{ background: #fff1f2; }}
 <div class="gate"><strong>Validation gate:</strong> validated={bool(validation_gate.get('validated'))}; {reason}</div>
 <div class="gate"><strong>Validation samples:</strong> events={validation_progress.get('event_count', 0)}; forward_returns={validation_progress.get('forward_return_count', 0)}; promotion_horizon={validation_progress.get('promotion_horizon', 0)}d; benchmark={html.escape(str(validation_progress.get('benchmark') or 'n/a'))}</div>
 <div class="gate"><strong>Shadow calibration:</strong> events={validation_progress.get('shadow_event_count', 0)}; forward_returns={validation_progress.get('shadow_forward_return_count', 0)}; min_score={_score(validation_progress.get('shadow_min_event_score'))}</div>
-<div class="gate"><strong>Data quality gate:</strong> eligible_symbols={data_quality.get('eligible_symbol_count', 0)}/{data_quality.get('symbol_count', 0)}; median trade/book coverage={_pct(data_quality.get('median_trade_coverage_ratio_regular'))}/{_pct(data_quality.get('median_book_coverage_ratio_regular'))}</div>
+<div class="gate"><strong>Data quality gate:</strong> eligible_symbols={data_quality.get('eligible_symbol_count', 0)}/{data_quality.get('symbol_count', 0)}; median trade/book coverage={_pct(data_quality.get('median_trade_coverage_ratio_regular'))}/{_pct(data_quality.get('median_book_coverage_ratio_regular'))}; nas_upload_complete={bool(data_quality.get('nas_upload_complete'))}; manifest_rows={data_quality.get('manifest_count', 0)}</div>
 <div class="gate"><strong>Duplicate audit:</strong> duplicate_sequence_rows={data_quality.get('duplicate_sequence_count', 0)}/{data_quality.get('raw_trade_count', 0)} ({_pct(data_quality.get('duplicate_sequence_rate'))})</div>
 <h2>Validation Progress By Side</h2>
 {_validation_html_table(validation_progress)}
@@ -919,6 +987,8 @@ def main(argv: list[str] | None = None) -> int:
     symbols = _parse_symbols(args.symbols)
     validation_gate_path = args.validation_gate or str(base_dir / "validation" / "active_gate.json")
     gate = load_validation_gate(validation_gate_path)
+    manifest_quality = check_manifest(base_dir, date=args.date, latest_only=False)
+    report_gate = _gate_for_report(gate, manifest_quality)
 
     inputs = read_microstructure_inputs(base_dir, date=args.date, symbols=symbols)
     features = compute_microstructure_features(
@@ -932,18 +1002,19 @@ def main(argv: list[str] | None = None) -> int:
     signals = score_microstructure_signals(
         features,
         config=signal_cfg,
-        validation_gate=gate,
+        validation_gate=report_gate,
         include_diagnostic=True,
     )
+    signals = _apply_manifest_quality_to_signals(signals, manifest_quality)
     if not signals.empty:
         signals = signals.copy()
         signals["is_final_report"] = bool(is_final_report)
     raw_counts = _raw_counts(inputs)
-    data_quality = _data_quality_summary(features, signal_cfg)
-    validation_progress = _validation_progress(gate)
+    data_quality = _data_quality_summary_with_manifest(features, signal_cfg, manifest_quality=manifest_quality)
+    validation_progress = _validation_progress(report_gate)
     validation_eligibility = _validation_eligibility_summary(
         signals,
-        min_event_score=_validation_min_event_score(gate),
+        min_event_score=_validation_min_event_score(report_gate),
     )
     status = {
         "date": args.date,
@@ -954,10 +1025,11 @@ def main(argv: list[str] | None = None) -> int:
         "raw_counts": raw_counts,
         "coverage": _coverage_summary(features),
         "data_quality": data_quality,
+        "manifest_quality": manifest_quality,
         "signal_count": int(len(signals)),
         "high_count": int((signals.get("confidence", pd.Series(dtype=str)) == "high").sum()) if not signals.empty else 0,
         "watch_count": int((signals.get("confidence", pd.Series(dtype=str)) == "watch").sum()) if not signals.empty else 0,
-        "validation_gate": gate,
+        "validation_gate": report_gate,
         "validation_progress": validation_progress,
         "validation_eligibility": validation_eligibility,
     }
@@ -966,7 +1038,7 @@ def main(argv: list[str] | None = None) -> int:
         signals=signals,
         features=features,
         raw_counts=raw_counts,
-        validation_gate=gate,
+        validation_gate=report_gate,
         data_quality=data_quality,
         top_n=args.top_n,
         min_score=args.min_score,
@@ -976,7 +1048,7 @@ def main(argv: list[str] | None = None) -> int:
         signals=signals,
         features=features,
         raw_counts=raw_counts,
-        validation_gate=gate,
+        validation_gate=report_gate,
         data_quality=data_quality,
         top_n=args.top_n,
         min_score=args.min_score,
@@ -1007,7 +1079,7 @@ def main(argv: list[str] | None = None) -> int:
 
         send_email(
             html_report,
-            _subject(signals, gate),
+            _subject(signals, report_gate),
             report_filename=outputs["html"].name,
             report_dir=outputs["html"].parent,
             attachment_paths=[outputs["signals"], outputs["data_quality"], outputs["status"]],

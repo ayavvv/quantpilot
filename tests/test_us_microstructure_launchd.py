@@ -42,6 +42,7 @@ def test_report_script_updates_prices_before_validation_by_default():
     assert "scripts.us_microstructure_dates default-report-date" in content
     assert "scripts.us_microstructure_dates validation-end-date" in content
     assert '"$PYTHON_BIN" -m scripts.update_us_microstructure_prices' in content
+    assert '"$PYTHON_BIN" -m scripts.repair_us_microstructure_nas_uploads' in content
     assert '"$PYTHON_BIN" -m scripts.validate_us_microstructure_flow' in content
     assert '"$PYTHON_BIN" -m scripts.report_us_microstructure_flow' in content
     assert '"$PYTHON_BIN" -m scripts.us_microstructure_readiness' in content
@@ -49,6 +50,7 @@ def test_report_script_updates_prices_before_validation_by_default():
     assert '--nas-dir "$US_MICROSTRUCTURE_NAS_DIR"' in content
     assert '--end-date "$US_MICROSTRUCTURE_VALIDATION_END"' in content
     assert content.index("scripts.update_us_microstructure_prices") < content.index("scripts.validate_us_microstructure_flow")
+    assert content.index("scripts.repair_us_microstructure_nas_uploads") < content.index("scripts.report_us_microstructure_flow")
     assert content.index("scripts.validate_us_microstructure_flow") < content.index("scripts.report_us_microstructure_flow")
     assert content.index("scripts.report_us_microstructure_flow") < content.index("scripts.us_microstructure_readiness")
 

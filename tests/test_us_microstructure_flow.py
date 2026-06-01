@@ -410,6 +410,34 @@ def test_validation_eligibility_summary_exposes_sample_blockers():
     assert summary["blocking_counts"]["not_final_report"] == 1
 
 
+def test_manifest_gate_prevents_high_confidence_and_validation_sample():
+    signals = pd.DataFrame(
+        [
+            {
+                "symbol": "US.AAPL",
+                "side": "accumulation",
+                "side_score": 90,
+                "confidence": "high",
+                "data_quality_pass": True,
+                "validation_reason": "validated",
+            }
+        ]
+    )
+
+    adjusted = report_script._apply_manifest_quality_to_signals(
+        signals,
+        {"ok": False, "issues": ["manifest contains failed NAS uploads: 1"]},
+    )
+    summary = report_script._validation_eligibility_summary(adjusted, min_event_score=70)
+
+    assert adjusted.iloc[0]["confidence"] == "watch"
+    assert bool(adjusted.iloc[0]["data_quality_pass"]) is False
+    assert bool(adjusted.iloc[0]["nas_upload_complete"]) is False
+    assert "manifest contains failed NAS uploads" in adjusted.iloc[0]["validation_reason"]
+    assert summary["data_quality_pass_count"] == 0
+    assert summary["validation_eligible_count"] == 0
+
+
 def test_signal_scoring_ignores_premarket_rows_when_session_flag_exists():
     minutes = pd.to_datetime(["2026-06-01 12:00:00+00:00", "2026-06-01 13:30:00+00:00"])
     features = pd.DataFrame(

@@ -66,7 +66,7 @@ def check_manifest(base_dir: str | Path, *, date: str, min_records: int = 1, lat
     symbols_by_kind: dict[str, set[str]] = {}
     batch_indexes: set[int] = set()
     for record in records:
-        status = str(record.get("nas_upload_status") or "")
+        status = str(record.get("nas_upload_status") or "").lower()
         kind = str(record.get("kind") or "")
         symbol = str(record.get("symbol") or "").strip()
         status_counts[status] = status_counts.get(status, 0) + 1
@@ -96,6 +96,11 @@ def check_manifest(base_dir: str | Path, *, date: str, min_records: int = 1, lat
     failed = status_counts.get("failed", 0)
     if failed:
         issues.append(f"manifest contains failed NAS uploads: {failed}")
+    non_ok_status_counts = {status: count for status, count in status_counts.items() if status != "ok"}
+    non_ok_upload_count = sum(non_ok_status_counts.values())
+    if non_ok_upload_count and not failed:
+        summary = ", ".join(f"{status or 'missing'}={count}" for status, count in sorted(non_ok_status_counts.items()))
+        issues.append(f"manifest contains non-ok NAS uploads: {summary}")
     if missing_kind_symbols:
         summary = ", ".join(f"{kind}={len(symbols)}" for kind, symbols in sorted(missing_kind_symbols.items()))
         issues.append(f"manifest missing kind coverage for symbols: {summary}")
@@ -105,6 +110,7 @@ def check_manifest(base_dir: str | Path, *, date: str, min_records: int = 1, lat
         "latest_only": latest_only,
         "manifest_count": len(records),
         "status_counts": status_counts,
+        "non_ok_upload_count": non_ok_upload_count,
         "kind_counts": kind_counts,
         "row_counts": row_counts,
         "symbol_count": len(covered_symbols),
@@ -266,8 +272,11 @@ def build_readiness_snapshot(
     include_launchd: bool = True,
     launchd_runner: Callable[[str], tuple[int, str]] | None = None,
 ) -> dict[str, Any]:
+    manifest_check = check_manifest(base_dir, date=date, min_records=min_manifest_records, latest_only=latest_manifest_only)
+    manifest_full_session_check = check_manifest(base_dir, date=date, min_records=min_manifest_records, latest_only=False)
     checks: dict[str, Any] = {
-        "manifest": check_manifest(base_dir, date=date, min_records=min_manifest_records, latest_only=latest_manifest_only),
+        "manifest": manifest_check,
+        "manifest_full_session": manifest_full_session_check,
         "prices": check_prices(base_dir),
         "validation_gate": check_validation_gate(base_dir),
         "report": check_report(base_dir, date=date),
@@ -276,7 +285,8 @@ def build_readiness_snapshot(
         checks["launchd"] = check_launchd(runner=launchd_runner)
     validation_ready = bool(checks["validation_gate"].get("validated"))
     data_quality_ready = bool(checks["report"].get("data_quality_ready"))
-    high_confidence_ready = validation_ready and data_quality_ready
+    nas_uploads_complete = bool(checks["manifest_full_session"].get("ok"))
+    high_confidence_ready = validation_ready and data_quality_ready and nas_uploads_complete
     issues = []
     for name, payload in checks.items():
         for issue in payload.get("issues", []):
@@ -290,6 +300,7 @@ def build_readiness_snapshot(
         "high_confidence_requirements": {
             "validation_gate_validated": validation_ready,
             "data_quality_gate_ready": data_quality_ready,
+            "nas_uploads_complete": nas_uploads_complete,
         },
         "checks": checks,
         "issues": issues,
