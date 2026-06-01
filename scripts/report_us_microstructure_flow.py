@@ -91,16 +91,30 @@ def _coverage_summary(features: pd.DataFrame) -> dict[str, object]:
         return {
             "symbol_count": 0,
             "minute_count": 0,
+            "regular_minute_count": 0,
             "trade_minutes": 0,
             "book_minutes": 0,
             "quote_minutes": 0,
+            "regular_trade_minutes": 0,
+            "regular_book_minutes": 0,
+            "regular_quote_minutes": 0,
         }
+    regular_mask = (
+        features["is_regular_session"].fillna(False)
+        if "is_regular_session" in features.columns
+        else pd.Series(True, index=features.index)
+    )
+    regular = features[regular_mask]
     return {
         "symbol_count": int(features["symbol"].nunique()),
         "minute_count": int(len(features)),
+        "regular_minute_count": int(len(regular)),
         "trade_minutes": int(features.get("has_trade_data", pd.Series(dtype=bool)).fillna(False).sum()),
         "book_minutes": int(features.get("has_book_data", pd.Series(dtype=bool)).fillna(False).sum()),
         "quote_minutes": int(features.get("has_quote_data", pd.Series(dtype=bool)).fillna(False).sum()),
+        "regular_trade_minutes": int(regular.get("has_trade_data", pd.Series(dtype=bool)).fillna(False).sum()),
+        "regular_book_minutes": int(regular.get("has_book_data", pd.Series(dtype=bool)).fillna(False).sum()),
+        "regular_quote_minutes": int(regular.get("has_quote_data", pd.Series(dtype=bool)).fillna(False).sum()),
     }
 
 
@@ -139,14 +153,18 @@ def _data_quality_summary(features: pd.DataFrame, cfg: MicrostructureSignalConfi
     rows = []
     for symbol, group in features.groupby("symbol", sort=True):
         part = group.sort_values("minute")
+        if "is_regular_session" in part.columns:
+            regular_part = part[part["is_regular_session"].fillna(False)]
+        else:
+            regular_part = part
         coverage = _last_numeric(part, "coverage_ratio_regular")
         trade_coverage = _last_numeric(part, "trade_coverage_ratio_regular", coverage)
         book_coverage = _last_numeric(part, "book_coverage_ratio_regular", coverage)
         quote_coverage = _last_numeric(part, "quote_coverage_ratio_regular")
-        trade_count = int(pd.to_numeric(part.get("trade_count", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
-        dollar_volume = float(pd.to_numeric(part.get("dollar_volume", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
-        duplicate_rate = _median_numeric(part, "duplicate_sequence_rate")
-        spread_bps = _median_numeric(part, "spread_bps", cfg.max_spread_bps)
+        trade_count = int(pd.to_numeric(regular_part.get("trade_count", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
+        dollar_volume = float(pd.to_numeric(regular_part.get("dollar_volume", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
+        duplicate_rate = _median_numeric(regular_part, "duplicate_sequence_rate")
+        spread_bps = _median_numeric(regular_part, "spread_bps", cfg.max_spread_bps)
         eligible = (
             coverage >= cfg.min_data_coverage
             and trade_coverage >= cfg.min_data_coverage
@@ -279,7 +297,8 @@ def render_markdown_report(
         f"- Raw quote rows: `{raw_counts.get('quotes', 0)}`",
         f"- Symbols with features: `{coverage['symbol_count']}`",
         f"- Feature minutes: `{coverage['minute_count']}`",
-        f"- Trade/book/quote minutes: `{coverage['trade_minutes']}` / `{coverage['book_minutes']}` / `{coverage['quote_minutes']}`",
+        f"- Regular feature minutes: `{coverage['regular_minute_count']}`",
+        f"- Regular trade/book/quote minutes: `{coverage['regular_trade_minutes']}` / `{coverage['regular_book_minutes']}` / `{coverage['regular_quote_minutes']}`",
         "",
         "## Candidates",
         "",
@@ -367,7 +386,7 @@ tr.sell {{ background: #fff1f2; }}
 <div class="gate"><strong>Validation gate:</strong> validated={bool(validation_gate.get('validated'))}; {reason}</div>
 <div class="gate"><strong>Data quality gate:</strong> eligible_symbols={data_quality.get('eligible_symbol_count', 0)}/{data_quality.get('symbol_count', 0)}; median trade/book coverage={_pct(data_quality.get('median_trade_coverage_ratio_regular'))}/{_pct(data_quality.get('median_book_coverage_ratio_regular'))}</div>
 <h2>Data Coverage</h2>
-<p>Raw trades={raw_counts.get('trades', 0)}, order_book={raw_counts.get('order_book', 0)}, quotes={raw_counts.get('quotes', 0)}. Trade/book/quote minutes={coverage['trade_minutes']} / {coverage['book_minutes']} / {coverage['quote_minutes']}.</p>
+<p>Raw trades={raw_counts.get('trades', 0)}, order_book={raw_counts.get('order_book', 0)}, quotes={raw_counts.get('quotes', 0)}. Regular trade/book/quote minutes={coverage['regular_trade_minutes']} / {coverage['regular_book_minutes']} / {coverage['regular_quote_minutes']}.</p>
 <h2>Candidates</h2>
 {_html_table(view)}
 </body>

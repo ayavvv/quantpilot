@@ -155,6 +155,13 @@ def _minute(series: pd.Series) -> pd.Series:
     return pd.to_datetime(series, errors="coerce", utc=True).dt.floor("min")
 
 
+def _regular_session_mask(series: pd.Series) -> pd.Series:
+    timestamps = pd.to_datetime(series, errors="coerce", utc=True)
+    eastern = timestamps.dt.tz_convert(US_EASTERN)
+    minute_of_day = eastern.dt.hour * 60 + eastern.dt.minute
+    return (minute_of_day >= 9 * 60 + 30) & (minute_of_day < 16 * 60)
+
+
 def _safe_div(num: pd.Series | float, den: pd.Series | float, default: float = 0.0):
     if isinstance(num, pd.Series) or isinstance(den, pd.Series):
         if isinstance(num, pd.Series):
@@ -427,16 +434,20 @@ def compute_microstructure_features(
     features["has_quote_data"] = features["quote_count"] > 0
     features["minute"] = pd.to_datetime(features["minute"], errors="coerce", utc=True)
     features = features[features["minute"].notna()].sort_values(["symbol", "minute"]).reset_index(drop=True)
+    features["is_regular_session"] = _regular_session_mask(features["minute"])
 
     enriched: list[pd.DataFrame] = []
     for _, group in features.groupby("symbol", sort=True):
         part = group.sort_values("minute").copy()
-        part["session_dollar_volume"] = part["dollar_volume"].cumsum()
-        part["session_share_volume"] = part["share_volume"].cumsum()
-        part["session_net_active_dollar"] = (part["active_buy_dollar"] - part["active_sell_dollar"]).cumsum()
-        part["session_active_buy_dollar"] = part["active_buy_dollar"].cumsum()
-        part["session_active_sell_dollar"] = part["active_sell_dollar"].cumsum()
-        part["session_trade_count"] = part["trade_count"].cumsum()
+        regular_mask = part["is_regular_session"].fillna(False)
+        part["session_dollar_volume"] = part["dollar_volume"].where(regular_mask, 0.0).cumsum()
+        part["session_share_volume"] = part["share_volume"].where(regular_mask, 0.0).cumsum()
+        part["session_net_active_dollar"] = (
+            part["active_buy_dollar"].where(regular_mask, 0.0) - part["active_sell_dollar"].where(regular_mask, 0.0)
+        ).cumsum()
+        part["session_active_buy_dollar"] = part["active_buy_dollar"].where(regular_mask, 0.0).cumsum()
+        part["session_active_sell_dollar"] = part["active_sell_dollar"].where(regular_mask, 0.0).cumsum()
+        part["session_trade_count"] = part["trade_count"].where(regular_mask, 0.0).cumsum()
         part["session_vwap"] = _safe_div(part["session_dollar_volume"], part["session_share_volume"], np.nan)
         active_total = part["session_active_buy_dollar"] + part["session_active_sell_dollar"]
         part["session_net_active_ratio"] = _safe_div(part["session_net_active_dollar"], active_total, 0.0)
@@ -450,11 +461,13 @@ def compute_microstructure_features(
         window = max(3, int(cfg.rolling_window_minutes))
         part["dollar_volume_z"] = _rolling_z(part["dollar_volume"], window)
         part["trade_count_z"] = _rolling_z(part["trade_count"], window)
-        trade_minutes = int(part["has_trade_data"].sum())
-        book_minutes = int(part["has_book_data"].sum())
-        quote_minutes = int(part["has_quote_data"].sum())
-        coverage_minutes = int((part["has_trade_data"] | part["has_book_data"]).sum())
+        regular = part[regular_mask]
+        trade_minutes = int(regular["has_trade_data"].sum())
+        book_minutes = int(regular["has_book_data"].sum())
+        quote_minutes = int(regular["has_quote_data"].sum())
+        coverage_minutes = int((regular["has_trade_data"] | regular["has_book_data"]).sum())
         expected_minutes = float(max(1, cfg.expected_regular_minutes))
+        part["regular_session_minutes_seen"] = int(len(regular))
         part["trade_coverage_minutes"] = trade_minutes
         part["book_coverage_minutes"] = book_minutes
         part["quote_coverage_minutes"] = quote_minutes

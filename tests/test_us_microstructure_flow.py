@@ -60,8 +60,43 @@ def test_feature_builder_aligns_futu_eastern_trades_with_utc_book():
     assert row["book_coverage_minutes"] == 1
     assert row["trade_coverage_ratio_regular"] > 0
     assert row["book_coverage_ratio_regular"] > 0
+    assert bool(row["is_regular_session"]) is True
     assert row["active_buy_dollar"] == 10_000.0
     assert row["depth_imbalance_1"] > 0
+
+
+def test_feature_builder_counts_only_regular_session_for_coverage():
+    trades = pd.DataFrame(
+        [
+            {
+                "symbol": "US.AAPL",
+                "event_time": "2026-06-01 08:00:05.000",
+                "price": 99.0,
+                "volume": 100,
+                "turnover": 9_900.0,
+                "ticker_direction": "BUY",
+                "sequence": 1,
+                "type": "AUTO_MATCH",
+            },
+            {
+                "symbol": "US.AAPL",
+                "event_time": "2026-06-01 09:30:05.000",
+                "price": 100.0,
+                "volume": 100,
+                "turnover": 10_000.0,
+                "ticker_direction": "BUY",
+                "sequence": 2,
+                "type": "AUTO_MATCH",
+            },
+        ]
+    )
+
+    features = compute_microstructure_features(trades, pd.DataFrame(), pd.DataFrame())
+
+    assert len(features) == 2
+    assert features["is_regular_session"].tolist() == [False, True]
+    assert features.iloc[-1]["trade_coverage_minutes"] == 1
+    assert features.iloc[-1]["coverage_ratio_regular"] == 1 / 390
 
 
 def test_signal_scoring_keeps_strong_candidate_warmup_without_validation_gate():
@@ -201,6 +236,47 @@ def test_high_confidence_requires_order_book_coverage_even_when_validated():
 
     assert signals.iloc[0]["side"] == "accumulation"
     assert signals.iloc[0]["confidence"] != "high"
+
+
+def test_signal_scoring_ignores_premarket_rows_when_session_flag_exists():
+    minutes = pd.to_datetime(["2026-06-01 12:00:00+00:00", "2026-06-01 13:30:00+00:00"])
+    features = pd.DataFrame(
+        {
+            "symbol": ["US.AAPL", "US.AAPL"],
+            "minute": minutes,
+            "is_regular_session": [False, True],
+            "trade_count": [10_000, 1],
+            "dollar_volume": [500_000_000.0, 1_000.0],
+            "active_buy_dollar": [400_000_000.0, 500.0],
+            "active_sell_dollar": [100_000_000.0, 500.0],
+            "has_trade_data": [True, True],
+            "has_book_data": [True, True],
+            "coverage_ratio_regular": [1.0, 1 / 390],
+            "trade_coverage_ratio_regular": [1.0, 1 / 390],
+            "book_coverage_ratio_regular": [1.0, 1 / 390],
+            "reference_price": [100.0, 100.0],
+            "vwap_deviation_bps": [30.0, 0.0],
+            "price_impact_bps_per_musd": [1.0, 0.0],
+            "spread_bps": [1.0, 1.0],
+            "depth_imbalance_1": [0.5, 0.0],
+            "depth_imbalance_5": [0.4, 0.0],
+            "bid_replenish_1": [900.0, 0.0],
+            "ask_replenish_1": [0.0, 0.0],
+            "dollar_volume_z": [3.0, 0.0],
+            "odd_lot_ratio": [0.1, 0.1],
+            "duplicate_sequence_rate": [0.0, 0.0],
+        }
+    )
+
+    signals = score_microstructure_signals(
+        features,
+        config=MicrostructureSignalConfig(min_trade_count=1, min_dollar_volume=1, min_data_coverage=0.001),
+        validation_gate={"state": "warmup", "validated": False},
+    )
+
+    assert len(signals) == 1
+    assert signals.iloc[0]["trade_count"] == 1
+    assert signals.iloc[0]["dollar_volume"] == 1_000.0
 
 
 def _write_raw(base: Path, kind: str, symbol: str, rows: list[dict]):

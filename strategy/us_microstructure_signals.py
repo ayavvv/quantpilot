@@ -344,6 +344,10 @@ def score_microstructure_signals(
     gate = validation_gate or {"state": "warmup", "validated": False, "reason": "validation gate not configured"}
     if features.empty:
         return pd.DataFrame()
+    if "is_regular_session" in features.columns:
+        features = features[features["is_regular_session"].fillna(False)].copy()
+        if features.empty:
+            return pd.DataFrame()
     rows = []
     for symbol, part in features.groupby("symbol", sort=True):
         if not str(symbol or "").strip():

@@ -211,7 +211,8 @@ Candidate behavior:
 
 High-confidence gate before validation:
 
-- Data coverage at least 80% of the regular session for the symbol.
+- Data coverage at least 80% of the regular session for the symbol, measured
+  only from 09:30-16:00 US Eastern minutes.
 - Trade coverage and order-book coverage must each meet the minimum, so a
   candidate cannot become high-confidence from prints alone when book evidence
   is missing.
@@ -444,14 +445,17 @@ Implemented status as of 2026-06-01:
   and quotes into one-minute tape/book/impact features. Futu trade timestamps
   are interpreted as US Eastern time and normalized to UTC so they align with
   collector receive-time book snapshots. It also writes separate trade,
-  order-book, quote, and combined regular-session coverage ratios. As a second
-  guard, the reader filters stale trade rows out of date partitions if they were
-  collected before this protection existed.
+  order-book, quote, and combined regular-session coverage ratios. Coverage and
+  regular-session scoring only count 09:30-16:00 US Eastern minutes; premarket
+  and after-hours rows remain available as context but cannot lift
+  high-confidence coverage. As a second guard, the reader filters stale trade
+  rows out of date partitions if they were collected before this protection
+  existed.
 - `strategy/us_microstructure_signals.py` scores accumulation and distribution
   candidates, but only emits `high` confidence when a validation gate is
-  promoted for that side and both trade and order-book coverage gates pass.
-  Without `validation/active_gate.json`, candidates stay `warmup`/`diagnostic`
-  or `watch`.
+  promoted for that side and both regular-session trade and order-book coverage
+  gates pass. Without `validation/active_gate.json`, candidates stay
+  `warmup`/`diagnostic` or `watch`.
 - `strategy/us_microstructure_validation.py` maintains the forward validation
   ledger: `signal_events.parquet`, `forward_returns.parquet`,
   `rule_metrics.csv`, and `active_gate.json`. It promotes only after the
