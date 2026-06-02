@@ -4,11 +4,13 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 AUTO_SCRIPT = REPO_ROOT / "scripts" / "run_us_microstructure_auto.sh"
+RECOVER_SCRIPT = REPO_ROOT / "scripts" / "run_us_microstructure_recover.sh"
 COLLECT_SCRIPT = REPO_ROOT / "scripts" / "run_us_microstructure_collect.sh"
 REPORT_SCRIPT = REPO_ROOT / "scripts" / "run_us_microstructure_report.sh"
 INSTALL_SCRIPT = REPO_ROOT / "scripts" / "install_us_microstructure_launchd.sh"
 COLLECT_PLIST = REPO_ROOT / "deploy" / "launchd" / "com.quantpilot.us_microstructure.collect.plist"
 REPORT_PLIST = REPO_ROOT / "deploy" / "launchd" / "com.quantpilot.us_microstructure.report.plist"
+RECOVER_PLIST = REPO_ROOT / "deploy" / "launchd" / "com.quantpilot.us_microstructure.recover.plist"
 CORE_SYMBOLS = REPO_ROOT / "config" / "us_microstructure_core_symbols.txt"
 
 
@@ -61,6 +63,26 @@ def test_auto_script_runs_locally_on_mac_and_dispatches_from_nas():
     assert "ConnectTimeout=10" in content
     assert 'ssh "${ssh_options[@]}" "$host" "$remote_command"' in content
     assert "US_MICROSTRUCTURE_REMOTE_DRY_RUN" in content
+
+
+def test_recover_script_guards_reboot_catchup_windows():
+    content = RECOVER_SCRIPT.read_text(encoding="utf-8")
+    assert "US_MICROSTRUCTURE_RECOVER_COLLECT_START" in content
+    assert "US_MICROSTRUCTURE_RECOVER_COLLECT_END" in content
+    assert "US_MICROSTRUCTURE_RECOVER_REPORT_START" in content
+    assert "US_MICROSTRUCTURE_RECOVER_REPORT_END" in content
+    assert "US_MICROSTRUCTURE_RECOVER_MIN_COLLECT_SECONDS" in content
+    assert "US_MICROSTRUCTURE_RECOVER_REQUIRE_EMAIL" in content
+    assert "US_MICROSTRUCTURE_RECOVER_DRY_RUN" in content
+    assert "Asia/Shanghai" in content
+    assert "run_collect" in content
+    assert "collect_seconds" in content
+    assert "report_needed" in content
+    assert 'US_MICROSTRUCTURE_COLLECT_DURATION_SECONDS="$collect_seconds"' in content
+    assert 'US_MICROSTRUCTURE_SEND_EMAIL="$US_MICROSTRUCTURE_RECOVER_SEND_EMAIL"' in content
+    assert 'run_us_microstructure_auto.sh" collect' in content
+    assert 'run_us_microstructure_auto.sh" report' in content
+    assert "us_microstructure_recover.lock" in content
 
 
 def test_report_script_updates_prices_before_validation_by_default():
@@ -126,7 +148,20 @@ def test_us_microstructure_report_launchd_plist_is_scheduled_china_mornings():
     assert payload["EnvironmentVariables"]["US_MICROSTRUCTURE_SEND_EMAIL"] == "true"
 
 
-def test_us_microstructure_install_script_installs_both_launch_daemons():
+def test_us_microstructure_recover_launchd_plist_runs_at_load_and_periodically():
+    payload = _load_plist(RECOVER_PLIST)
+    assert payload["Label"] == "com.quantpilot.us_microstructure.recover"
+    assert payload["UserName"] == "__USER__"
+    assert payload["WorkingDirectory"] == "__PROJECT_DIR__"
+    assert payload["ProgramArguments"] == ["/bin/bash", "__PROJECT_DIR__/scripts/run_us_microstructure_recover.sh"]
+    assert payload["RunAtLoad"] is True
+    assert payload["StartInterval"] == 900
+    assert payload["StandardOutPath"] == "__PROJECT_DIR__/logs/us_microstructure_recover.out.log"
+    assert payload["StandardErrorPath"] == "__PROJECT_DIR__/logs/us_microstructure_recover.err.log"
+    assert payload["EnvironmentVariables"]["US_MICROSTRUCTURE_RECOVER_SEND_EMAIL"] == "true"
+
+
+def test_us_microstructure_install_script_installs_launch_jobs():
     content = INSTALL_SCRIPT.read_text(encoding="utf-8")
     assert 'TARGET_DIR="/Library/LaunchDaemons"' in content
     assert 'AGENT_TARGET_DIR="$HOME_DIR/Library/LaunchAgents"' in content
@@ -135,6 +170,7 @@ def test_us_microstructure_install_script_installs_both_launch_daemons():
     assert 'sudo -n true' in content
     assert 'render_and_install "com.quantpilot.us_microstructure.collect"' in content
     assert 'render_and_install "com.quantpilot.us_microstructure.report"' in content
+    assert 'render_and_install "com.quantpilot.us_microstructure.recover"' in content
     assert 'payload.pop("UserName", None)' in content
     assert 'sudo launchctl bootstrap system "$target_path"' in content
     assert 'sudo launchctl enable "system/$label"' in content

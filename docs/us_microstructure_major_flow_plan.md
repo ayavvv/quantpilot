@@ -440,9 +440,11 @@ Build:
 - `scripts/validate_us_microstructure_flow.py`
 - `scripts/us_microstructure_readiness.py`
 - `scripts/run_us_microstructure_auto.sh`
+- `scripts/run_us_microstructure_recover.sh`
 - `scripts/run_us_microstructure_report.sh`
 - `deploy/launchd/com.quantpilot.us_microstructure.collect.plist`
 - `deploy/launchd/com.quantpilot.us_microstructure.report.plist`
+- `deploy/launchd/com.quantpilot.us_microstructure.recover.plist`
 - `scripts/install_us_microstructure_launchd.sh`
 
 Implemented status as of 2026-06-02:
@@ -568,6 +570,14 @@ Implemented status as of 2026-06-02:
   the Mac mini with SSH, forwarding the relevant date, universe, reporting, NAS,
   Futu, and validation environment variables. This keeps Futu OpenD collection
   on the Mac while allowing a NAS cron job to trigger the same production flow.
+- `scripts/run_us_microstructure_recover.sh` is the reboot/missed-schedule
+  recovery guard. It runs safely at load and periodically: outside the recovery
+  windows it exits after logging a decision; inside the China-time collection
+  window it starts `collect` with duration capped to the remaining window; in
+  the report catch-up window it runs `report` only when the latest final report
+  is missing, non-final, or has not recorded a sent email. This makes RunAtLoad
+  safe without starting a full US-session collector after an arbitrary daytime
+  reboot.
 - `scripts/run_us_microstructure_report.sh` is the Mac-side entrypoint for cron
   or launchd. It updates daily prices, repairs any non-`ok` NAS uploads still
   recoverable from local hot-cache files, updates validation through the prior
@@ -584,11 +594,15 @@ Implemented status as of 2026-06-02:
   final report pass. If email delivery fails, the wrapper still writes readiness
   before returning nonzero so launchd logs and readiness JSON both expose the
   failure.
-- Launchd templates are available for weekday evening collection and
-  China-morning report generation. They call
-  `scripts/run_us_microstructure_auto.sh collect|report`, so the same templates
-  are safe on the Mac and can be mirrored conceptually by NAS cron.
-  `scripts/install_us_microstructure_launchd.sh` renders both templates into
+- Launchd templates are available for weekday evening collection,
+  China-morning report generation, and reboot recovery. The collect/report jobs
+  call `scripts/run_us_microstructure_auto.sh collect|report`; the recovery job
+  calls `scripts/run_us_microstructure_recover.sh` with `RunAtLoad=true` and a
+  15-minute interval. On Mac this is installed as a LaunchAgent when passwordless
+  sudo is unavailable, or as a system LaunchDaemon when installed with
+  administrator privileges. NAS cron mirrors the same auto/recovery entrypoints
+  and dispatches back to the Mac mini by SSH.
+  `scripts/install_us_microstructure_launchd.sh` renders all three templates into
   `/Library/LaunchDaemons` when passwordless sudo is available, or user
   `LaunchAgents` otherwise.
 
