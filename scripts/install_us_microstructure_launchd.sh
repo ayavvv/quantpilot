@@ -82,6 +82,7 @@ mkdir -p "$LOG_DIR"
 render_and_install "com.quantpilot.us_microstructure.collect"
 render_and_install "com.quantpilot.us_microstructure.report"
 render_and_install "com.quantpilot.us_microstructure.recover"
+render_and_install "com.quantpilot.us_microstructure.watchdog"
 
 printf 'US microstructure launchd %s jobs installed for user %s\n' "$INSTALL_MODE" "$INSTALL_USER"
 printf 'Logs: %s\n' "$LOG_DIR"

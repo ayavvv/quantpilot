@@ -3,6 +3,15 @@ import json
 from scripts import us_microstructure_readiness as readiness
 
 
+def test_readiness_launchd_labels_cover_automation_and_recovery_jobs():
+    assert readiness.LAUNCHD_LABELS == (
+        "com.quantpilot.us_microstructure.collect",
+        "com.quantpilot.us_microstructure.report",
+        "com.quantpilot.us_microstructure.recover",
+        "com.quantpilot.us_microstructure.watchdog",
+    )
+
+
 def _write_json(path, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")

@@ -5,12 +5,14 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 AUTO_SCRIPT = REPO_ROOT / "scripts" / "run_us_microstructure_auto.sh"
 RECOVER_SCRIPT = REPO_ROOT / "scripts" / "run_us_microstructure_recover.sh"
+WATCHDOG_SCRIPT = REPO_ROOT / "scripts" / "run_us_microstructure_watchdog.sh"
 COLLECT_SCRIPT = REPO_ROOT / "scripts" / "run_us_microstructure_collect.sh"
 REPORT_SCRIPT = REPO_ROOT / "scripts" / "run_us_microstructure_report.sh"
 INSTALL_SCRIPT = REPO_ROOT / "scripts" / "install_us_microstructure_launchd.sh"
 COLLECT_PLIST = REPO_ROOT / "deploy" / "launchd" / "com.quantpilot.us_microstructure.collect.plist"
 REPORT_PLIST = REPO_ROOT / "deploy" / "launchd" / "com.quantpilot.us_microstructure.report.plist"
 RECOVER_PLIST = REPO_ROOT / "deploy" / "launchd" / "com.quantpilot.us_microstructure.recover.plist"
+WATCHDOG_PLIST = REPO_ROOT / "deploy" / "launchd" / "com.quantpilot.us_microstructure.watchdog.plist"
 CORE_SYMBOLS = REPO_ROOT / "config" / "us_microstructure_core_symbols.txt"
 
 
@@ -83,6 +85,20 @@ def test_recover_script_guards_reboot_catchup_windows():
     assert 'run_us_microstructure_auto.sh" collect' in content
     assert 'run_us_microstructure_auto.sh" report' in content
     assert "us_microstructure_recover.lock" in content
+
+
+def test_watchdog_script_runs_recovery_readiness_and_safe_repairs():
+    content = WATCHDOG_SCRIPT.read_text(encoding="utf-8")
+    assert "US_MICROSTRUCTURE_WATCHDOG_AUTO_REPAIR" in content
+    assert "US_MICROSTRUCTURE_WATCHDOG_DRY_RUN" in content
+    assert "us_microstructure_watchdog.lock" in content
+    assert "run_us_microstructure_recover.sh" in content
+    assert "scripts.us_microstructure_readiness" in content
+    assert "--all-manifests" in content
+    assert "repair_known_issues()" in content
+    assert "scripts.repair_us_microstructure_nas_uploads" in content
+    assert "readiness_after_repair" in content
+    assert "high_confidence_ready" in content
 
 
 def test_report_script_updates_prices_before_validation_by_default():
@@ -161,6 +177,24 @@ def test_us_microstructure_recover_launchd_plist_runs_at_load_and_periodically()
     assert payload["EnvironmentVariables"]["US_MICROSTRUCTURE_RECOVER_SEND_EMAIL"] == "true"
 
 
+def test_us_microstructure_watchdog_launchd_plist_checks_morning_and_evening():
+    payload = _load_plist(WATCHDOG_PLIST)
+    assert payload["Label"] == "com.quantpilot.us_microstructure.watchdog"
+    assert payload["UserName"] == "__USER__"
+    assert payload["WorkingDirectory"] == "__PROJECT_DIR__"
+    assert payload["ProgramArguments"] == ["/bin/bash", "__PROJECT_DIR__/scripts/run_us_microstructure_watchdog.sh"]
+    assert payload["RunAtLoad"] is True
+    assert payload["StandardOutPath"] == "__PROJECT_DIR__/logs/us_microstructure_watchdog.out.log"
+    assert payload["StandardErrorPath"] == "__PROJECT_DIR__/logs/us_microstructure_watchdog.err.log"
+    assert payload["EnvironmentVariables"]["US_MICROSTRUCTURE_WATCHDOG_AUTO_REPAIR"] == "true"
+    intervals = payload["StartCalendarInterval"]
+    assert len(intervals) == 10
+    assert sum(1 for item in intervals if item["Hour"] == 9 and item["Minute"] == 15) == 5
+    assert sum(1 for item in intervals if item["Hour"] == 21 and item["Minute"] == 10) == 5
+    assert {item["Weekday"] for item in intervals if item["Hour"] == 9} == {2, 3, 4, 5, 6}
+    assert {item["Weekday"] for item in intervals if item["Hour"] == 21} == {1, 2, 3, 4, 5}
+
+
 def test_us_microstructure_install_script_installs_launch_jobs():
     content = INSTALL_SCRIPT.read_text(encoding="utf-8")
     assert 'TARGET_DIR="/Library/LaunchDaemons"' in content
@@ -171,6 +205,7 @@ def test_us_microstructure_install_script_installs_launch_jobs():
     assert 'render_and_install "com.quantpilot.us_microstructure.collect"' in content
     assert 'render_and_install "com.quantpilot.us_microstructure.report"' in content
     assert 'render_and_install "com.quantpilot.us_microstructure.recover"' in content
+    assert 'render_and_install "com.quantpilot.us_microstructure.watchdog"' in content
     assert 'payload.pop("UserName", None)' in content
     assert 'sudo launchctl bootstrap system "$target_path"' in content
     assert 'sudo launchctl enable "system/$label"' in content

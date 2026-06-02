@@ -441,10 +441,12 @@ Build:
 - `scripts/us_microstructure_readiness.py`
 - `scripts/run_us_microstructure_auto.sh`
 - `scripts/run_us_microstructure_recover.sh`
+- `scripts/run_us_microstructure_watchdog.sh`
 - `scripts/run_us_microstructure_report.sh`
 - `deploy/launchd/com.quantpilot.us_microstructure.collect.plist`
 - `deploy/launchd/com.quantpilot.us_microstructure.report.plist`
 - `deploy/launchd/com.quantpilot.us_microstructure.recover.plist`
+- `deploy/launchd/com.quantpilot.us_microstructure.watchdog.plist`
 - `scripts/install_us_microstructure_launchd.sh`
 
 Implemented status as of 2026-06-02:
@@ -578,6 +580,13 @@ Implemented status as of 2026-06-02:
   is missing, non-final, or has not recorded a sent email. This makes RunAtLoad
   safe without starting a full US-session collector after an arbitrary daytime
   reboot.
+- `scripts/run_us_microstructure_watchdog.sh` is the morning/evening health
+  checker. It runs recovery first, then checks readiness across manifests,
+  price status, validation gate, report artifacts, intraday replay, and all
+  launchd jobs. If readiness fails, it attempts safe repairs such as replaying
+  the recovery guard and repairing NAS uploads, then checks readiness again.
+  It treats `high_confidence_ready=false` as a normal warmup state rather than
+  a failure; only pipeline health issues trigger repair.
 - `scripts/run_us_microstructure_report.sh` is the Mac-side entrypoint for cron
   or launchd. It updates daily prices, repairs any non-`ok` NAS uploads still
   recoverable from local hot-cache files, updates validation through the prior
@@ -595,14 +604,16 @@ Implemented status as of 2026-06-02:
   before returning nonzero so launchd logs and readiness JSON both expose the
   failure.
 - Launchd templates are available for weekday evening collection,
-  China-morning report generation, and reboot recovery. The collect/report jobs
+  China-morning report generation, reboot recovery, and morning/evening
+  watchdog checks. The collect/report jobs
   call `scripts/run_us_microstructure_auto.sh collect|report`; the recovery job
   calls `scripts/run_us_microstructure_recover.sh` with `RunAtLoad=true` and a
-  15-minute interval. On Mac this is installed as a LaunchAgent when passwordless
-  sudo is unavailable, or as a system LaunchDaemon when installed with
-  administrator privileges. NAS cron mirrors the same auto/recovery entrypoints
-  and dispatches back to the Mac mini by SSH.
-  `scripts/install_us_microstructure_launchd.sh` renders all three templates into
+  15-minute interval; the watchdog runs at 09:15 Tue-Sat and 21:10 Mon-Fri
+  China time, plus at load. On Mac this is installed as a LaunchAgent when
+  passwordless sudo is unavailable, or as a system LaunchDaemon when installed
+  with administrator privileges. NAS cron mirrors the same auto/recovery/watchdog
+  entrypoints and dispatches back to the Mac mini by SSH.
+  `scripts/install_us_microstructure_launchd.sh` renders all templates into
   `/Library/LaunchDaemons` when passwordless sudo is available, or user
   `LaunchAgents` otherwise.
 

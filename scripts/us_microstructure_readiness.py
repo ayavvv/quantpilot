@@ -19,6 +19,8 @@ DEFAULT_BASE_DIR = Path(os.environ.get("US_MICROSTRUCTURE_DIR", str(DATA_DIR / "
 LAUNCHD_LABELS = (
     "com.quantpilot.us_microstructure.collect",
     "com.quantpilot.us_microstructure.report",
+    "com.quantpilot.us_microstructure.recover",
+    "com.quantpilot.us_microstructure.watchdog",
 )
 
 
