@@ -50,9 +50,19 @@ must not present probabilities as calibrated.
 
 ## Collection Universe
 
-Do not try to collect the whole US market at the start. Even though current
+Do not collect the whole US market at tick/order-book depth. Even though current
 subscription capacity showed roughly 1000 ticker slots, whole-market tick and
-book collection would be noisy and storage-heavy.
+book collection would be noisy and storage-heavy. The implemented flow is now
+two-layered:
+
+1. `scripts.build_us_microstructure_universe` scans the broad Futu US stock
+   universe with stock basic info, market snapshots, and optional daily/minute
+   K-line enrichment. It writes a ranked candidate pool under
+   `us_microstructure/universe/`.
+2. `scripts.run_us_microstructure_collect.sh` defaults to building that dynamic
+   universe first, then passes
+   `universe/us_microstructure_candidates_latest.txt` into the tick/order-book
+   collector. If the coarse screen fails, it falls back to the core file.
 
 Recommended tiers:
 

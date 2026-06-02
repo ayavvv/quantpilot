@@ -652,6 +652,88 @@ def _load_intraday_replay_summary(base_dir: Path, date: str) -> dict[str, object
     }
 
 
+def _load_coarse_universe_summary(base_dir: Path, date: str) -> dict[str, object]:
+    dated_status = base_dir / "universe" / f"date={date}" / "status.json"
+    latest_status = base_dir / "universe" / "us_microstructure_universe_status_latest.json"
+    status_path = dated_status if dated_status.exists() else latest_status
+    payload: dict[str, object] = {}
+    issues: list[str] = []
+    if status_path.exists():
+        try:
+            raw = json.loads(status_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                payload = raw
+            else:
+                issues.append("coarse universe status is not a JSON object")
+        except Exception as exc:
+            issues.append(f"coarse universe status unreadable: {exc}")
+    else:
+        issues.append("coarse universe status missing")
+    return {
+        "exists": status_path.exists(),
+        "status_path": str(status_path),
+        "status": str(payload.get("status") or "missing"),
+        "date": str(payload.get("date") or ""),
+        "generated_at": str(payload.get("generated_at") or ""),
+        "target_size": _count(payload.get("target_size")),
+        "universe_count": _count(payload.get("universe_count")),
+        "snapshot_symbol_count": _count(payload.get("snapshot_symbol_count")),
+        "daily_symbol_count": _count(payload.get("daily_symbol_count")),
+        "minute_symbol_count": _count(payload.get("minute_symbol_count")),
+        "candidate_count": _count(payload.get("candidate_count")),
+        "core_symbol_count": _count(payload.get("core_symbol_count")),
+        "candidate_core_count": _count(payload.get("candidate_core_count")),
+        "snapshot_error_count": _count(payload.get("snapshot_error_count")),
+        "daily_error_count": _count(payload.get("daily_error_count")),
+        "minute_error_count": _count(payload.get("minute_error_count")),
+        "candidates": payload.get("candidates", []) if isinstance(payload.get("candidates"), list) else [],
+        "issues": issues,
+    }
+
+
+def _coarse_universe_markdown(summary: dict[str, object]) -> str:
+    lines = [
+        f"- Coarse screen available: `{bool(summary.get('exists'))}`",
+        f"- Status/date: `{summary.get('status')}` / `{summary.get('date') or 'n/a'}`",
+        f"- Full-market universe / snapshot / daily / minute symbols: `{summary.get('universe_count', 0)}` / `{summary.get('snapshot_symbol_count', 0)}` / `{summary.get('daily_symbol_count', 0)}` / `{summary.get('minute_symbol_count', 0)}`",
+        f"- Candidate pool: `{summary.get('candidate_count', 0)}` target `{summary.get('target_size', 0)}`; core retained `{summary.get('candidate_core_count', 0)}` / `{summary.get('core_symbol_count', 0)}`",
+        f"- Error counts snapshot/daily/minute: `{summary.get('snapshot_error_count', 0)}` / `{summary.get('daily_error_count', 0)}` / `{summary.get('minute_error_count', 0)}`",
+    ]
+    issues = summary.get("issues", [])
+    if isinstance(issues, list) and issues:
+        lines.append("- Issues: " + "; ".join(str(item) for item in issues))
+    return "\n".join(lines) + "\n"
+
+
+def _coarse_universe_html(summary: dict[str, object]) -> str:
+    issues = summary.get("issues", [])
+    issue_text = ""
+    if isinstance(issues, list) and issues:
+        issue_text = "; issues=" + html.escape("; ".join(str(item) for item in issues))
+    return (
+        "<div class='gate'><strong>Coarse universe:</strong> available={exists}; status={status}; "
+        "date={date}; universe={universe}; snapshot={snapshot}; daily={daily}; minute={minute}; "
+        "candidates={candidates}/{target}; core={candidate_core}/{core}; "
+        "errors snapshot/daily/minute={snapshot_errors}/{daily_errors}/{minute_errors}{issues}</div>"
+    ).format(
+        exists=bool(summary.get("exists")),
+        status=html.escape(str(summary.get("status") or "missing")),
+        date=html.escape(str(summary.get("date") or "n/a")),
+        universe=int(summary.get("universe_count") or 0),
+        snapshot=int(summary.get("snapshot_symbol_count") or 0),
+        daily=int(summary.get("daily_symbol_count") or 0),
+        minute=int(summary.get("minute_symbol_count") or 0),
+        candidates=int(summary.get("candidate_count") or 0),
+        target=int(summary.get("target_size") or 0),
+        candidate_core=int(summary.get("candidate_core_count") or 0),
+        core=int(summary.get("core_symbol_count") or 0),
+        snapshot_errors=int(summary.get("snapshot_error_count") or 0),
+        daily_errors=int(summary.get("daily_error_count") or 0),
+        minute_errors=int(summary.get("minute_error_count") or 0),
+        issues=issue_text,
+    )
+
+
 def _intraday_metric_table_markdown(metrics: object) -> list[str]:
     if not isinstance(metrics, list) or not metrics:
         return ["No intraday replay metric rows."]
@@ -785,6 +867,7 @@ def render_markdown_report(
     raw_counts: dict[str, int],
     validation_gate: dict,
     data_quality: dict[str, object],
+    coarse_universe: dict[str, object],
     intraday_replay: dict[str, object],
     confidence_gap: dict[str, object],
     top_n: int,
@@ -838,6 +921,8 @@ def render_markdown_report(
         _intraday_replay_markdown(intraday_replay),
         "",
         "## Data Coverage",
+        "",
+        _coarse_universe_markdown(coarse_universe),
         "",
         f"- Raw trade rows: `{raw_counts.get('trades', 0)}`",
         f"- Raw order-book rows: `{raw_counts.get('order_book', 0)}`",
@@ -1148,6 +1233,7 @@ def render_html_report(
     raw_counts: dict[str, int],
     validation_gate: dict,
     data_quality: dict[str, object],
+    coarse_universe: dict[str, object],
     intraday_replay: dict[str, object],
     confidence_gap: dict[str, object],
     top_n: int,
@@ -1204,6 +1290,7 @@ tr.sell {{ background: #fff1f2; }}
 <h2>Intraday Replay Calibration</h2>
 {_intraday_replay_html(intraday_replay)}
 <h2>Data Coverage</h2>
+{_coarse_universe_html(coarse_universe)}
 <p>Raw trades={raw_counts.get('trades', 0)}, order_book={raw_counts.get('order_book', 0)}, quotes={raw_counts.get('quotes', 0)}. Regular trade/book/quote minutes={coverage['regular_trade_minutes']} / {coverage['regular_book_minutes']} / {coverage['regular_quote_minutes']}.</p>
 <h2>Candidates</h2>
 {_html_table(view)}
@@ -1370,6 +1457,7 @@ def main(argv: list[str] | None = None) -> int:
     signals = _apply_final_report_gate_to_signals(signals, is_final_report=bool(is_final_report))
     raw_counts = _raw_counts(inputs)
     data_quality = _data_quality_summary_with_manifest(features, signal_cfg, manifest_quality=manifest_quality)
+    coarse_universe = _load_coarse_universe_summary(base_dir, args.date)
     intraday_replay = _load_intraday_replay_summary(base_dir, args.date)
     validation_progress = _validation_progress(report_gate)
     validation_eligibility = _validation_eligibility_summary(
@@ -1394,6 +1482,7 @@ def main(argv: list[str] | None = None) -> int:
         "raw_counts": raw_counts,
         "coverage": _coverage_summary(features),
         "data_quality": data_quality,
+        "coarse_universe": coarse_universe,
         "intraday_replay": intraday_replay,
         "manifest_quality": manifest_quality,
         "signal_count": int(len(signals)),
@@ -1416,6 +1505,7 @@ def main(argv: list[str] | None = None) -> int:
         raw_counts=raw_counts,
         validation_gate=report_gate,
         data_quality=data_quality,
+        coarse_universe=coarse_universe,
         intraday_replay=intraday_replay,
         confidence_gap=confidence_gap,
         top_n=args.top_n,
@@ -1428,6 +1518,7 @@ def main(argv: list[str] | None = None) -> int:
         raw_counts=raw_counts,
         validation_gate=report_gate,
         data_quality=data_quality,
+        coarse_universe=coarse_universe,
         intraday_replay=intraday_replay,
         confidence_gap=confidence_gap,
         top_n=args.top_n,

@@ -29,8 +29,13 @@ def test_collect_script_runs_futu_collector_with_nas_and_lock():
     content = COLLECT_SCRIPT.read_text(encoding="utf-8")
     assert "us_microstructure_collect.lock" in content
     assert "US_MICROSTRUCTURE_COLLECT_DURATION_SECONDS" in content
+    assert "US_MICROSTRUCTURE_BUILD_UNIVERSE" in content
+    assert "US_MICROSTRUCTURE_DYNAMIC_UNIVERSE_FILE" in content
+    assert "US_MICROSTRUCTURE_UNIVERSE_TARGET_SIZE" in content
     assert "US_MICROSTRUCTURE_UNIVERSE_FILE" in content
     assert "config/us_microstructure_core_symbols.txt" in content
+    assert '"$PYTHON_BIN" -m scripts.build_us_microstructure_universe' in content
+    assert "dynamic universe build failed" in content
     assert "--nas-host" in content
     assert "--nas-dir" in content
     assert '"$PYTHON_BIN" -m scripts.collect_us_microstructure' in content

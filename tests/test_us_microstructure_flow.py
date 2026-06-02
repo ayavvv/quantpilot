@@ -1187,6 +1187,25 @@ def test_price_symbol_universe_includes_defaults_explicit_signals_and_benchmark(
     assert symbols == ["US.SPY", "US.NVDA", "US.AAPL"]
 
 
+def test_price_symbol_universe_includes_dynamic_candidate_file(tmp_path):
+    universe_dir = tmp_path / "universe"
+    universe_dir.mkdir()
+    (universe_dir / "us_microstructure_candidates_latest.txt").write_text(
+        "US.MSFT\nnvda\nUS.SPY\n",
+        encoding="utf-8",
+    )
+
+    symbols = price_script.build_price_symbol_universe(
+        tmp_path,
+        explicit_symbols=["aapl"],
+        benchmark="SPY",
+        include_default_symbols=False,
+        include_signal_symbols=False,
+    )
+
+    assert symbols == ["US.SPY", "US.AAPL", "US.MSFT", "US.NVDA"]
+
+
 def test_load_signal_events_requires_reportable_quality_signals(tmp_path):
     signal_path = _write_signal(
         tmp_path,

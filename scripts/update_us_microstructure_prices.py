@@ -20,6 +20,7 @@ from strategy.us_microstructure_validation import discover_signal_files
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(Path.home() / "quantpilot_data")))
 DEFAULT_BASE_DIR = Path(os.environ.get("US_MICROSTRUCTURE_DIR", str(DATA_DIR / "us_microstructure")))
 DEFAULT_NAS_DIR = "/volume1/docker/quantpilot/us_microstructure"
+DEFAULT_UNIVERSE_FILE = "universe/us_microstructure_candidates_latest.txt"
 
 
 def _default_end_date() -> str:
@@ -52,6 +53,20 @@ def _symbols_from_signal_files(base_dir: Path, *, start_date: str = "", end_date
     return normalize_us_symbols(symbols)
 
 
+def _symbols_from_universe_file(base_dir: Path, universe_file: str = "") -> list[str]:
+    raw_path = str(universe_file or "").strip()
+    path = Path(raw_path).expanduser() if raw_path else base_dir / DEFAULT_UNIVERSE_FILE
+    if not path.is_absolute():
+        path = base_dir / path
+    if not path.exists():
+        return []
+    try:
+        values = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    except Exception:
+        return []
+    return normalize_us_symbols(values)
+
+
 def build_price_symbol_universe(
     base_dir: str | Path,
     *,
@@ -59,9 +74,12 @@ def build_price_symbol_universe(
     benchmark: str = "US.SPY",
     include_signal_symbols: bool = True,
     include_default_symbols: bool = True,
+    include_universe_symbols: bool = True,
+    universe_file: str = "",
     start_date: str = "",
     end_date: str = "",
 ) -> list[str]:
+    base_path = Path(base_dir).expanduser()
     values: list[object] = []
     values.append(benchmark)
     if include_default_symbols:
@@ -69,7 +87,9 @@ def build_price_symbol_universe(
     if explicit_symbols:
         values.extend(explicit_symbols)
     if include_signal_symbols:
-        values.extend(_symbols_from_signal_files(Path(base_dir).expanduser(), start_date=start_date, end_date=end_date))
+        values.extend(_symbols_from_signal_files(base_path, start_date=start_date, end_date=end_date))
+    if include_universe_symbols:
+        values.extend(_symbols_from_universe_file(base_path, universe_file=universe_file))
     return normalize_us_symbols(values)
 
 
@@ -276,8 +296,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--rsa-key", default=os.environ.get("FUTU_RSA_KEY", str(DEFAULT_RSA_KEY)))
     parser.add_argument("--autype", default=os.environ.get("US_MICROSTRUCTURE_PRICE_AUTYPE", "qfq"), choices=["qfq", "hfq", "none"])
     parser.add_argument("--sleep-seconds", type=float, default=float(os.environ.get("US_MICROSTRUCTURE_PRICE_SLEEP_SECONDS", "0.2")))
+    parser.add_argument("--universe-file", default=os.environ.get("US_MICROSTRUCTURE_PRICE_UNIVERSE_FILE", ""))
     parser.add_argument("--no-default-symbols", action="store_true")
     parser.add_argument("--no-signal-symbols", action="store_true")
+    parser.add_argument("--no-universe-symbols", action="store_true")
     parser.add_argument("--nas-host", default=os.environ.get("US_MICROSTRUCTURE_NAS_HOST", ""))
     parser.add_argument("--nas-dir", default=os.environ.get("US_MICROSTRUCTURE_NAS_DIR", DEFAULT_NAS_DIR))
     parser.add_argument("--no-nas-sync", action="store_true")
@@ -297,6 +319,8 @@ def main(argv: list[str] | None = None) -> int:
         benchmark=args.benchmark,
         include_signal_symbols=not args.no_signal_symbols,
         include_default_symbols=not args.no_default_symbols,
+        include_universe_symbols=not args.no_universe_symbols,
+        universe_file=args.universe_file,
         start_date=start_date,
         end_date=end_date,
     )
