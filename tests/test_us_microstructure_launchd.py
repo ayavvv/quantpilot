@@ -54,6 +54,8 @@ def test_auto_script_runs_locally_on_mac_and_dispatches_from_nas():
     assert "theomac-mini theodeMac-mini-2.local" in content
     assert "[ \"$(uname -s)\" = \"Darwin\" ]" in content
     assert "REMOTE_ENV_NAMES=(" in content
+    assert "EXTERNAL_REMOTE_ENV_NAMES" in content
+    assert "is_external_remote_env" in content
     assert "US_MICROSTRUCTURE_POST_REPORT_VALIDATION" in content
     assert "BatchMode=yes" in content
     assert "ConnectTimeout=10" in content
