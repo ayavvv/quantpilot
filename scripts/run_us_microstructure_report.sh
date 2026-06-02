@@ -25,6 +25,7 @@ EXTERNAL_US_MICROSTRUCTURE_NAS_DIR="${US_MICROSTRUCTURE_NAS_DIR-}"
 EXTERNAL_US_MICROSTRUCTURE_SEND_EMAIL="${US_MICROSTRUCTURE_SEND_EMAIL-}"
 EXTERNAL_US_MICROSTRUCTURE_RUN_VALIDATION="${US_MICROSTRUCTURE_RUN_VALIDATION-}"
 EXTERNAL_US_MICROSTRUCTURE_VALIDATION_END="${US_MICROSTRUCTURE_VALIDATION_END-}"
+EXTERNAL_US_MICROSTRUCTURE_POST_REPORT_VALIDATION="${US_MICROSTRUCTURE_POST_REPORT_VALIDATION-}"
 EXTERNAL_US_MICROSTRUCTURE_UPDATE_PRICES="${US_MICROSTRUCTURE_UPDATE_PRICES-}"
 EXTERNAL_US_MICROSTRUCTURE_REPAIR_UPLOADS="${US_MICROSTRUCTURE_REPAIR_UPLOADS-}"
 EXTERNAL_US_MICROSTRUCTURE_RUN_READINESS="${US_MICROSTRUCTURE_RUN_READINESS-}"
@@ -61,6 +62,7 @@ fi
 [ -n "$EXTERNAL_US_MICROSTRUCTURE_SEND_EMAIL" ] && US_MICROSTRUCTURE_SEND_EMAIL="$EXTERNAL_US_MICROSTRUCTURE_SEND_EMAIL"
 [ -n "$EXTERNAL_US_MICROSTRUCTURE_RUN_VALIDATION" ] && US_MICROSTRUCTURE_RUN_VALIDATION="$EXTERNAL_US_MICROSTRUCTURE_RUN_VALIDATION"
 [ -n "$EXTERNAL_US_MICROSTRUCTURE_VALIDATION_END" ] && US_MICROSTRUCTURE_VALIDATION_END="$EXTERNAL_US_MICROSTRUCTURE_VALIDATION_END"
+[ -n "$EXTERNAL_US_MICROSTRUCTURE_POST_REPORT_VALIDATION" ] && US_MICROSTRUCTURE_POST_REPORT_VALIDATION="$EXTERNAL_US_MICROSTRUCTURE_POST_REPORT_VALIDATION"
 [ -n "$EXTERNAL_US_MICROSTRUCTURE_UPDATE_PRICES" ] && US_MICROSTRUCTURE_UPDATE_PRICES="$EXTERNAL_US_MICROSTRUCTURE_UPDATE_PRICES"
 [ -n "$EXTERNAL_US_MICROSTRUCTURE_REPAIR_UPLOADS" ] && US_MICROSTRUCTURE_REPAIR_UPLOADS="$EXTERNAL_US_MICROSTRUCTURE_REPAIR_UPLOADS"
 [ -n "$EXTERNAL_US_MICROSTRUCTURE_RUN_READINESS" ] && US_MICROSTRUCTURE_RUN_READINESS="$EXTERNAL_US_MICROSTRUCTURE_RUN_READINESS"
@@ -80,6 +82,7 @@ US_MICROSTRUCTURE_NAS_DIR="${US_MICROSTRUCTURE_NAS_DIR:-/volume1/docker/quantpil
 US_MICROSTRUCTURE_SEND_EMAIL="${US_MICROSTRUCTURE_SEND_EMAIL:-false}"
 US_MICROSTRUCTURE_RUN_VALIDATION="${US_MICROSTRUCTURE_RUN_VALIDATION:-true}"
 US_MICROSTRUCTURE_VALIDATION_END="${US_MICROSTRUCTURE_VALIDATION_END:-}"
+US_MICROSTRUCTURE_POST_REPORT_VALIDATION="${US_MICROSTRUCTURE_POST_REPORT_VALIDATION:-true}"
 US_MICROSTRUCTURE_UPDATE_PRICES="${US_MICROSTRUCTURE_UPDATE_PRICES:-true}"
 US_MICROSTRUCTURE_REPAIR_UPLOADS="${US_MICROSTRUCTURE_REPAIR_UPLOADS:-true}"
 US_MICROSTRUCTURE_RUN_READINESS="${US_MICROSTRUCTURE_RUN_READINESS:-true}"
@@ -106,7 +109,22 @@ if ! mkdir "$LOCK_DIR" 2>/dev/null; then
 fi
 trap 'rmdir "$LOCK_DIR"' EXIT
 
-args=(
+run_validation() {
+    local validation_end="$1"
+    local validation_args=(
+        --base-dir "$US_MICROSTRUCTURE_DIR"
+        --qlib-dir "$QLIB_DATA_DIR"
+        --end-date "$validation_end"
+        --nas-host "$US_MICROSTRUCTURE_NAS_HOST"
+        --nas-dir "$US_MICROSTRUCTURE_NAS_DIR"
+    )
+    if [ -n "$US_MICROSTRUCTURE_PRICE_CSV" ]; then
+        validation_args+=(--price-csv "$US_MICROSTRUCTURE_PRICE_CSV")
+    fi
+    PYTHONPATH="$PYTHONPATH" DATA_DIR="$DATA_DIR" QLIB_DATA_DIR="$QLIB_DATA_DIR" "$PYTHON_BIN" -m scripts.validate_us_microstructure_flow "${validation_args[@]}"
+}
+
+report_args=(
     --date "$US_MICROSTRUCTURE_DATE"
     --base-dir "$US_MICROSTRUCTURE_DIR"
     --nas-host "$US_MICROSTRUCTURE_NAS_HOST"
@@ -114,11 +132,12 @@ args=(
 )
 
 if [ -n "$US_MICROSTRUCTURE_REPORT_SYMBOLS" ]; then
-    args+=(--symbols "$US_MICROSTRUCTURE_REPORT_SYMBOLS")
+    report_args+=(--symbols "$US_MICROSTRUCTURE_REPORT_SYMBOLS")
 fi
 
+delivery_report_args=("${report_args[@]}")
 if [ "$US_MICROSTRUCTURE_SEND_EMAIL" = "true" ]; then
-    args+=(--send-email)
+    delivery_report_args+=(--send-email)
 fi
 
 log "run_us_microstructure_report: start date=$US_MICROSTRUCTURE_DATE"
@@ -146,17 +165,8 @@ if [ "$US_MICROSTRUCTURE_REPAIR_UPLOADS" = "true" ]; then
         --nas-dir "$US_MICROSTRUCTURE_NAS_DIR"
 fi
 if [ "$US_MICROSTRUCTURE_RUN_VALIDATION" = "true" ]; then
-    validation_args=(
-        --base-dir "$US_MICROSTRUCTURE_DIR"
-        --qlib-dir "$QLIB_DATA_DIR"
-        --end-date "$US_MICROSTRUCTURE_VALIDATION_END"
-        --nas-host "$US_MICROSTRUCTURE_NAS_HOST"
-        --nas-dir "$US_MICROSTRUCTURE_NAS_DIR"
-    )
-    if [ -n "$US_MICROSTRUCTURE_PRICE_CSV" ]; then
-        validation_args+=(--price-csv "$US_MICROSTRUCTURE_PRICE_CSV")
-    fi
-    PYTHONPATH="$PYTHONPATH" DATA_DIR="$DATA_DIR" QLIB_DATA_DIR="$QLIB_DATA_DIR" "$PYTHON_BIN" -m scripts.validate_us_microstructure_flow "${validation_args[@]}"
+    log "run_us_microstructure_report: validation end=$US_MICROSTRUCTURE_VALIDATION_END"
+    run_validation "$US_MICROSTRUCTURE_VALIDATION_END"
 fi
 if [ "$US_MICROSTRUCTURE_RUN_INTRADAY_REPLAY" = "true" ]; then
     replay_args=(
@@ -172,7 +182,20 @@ if [ "$US_MICROSTRUCTURE_RUN_INTRADAY_REPLAY" = "true" ]; then
     PYTHONPATH="$PYTHONPATH" DATA_DIR="$DATA_DIR" "$PYTHON_BIN" -m scripts.replay_us_microstructure_intraday "${replay_args[@]}"
 fi
 report_exit=0
-PYTHONPATH="$PYTHONPATH" DATA_DIR="$DATA_DIR" "$PYTHON_BIN" -m scripts.report_us_microstructure_flow "${args[@]}" || report_exit=$?
+if [ "$US_MICROSTRUCTURE_RUN_VALIDATION" = "true" ] && [ "$US_MICROSTRUCTURE_POST_REPORT_VALIDATION" = "true" ]; then
+    log "run_us_microstructure_report: stage report before same-day validation"
+    PYTHONPATH="$PYTHONPATH" DATA_DIR="$DATA_DIR" "$PYTHON_BIN" -m scripts.report_us_microstructure_flow "${report_args[@]}" || report_exit=$?
+    if [ "$report_exit" -eq 0 ]; then
+        log "run_us_microstructure_report: post-report validation end=$US_MICROSTRUCTURE_DATE"
+        run_validation "$US_MICROSTRUCTURE_DATE" || report_exit=$?
+    fi
+    if [ "$report_exit" -eq 0 ]; then
+        log "run_us_microstructure_report: final report"
+        PYTHONPATH="$PYTHONPATH" DATA_DIR="$DATA_DIR" "$PYTHON_BIN" -m scripts.report_us_microstructure_flow "${delivery_report_args[@]}" || report_exit=$?
+    fi
+else
+    PYTHONPATH="$PYTHONPATH" DATA_DIR="$DATA_DIR" "$PYTHON_BIN" -m scripts.report_us_microstructure_flow "${delivery_report_args[@]}" || report_exit=$?
+fi
 if [ "$US_MICROSTRUCTURE_RUN_READINESS" = "true" ]; then
     readiness_exit=0
     PYTHONPATH="$PYTHONPATH" DATA_DIR="$DATA_DIR" "$PYTHON_BIN" -m scripts.us_microstructure_readiness \

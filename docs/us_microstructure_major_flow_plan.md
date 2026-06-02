@@ -439,12 +439,13 @@ Build:
 - `scripts/update_us_microstructure_prices.py`
 - `scripts/validate_us_microstructure_flow.py`
 - `scripts/us_microstructure_readiness.py`
+- `scripts/run_us_microstructure_auto.sh`
 - `scripts/run_us_microstructure_report.sh`
 - `deploy/launchd/com.quantpilot.us_microstructure.collect.plist`
 - `deploy/launchd/com.quantpilot.us_microstructure.report.plist`
 - `scripts/install_us_microstructure_launchd.sh`
 
-Implemented status as of 2026-06-01:
+Implemented status as of 2026-06-02:
 
 - `scripts/collect_us_microstructure.py` collects Futu `TICKER`,
   `ORDER_BOOK`, and `QUOTE` data into local parquet batches and mirrors them to
@@ -455,9 +456,10 @@ Implemented status as of 2026-06-01:
   calendar date, so a collector restart after China midnight still writes to
   the correct US session partition.
 - `scripts/run_us_microstructure_collect.sh` is the Mac-side collection
-  wrapper. It loads `.env`, applies a lock, uses
-  `config/us_microstructure_core_symbols.txt` by default, and runs the collector
-  for the configured session duration.
+  wrapper. It loads `.env`, applies a lock, builds the dynamic broad-market
+  universe by default, falls back to `config/us_microstructure_core_symbols.txt`
+  if the screen fails, and runs the collector for the configured session
+  duration.
 - `strategy/us_microstructure_features.py` aggregates raw trades, order book,
   and quotes into one-minute tape/book/impact features. Futu trade timestamps
   are interpreted as US Eastern time and normalized to UTC so they align with
@@ -560,23 +562,35 @@ Implemented status as of 2026-06-01:
   readiness also audits per-symbol channel coverage across
   trades, order-book, and quotes so a missing data stream is visible before it
   reaches scoring.
+- `scripts/run_us_microstructure_auto.sh` is the scheduler-neutral entrypoint
+  for both Mac and NAS. On Darwin/Mac it runs the requested `collect` or
+  `report` script locally. On NAS/Linux it dispatches the same target back to
+  the Mac mini with SSH, forwarding the relevant date, universe, reporting, NAS,
+  Futu, and validation environment variables. This keeps Futu OpenD collection
+  on the Mac while allowing a NAS cron job to trigger the same production flow.
 - `scripts/run_us_microstructure_report.sh` is the Mac-side entrypoint for cron
   or launchd. It updates daily prices, repairs any non-`ok` NAS uploads still
-  recoverable from local hot-cache files, updates validation, rebuilds intraday
-  replay calibration samples, generates the report with that replay summary
-  embedded, then writes the readiness snapshot. If `US_MICROSTRUCTURE_DATE` is
-  not set, it resolves the latest available collection partition instead of
-  using the China morning calendar date, so the 08:30 report reads the previous
-  evening's US session. Validation defaults to ending one calendar day before
-  the report date, because validation runs before the current day's final report
-  is written; this prevents intraday/manual same-date signal files from entering
-  the forward ledger. It sends email only when `US_MICROSTRUCTURE_SEND_EMAIL=true`.
-  If email delivery fails, the wrapper still writes readiness before returning
-  nonzero so launchd logs and readiness JSON both expose the failure.
+  recoverable from local hot-cache files, updates validation through the prior
+  validation-safe date, rebuilds intraday replay calibration samples, stages the
+  current final report to create same-day signal files, runs post-report
+  validation through the report date, then generates the final report and writes
+  the readiness snapshot. If `US_MICROSTRUCTURE_DATE` is not set, it resolves
+  the latest available collection partition instead of using the China morning
+  calendar date, so the 08:30 report reads the previous evening's US session.
+  The post-report validation step is controlled by
+  `US_MICROSTRUCTURE_POST_REPORT_VALIDATION` and defaults to `true`; it prevents
+  daily shadow/exploration/official ledgers from lagging a day after the report.
+  It sends email only when `US_MICROSTRUCTURE_SEND_EMAIL=true`, and only on the
+  final report pass. If email delivery fails, the wrapper still writes readiness
+  before returning nonzero so launchd logs and readiness JSON both expose the
+  failure.
 - Launchd templates are available for weekday evening collection and
-  China-morning report generation. `scripts/install_us_microstructure_launchd.sh`
-  renders both templates into `/Library/LaunchDaemons` when passwordless sudo is
-  available, or user `LaunchAgents` otherwise.
+  China-morning report generation. They call
+  `scripts/run_us_microstructure_auto.sh collect|report`, so the same templates
+  are safe on the Mac and can be mirrored conceptually by NAS cron.
+  `scripts/install_us_microstructure_launchd.sh` renders both templates into
+  `/Library/LaunchDaemons` when passwordless sudo is available, or user
+  `LaunchAgents` otherwise.
 
 Start with a fixed universe file:
 
