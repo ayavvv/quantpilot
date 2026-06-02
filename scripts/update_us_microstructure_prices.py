@@ -295,7 +295,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=int(os.environ.get("FUTU_PORT", "11111")))
     parser.add_argument("--rsa-key", default=os.environ.get("FUTU_RSA_KEY", str(DEFAULT_RSA_KEY)))
     parser.add_argument("--autype", default=os.environ.get("US_MICROSTRUCTURE_PRICE_AUTYPE", "qfq"), choices=["qfq", "hfq", "none"])
-    parser.add_argument("--sleep-seconds", type=float, default=float(os.environ.get("US_MICROSTRUCTURE_PRICE_SLEEP_SECONDS", "0.2")))
+    parser.add_argument("--sleep-seconds", type=float, default=float(os.environ.get("US_MICROSTRUCTURE_PRICE_SLEEP_SECONDS", "0.55")))
     parser.add_argument("--universe-file", default=os.environ.get("US_MICROSTRUCTURE_PRICE_UNIVERSE_FILE", ""))
     parser.add_argument("--no-default-symbols", action="store_true")
     parser.add_argument("--no-signal-symbols", action="store_true")

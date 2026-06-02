@@ -356,8 +356,10 @@ def _score_candidates(
     min_snapshot_volume: float,
 ) -> pd.DataFrame:
     base = universe.copy()
-    if "code" in base.columns and "symbol" not in base.columns:
+    if "code" in base.columns:
         base["symbol"] = base["code"]
+    elif "symbol" not in base.columns:
+        base["symbol"] = ""
     base["symbol"] = base["symbol"].map(normalize_us_symbol)
     base = base[base["symbol"] != ""].drop_duplicates("symbol", keep="first").reset_index(drop=True)
     for frame in (snapshot, daily, minute):

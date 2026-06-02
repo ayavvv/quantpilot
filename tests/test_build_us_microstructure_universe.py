@@ -125,3 +125,34 @@ def test_write_universe_outputs_writes_latest_text_and_status(tmp_path):
     payload = json.loads(outputs["status_latest"].read_text(encoding="utf-8"))
     assert payload["candidate_count"] == 2
     assert (tmp_path / "universe" / "date=2026-06-01" / "us_microstructure_screened_universe.csv").exists()
+
+
+def test_score_candidates_prefers_code_when_symbol_column_has_missing_values():
+    universe = pd.DataFrame(
+        [
+            {"code": "US.ABC", "symbol": pd.NA, "name": "ABC"},
+            {"code": "US.XYZ", "symbol": pd.NA, "name": "XYZ"},
+            {"code": "US.AAPL", "symbol": "US.AAPL", "name": "Apple"},
+        ]
+    )
+    snapshot = pd.DataFrame(
+        [
+            {"symbol": "US.ABC", "snapshot_price": 20, "snapshot_volume": 100000, "snapshot_turnover": 2000000},
+            {"symbol": "US.XYZ", "snapshot_price": 30, "snapshot_volume": 100000, "snapshot_turnover": 3000000},
+            {"symbol": "US.AAPL", "snapshot_price": 190, "snapshot_volume": 1000, "snapshot_turnover": 190000},
+        ]
+    )
+
+    scored = builder._score_candidates(
+        universe,
+        snapshot,
+        pd.DataFrame(),
+        pd.DataFrame(),
+        core_symbols=["US.AAPL"],
+        min_price=2,
+        min_snapshot_turnover=1_000_000,
+        min_snapshot_volume=50_000,
+    )
+
+    assert set(scored["symbol"]) == {"US.ABC", "US.XYZ", "US.AAPL"}
+    assert "US.NAN" not in set(scored["symbol"])
