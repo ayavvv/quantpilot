@@ -91,7 +91,11 @@ import json
 import os
 from datetime import datetime, time, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None
 
 
 def parse_hhmm(value: str) -> time:
@@ -100,17 +104,17 @@ def parse_hhmm(value: str) -> time:
 
 
 def parse_now(value: str) -> datetime:
-    tz = ZoneInfo("Asia/Shanghai")
+    tz = ZoneInfo("Asia/Shanghai") if ZoneInfo is not None else None
     if not value:
-        return datetime.now(tz)
+        return datetime.now(tz) if tz is not None else datetime.now()
     parsed = datetime.fromisoformat(value)
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=tz)
-    return parsed.astimezone(tz)
+        return parsed.replace(tzinfo=tz) if tz is not None else parsed
+    return parsed.astimezone(tz) if tz is not None else parsed.replace(tzinfo=None)
 
 
-def collection_dates(base: Path) -> list[str]:
-    dates: set[str] = set()
+def collection_dates(base):
+    dates = set()
     for kind in ("manifests", "trades", "order_book", "quotes"):
         root = base / kind
         if not root.exists():
@@ -125,7 +129,7 @@ def collection_dates(base: Path) -> list[str]:
     return sorted(dates)
 
 
-def report_needed(base: Path, *, require_email: bool) -> tuple[bool, str, str]:
+def report_needed(base, require_email):
     dates = collection_dates(base)
     report_date = dates[-1] if dates else (now.date() - timedelta(days=1)).isoformat()
     status_path = base / "reports" / f"date={report_date}" / "status.json"
@@ -175,7 +179,7 @@ if collect_active and collect_end_dt is not None:
         collect_reason = f"remaining collect window too short: {collect_seconds}s"
 
 report_active = weekday in range(1, 6) and report_start <= now.time() <= report_end
-needed, report_date, report_reason = report_needed(base, require_email=require_email)
+needed, report_date, report_reason = report_needed(base, require_email)
 run_report = bool(report_active and needed)
 if not report_active:
     report_reason = "outside report recovery window"
