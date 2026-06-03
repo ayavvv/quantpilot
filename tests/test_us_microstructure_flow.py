@@ -714,6 +714,8 @@ def test_report_script_writes_warmup_artifacts(tmp_path, monkeypatch):
     assert "raw_trade_count" in quality.columns
     assert "duplicate_sequence_count" in quality.columns
     html_report = (tmp_path / "reports/date=2026-06-01/us_microstructure_flow_report.html").read_text(encoding="utf-8")
+    assert "追主力日报 - 2026-06-01" in html_report
+    assert "今日结论" in html_report
     assert "Data Quality By Symbol" in html_report
     assert "Duplicate audit" in html_report
     assert "Validation Progress By Side" in html_report
@@ -830,7 +832,7 @@ def test_report_script_records_successful_email_delivery(tmp_path, monkeypatch):
     sent = []
 
     def fake_send_email(html_content, subject, report_filename=None, report_dir=None, attachment_paths=None):
-        sent.append((subject, report_filename, Path(report_dir), [Path(path) for path in attachment_paths]))
+        sent.append((html_content, subject, report_filename, Path(report_dir), [Path(path) for path in attachment_paths]))
         return True
 
     monkeypatch.setattr(report_script, "_is_final_report", lambda date: True)
@@ -854,9 +856,11 @@ def test_report_script_records_successful_email_delivery(tmp_path, monkeypatch):
     assert len(sent) == 1
     assert status["email_delivery"]["requested"] is True
     assert status["email_delivery"]["sent"] is True
-    assert status["email_delivery"]["subject"] == "US Microstructure Flow - warmup, 0 validated"
+    assert status["email_delivery"]["subject"] == "追主力日报 - 暖场验证中，暂无高置信信号"
     assert len(status["email_delivery"]["attachment_paths"]) == 3
-    assert sent[0][3][-1].name == "status.json"
+    assert "今日结论" in sent[0][0]
+    assert sent[0][1] == "追主力日报 - 暖场验证中，暂无高置信信号"
+    assert sent[0][4][-1].name == "status.json"
 
 
 def test_report_script_returns_nonzero_when_email_delivery_fails(tmp_path, monkeypatch):

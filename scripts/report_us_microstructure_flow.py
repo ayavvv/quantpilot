@@ -859,6 +859,188 @@ def _quality_markdown_table(data_quality: dict[str, object]) -> str:
     return header + sep + "\n".join(body) + "\n"
 
 
+def _side_label_cn(side: object) -> str:
+    return {
+        "accumulation": "吸筹",
+        "distribution": "出货",
+    }.get(str(side or "").lower(), "未知")
+
+
+def _confidence_label_cn(confidence: object) -> str:
+    return {
+        "high": "高置信",
+        "watch": "观察",
+        "diagnostic": "诊断",
+    }.get(str(confidence or "").lower(), str(confidence or "未知"))
+
+
+def _state_label_cn(gate: dict[str, object]) -> str:
+    if bool(gate.get("validated")):
+        return "已验证"
+    state = str(gate.get("state") or "warmup").lower()
+    return {
+        "warmup": "暖场验证中",
+        "disabled": "验证未启用",
+        "validated": "已验证",
+    }.get(state, state or "未知")
+
+
+def _blocker_cn(blocker: object) -> str:
+    text = str(blocker or "")
+    return {
+        "validation gate is not promoted": "验证门槛还没有通过",
+        "data-quality gate is not passing": "数据质量还没有达标",
+        "full-session NAS raw uploads are incomplete": "NAS 全天原始数据上传还不完整",
+        "report is not a final post-close report": "当前还不是收盘后的最终报告",
+    }.get(text, text)
+
+
+def _side_counts(signals: pd.DataFrame, confidence: str | None = None) -> tuple[int, int, int]:
+    if signals.empty or "side" not in signals.columns:
+        return (0, 0, 0)
+    frame = signals
+    if confidence is not None:
+        if "confidence" not in frame.columns:
+            return (0, 0, 0)
+        frame = frame[frame["confidence"].astype(str).str.lower() == str(confidence).lower()]
+    sides = frame["side"].astype(str).str.lower() if not frame.empty else pd.Series(dtype=str)
+    total = int(len(frame))
+    accumulation = int((sides == "accumulation").sum())
+    distribution = int((sides == "distribution").sum())
+    return (total, accumulation, distribution)
+
+
+def _top_signal_lines_cn(signals: pd.DataFrame, *, confidence: str, limit: int = 5) -> list[str]:
+    if signals.empty or "confidence" not in signals.columns:
+        return []
+    frame = signals[signals["confidence"].astype(str).str.lower() == confidence.lower()].copy()
+    if frame.empty:
+        return []
+    if "side_score" in frame.columns:
+        frame["_score_sort"] = pd.to_numeric(frame["side_score"], errors="coerce").fillna(0.0)
+        frame = frame.sort_values("_score_sort", ascending=False)
+    lines = []
+    for _, row in frame.head(limit).iterrows():
+        symbol = str(row.get("symbol") or "").replace("US.", "")
+        side = _side_label_cn(row.get("side"))
+        confidence_label = _confidence_label_cn(row.get("confidence"))
+        score = _score(row.get("side_score"))
+        net_active = _money(row.get("net_active_dollar"))
+        buy_ratio = _pct(row.get("active_buy_ratio"))
+        lines.append(f"{symbol}：{side}，{confidence_label}，分数 {score}，净主动资金 {net_active}，主动买入占比 {buy_ratio}")
+    return lines
+
+
+def _chinese_conclusion_lines(
+    *,
+    signals: pd.DataFrame,
+    validation_gate: dict[str, object],
+    data_quality: dict[str, object],
+    validation_progress: dict[str, object],
+    confidence_gap: dict[str, object],
+) -> list[str]:
+    high_count, high_accumulation, high_distribution = _side_counts(signals, "high")
+    watch_count, _, _ = _side_counts(signals, "watch")
+    diagnostic_count, _, _ = _side_counts(signals, "diagnostic")
+    state = _state_label_cn(validation_gate)
+    if high_count > 0:
+        first_line = f"结论：今日有 {high_count} 个高置信追主力信号（吸筹 {high_accumulation} 个，出货 {high_distribution} 个）。"
+    elif bool(confidence_gap.get("ready")):
+        first_line = "结论：今日没有高置信主力进出信号。"
+    else:
+        first_line = "结论：今日不发布高置信主力进出结论，当前仍在验证或数据质量检查阶段。"
+
+    requirements = confidence_gap.get("requirements", {})
+    if not isinstance(requirements, dict):
+        requirements = {}
+    final_report = "是" if bool(requirements.get("final_report_complete")) else "否"
+    readiness = "已满足" if bool(confidence_gap.get("ready")) else "未满足"
+    nas_status = "完整" if bool(data_quality.get("nas_upload_complete")) else "不完整"
+    blockers = confidence_gap.get("blockers", [])
+    if not isinstance(blockers, list):
+        blockers = []
+
+    lines = [
+        first_line,
+        f"当前状态：{state}；高置信 {high_count} 个，观察 {watch_count} 个，诊断 {diagnostic_count} 个。",
+        f"报告口径：收盘后最终报告={final_report}；高置信发布条件={readiness}。",
+        "数据质量：合格股票 {eligible}/{total}；NAS 原始数据上传{nas_status}；成交/挂单覆盖中位数 {trade}/{book}。".format(
+            eligible=int(data_quality.get("eligible_symbol_count") or 0),
+            total=int(data_quality.get("symbol_count") or 0),
+            nas_status=nas_status,
+            trade=_pct(data_quality.get("median_trade_coverage_ratio_regular")),
+            book=_pct(data_quality.get("median_book_coverage_ratio_regular")),
+        ),
+        "验证样本：正式 {events} 个事件 / {returns} 行 forward return；影子校准 {shadow_events}/{shadow_returns}；探索校准 {explore_events}/{explore_returns}。".format(
+            events=int(validation_progress.get("event_count") or 0),
+            returns=int(validation_progress.get("forward_return_count") or 0),
+            shadow_events=int(validation_progress.get("shadow_event_count") or 0),
+            shadow_returns=int(validation_progress.get("shadow_forward_return_count") or 0),
+            explore_events=int(validation_progress.get("exploration_event_count") or 0),
+            explore_returns=int(validation_progress.get("exploration_forward_return_count") or 0),
+        ),
+    ]
+    if blockers:
+        lines.append("没有高置信的主要原因：" + "；".join(_blocker_cn(item) for item in blockers[:4]) + "。")
+
+    top_high = _top_signal_lines_cn(signals, confidence="high")
+    if top_high:
+        lines.append("高置信标的：" + "；".join(top_high) + "。")
+    else:
+        top_watch = _top_signal_lines_cn(signals, confidence="watch")
+        if top_watch:
+            lines.append("今日观察候选：" + "；".join(top_watch) + "。")
+        else:
+            lines.append("今日观察候选：暂无。")
+    lines.append("口径说明：这里抓的是逐笔成交、盘口和报价共同指向的隐蔽吸筹/出货迹象，不等同于确认具体机构账户身份。")
+    return lines
+
+
+def _chinese_conclusion_markdown(
+    *,
+    signals: pd.DataFrame,
+    validation_gate: dict[str, object],
+    data_quality: dict[str, object],
+    validation_progress: dict[str, object],
+    confidence_gap: dict[str, object],
+) -> str:
+    lines = _chinese_conclusion_lines(
+        signals=signals,
+        validation_gate=validation_gate,
+        data_quality=data_quality,
+        validation_progress=validation_progress,
+        confidence_gap=confidence_gap,
+    )
+    return "## 今日结论\n\n" + "\n".join(f"- {line}" for line in lines) + "\n"
+
+
+def _chinese_conclusion_html(
+    *,
+    signals: pd.DataFrame,
+    validation_gate: dict[str, object],
+    data_quality: dict[str, object],
+    validation_progress: dict[str, object],
+    confidence_gap: dict[str, object],
+) -> str:
+    lines = _chinese_conclusion_lines(
+        signals=signals,
+        validation_gate=validation_gate,
+        data_quality=data_quality,
+        validation_progress=validation_progress,
+        confidence_gap=confidence_gap,
+    )
+    if not lines:
+        return ""
+    items = "".join(f"<li>{html.escape(line)}</li>" for line in lines[1:])
+    return (
+        "<section class='cn-summary'>"
+        "<h2>今日结论</h2>"
+        f"<p><strong>{html.escape(lines[0])}</strong></p>"
+        f"<ul>{items}</ul>"
+        "</section>"
+    )
+
+
 def render_markdown_report(
     *,
     date: str,
@@ -883,7 +1065,15 @@ def render_markdown_report(
     high_count = int((signals.get("confidence", pd.Series(dtype=str)) == "high").sum()) if not signals.empty else 0
     state = str(validation_gate.get("state") or "warmup")
     lines = [
-        f"# US Microstructure Flow Report - {date}",
+        f"# 追主力日报 - {date}",
+        "",
+        _chinese_conclusion_markdown(
+            signals=signals,
+            validation_gate=validation_gate,
+            data_quality=data_quality,
+            validation_progress=validation_progress,
+            confidence_gap=confidence_gap,
+        ),
         "",
         f"State: `{state}`",
         f"High-confidence candidates: `{high_count}`",
@@ -1249,6 +1439,13 @@ def render_html_report(
     high_count = int((signals.get("confidence", pd.Series(dtype=str)) == "high").sum()) if not signals.empty else 0
     state = html.escape(str(validation_gate.get("state") or "warmup"))
     reason = html.escape(str(validation_gate.get("reason") or ""))
+    chinese_conclusion = _chinese_conclusion_html(
+        signals=signals,
+        validation_gate=validation_gate,
+        data_quality=data_quality,
+        validation_progress=validation_progress,
+        confidence_gap=confidence_gap,
+    )
     return f"""
 <html>
 <head>
@@ -1260,6 +1457,11 @@ h1 {{ border-bottom: 2px solid #263238; padding-bottom: 8px; }}
 .value {{ font-size: 22px; font-weight: 700; }}
 .label {{ color: #667085; font-size: 12px; }}
 .gate {{ border-left: 4px solid #9aa5b1; background: #f5f7fa; padding: 10px 14px; margin: 16px 0; }}
+.cn-summary {{ border-left: 5px solid #16794c; background: #f1f8f4; padding: 14px 18px; margin: 18px 0; }}
+.cn-summary h2 {{ margin: 0 0 8px; }}
+.cn-summary p {{ margin: 0 0 10px; }}
+.cn-summary ul {{ margin: 0; padding-left: 20px; }}
+.cn-summary li {{ margin: 6px 0; line-height: 1.5; }}
 table {{ border-collapse: collapse; width: 100%; margin-top: 12px; }}
 th, td {{ border: 1px solid #d9e2ec; padding: 7px; text-align: left; font-size: 13px; }}
 th {{ background: #263238; color: #fff; }}
@@ -1269,11 +1471,12 @@ tr.sell {{ background: #fff1f2; }}
 </style>
 </head>
 <body>
-<h1>US Microstructure Flow Report - {html.escape(date)}</h1>
-<div class="metric"><div class="value">{state}</div><div class="label">Report State</div></div>
-<div class="metric"><div class="value">{high_count}</div><div class="label">High-confidence Candidates</div></div>
-<div class="metric"><div class="value">{coverage['symbol_count']}</div><div class="label">Symbols</div></div>
-<div class="metric"><div class="value">{coverage['minute_count']}</div><div class="label">Feature Minutes</div></div>
+<h1>追主力日报 - {html.escape(date)}</h1>
+<div class="metric"><div class="value">{state}</div><div class="label">报告状态</div></div>
+<div class="metric"><div class="value">{high_count}</div><div class="label">高置信信号</div></div>
+<div class="metric"><div class="value">{coverage['symbol_count']}</div><div class="label">股票数</div></div>
+<div class="metric"><div class="value">{coverage['minute_count']}</div><div class="label">特征分钟数</div></div>
+{chinese_conclusion}
 <p class="muted">Uses Futu OpenD tick prints, order-book snapshots, and quotes. It does not claim account-level institutional identity.</p>
 <div class="gate"><strong>Validation gate:</strong> validated={bool(validation_gate.get('validated'))}; {reason}</div>
 <div class="gate"><strong>Validation samples:</strong> events={validation_progress.get('event_count', 0)}; forward_returns={validation_progress.get('forward_return_count', 0)}; promotion_horizon={validation_progress.get('promotion_horizon', 0)}d; benchmark={html.escape(str(validation_progress.get('benchmark') or 'n/a'))}</div>
@@ -1401,12 +1604,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _subject(signals: pd.DataFrame, gate: dict[str, object]) -> str:
-    high = signals[signals["confidence"] == "high"] if not signals.empty and "confidence" in signals else pd.DataFrame()
-    if bool(gate.get("validated")) and not high.empty:
-        buys = int((high["side"] == "accumulation").sum())
-        sells = int((high["side"] == "distribution").sum())
-        return f"US Micro Flow - {buys} accumulation / {sells} distribution"
-    return "US Microstructure Flow - warmup, 0 validated"
+    high_count, accumulation_count, distribution_count = _side_counts(signals, "high")
+    if high_count > 0:
+        return f"追主力日报 - 高置信 {high_count} 个（吸筹 {accumulation_count} / 出货 {distribution_count}）"
+    return f"追主力日报 - {_state_label_cn(gate)}，暂无高置信信号"
 
 
 def _email_delivery_payload(
