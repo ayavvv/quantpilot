@@ -1812,6 +1812,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.send_email:
         from reporter.send_report import send_email
 
+        os.environ.setdefault("REPORT_DELIVERY_METHOD", "smtp")
+        os.environ.setdefault("SMTP_RETRIES", "3")
+        os.environ.setdefault("SENDMAIL_FALLBACK", "false")
+        os.environ.setdefault("MAIL_APP_FALLBACK", "false")
+
         attachment_paths = [outputs["signals"], outputs["data_quality"], outputs["status"]]
         status["email_delivery"] = _email_delivery_payload(
             requested=True,
