@@ -684,6 +684,9 @@ def _load_coarse_universe_summary(base_dir: Path, date: str) -> dict[str, object
         "minute_symbol_count": _count(payload.get("minute_symbol_count")),
         "candidate_count": _count(payload.get("candidate_count")),
         "core_symbol_count": _count(payload.get("core_symbol_count")),
+        "core_symbol_source": str(payload.get("core_symbol_source") or ""),
+        "core_symbol_fallback_used": bool(payload.get("core_symbol_fallback_used")),
+        "core_watchlist_us_symbol_count": _count(payload.get("core_watchlist_us_symbol_count")),
         "candidate_core_count": _count(payload.get("candidate_core_count")),
         "snapshot_error_count": _count(payload.get("snapshot_error_count")),
         "daily_error_count": _count(payload.get("daily_error_count")),
@@ -699,6 +702,7 @@ def _coarse_universe_markdown(summary: dict[str, object]) -> str:
         f"- 状态 / 日期：`{summary.get('status')}` / `{summary.get('date') or 'n/a'}`",
         f"- 全市场股票数 / 快照覆盖 / 日线覆盖 / 分钟线覆盖：`{summary.get('universe_count', 0)}` / `{summary.get('snapshot_symbol_count', 0)}` / `{summary.get('daily_symbol_count', 0)}` / `{summary.get('minute_symbol_count', 0)}`",
         f"- 候选池：`{summary.get('candidate_count', 0)}`，目标 `{summary.get('target_size', 0)}`；核心标的保留 `{summary.get('candidate_core_count', 0)}` / `{summary.get('core_symbol_count', 0)}`",
+        f"- 核心来源：`{_core_symbol_source_cn(summary.get('core_symbol_source'))}`；Futu 自选股美股数 `{summary.get('core_watchlist_us_symbol_count', 0)}`；启用静态兜底 `{_yes_no_cn(summary.get('core_symbol_fallback_used'))}`",
         f"- 快照 / 日线 / 分钟线错误数：`{summary.get('snapshot_error_count', 0)}` / `{summary.get('daily_error_count', 0)}` / `{summary.get('minute_error_count', 0)}`",
     ]
     issues = summary.get("issues", [])
@@ -715,7 +719,7 @@ def _coarse_universe_html(summary: dict[str, object]) -> str:
     return (
         "<div class='gate'><strong>粗筛股票池：</strong>可用={exists}；状态={status}；"
         "日期={date}；全市场={universe}；快照覆盖={snapshot}；日线覆盖={daily}；分钟线覆盖={minute}；"
-        "候选={candidates}/{target}；核心={candidate_core}/{core}；"
+        "候选={candidates}/{target}；核心={candidate_core}/{core}；核心来源={core_source}；Futu自选美股={watchlist_core}；静态兜底={fallback_used}；"
         "错误数（快照/日线/分钟线）={snapshot_errors}/{daily_errors}/{minute_errors}{issues}</div>"
     ).format(
         exists=_yes_no_cn(summary.get("exists")),
@@ -729,6 +733,9 @@ def _coarse_universe_html(summary: dict[str, object]) -> str:
         target=int(summary.get("target_size") or 0),
         candidate_core=int(summary.get("candidate_core_count") or 0),
         core=int(summary.get("core_symbol_count") or 0),
+        core_source=html.escape(_core_symbol_source_cn(summary.get("core_symbol_source"))),
+        watchlist_core=int(summary.get("core_watchlist_us_symbol_count") or 0),
+        fallback_used=_yes_no_cn(summary.get("core_symbol_fallback_used")),
         snapshot_errors=int(summary.get("snapshot_error_count") or 0),
         daily_errors=int(summary.get("daily_error_count") or 0),
         minute_errors=int(summary.get("minute_error_count") or 0),
@@ -901,6 +908,17 @@ def _blocker_cn(blocker: object) -> str:
 
 def _yes_no_cn(value: object) -> str:
     return "是" if bool(value) else "否"
+
+
+def _core_symbol_source_cn(value: object) -> str:
+    text = str(value or "").strip()
+    return {
+        "futu_watchlist": "Futu 自选股",
+        "file_fallback": "静态文件兜底",
+        "file": "静态文件",
+        "explicit": "显式传入",
+        "none": "未启用",
+    }.get(text, text or "未知")
 
 
 def _reason_cn(reason: object) -> str:

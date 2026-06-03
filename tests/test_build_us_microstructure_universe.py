@@ -68,6 +68,117 @@ class FakeUniverseCtx:
         return 0, pd.DataFrame(self.minute_rows.get(code, []))
 
 
+class FakeWatchlistCtx:
+    def __init__(self):
+        self.group_type = None
+        self.securities = {
+            "美股": [
+                {"code": "US.LI", "stock_type": "STOCK", "option_type": "N/A"},
+                {"code": "US.QQQ", "stock_type": "ETF", "option_type": "N/A"},
+                {"code": "HK.00700", "stock_type": "STOCK", "option_type": "N/A"},
+                {"code": "US.AAPL260619C00190000", "stock_type": "DRVT", "option_type": "CALL"},
+            ],
+            "Growth": [
+                {"code": "TSLA", "stock_type": "STOCK", "option_type": "N/A"},
+                {"code": "US.LI", "stock_type": "STOCK", "option_type": "N/A"},
+            ],
+        }
+
+    def get_user_security_group(self, group_type="ALL"):
+        self.group_type = group_type
+        return 0, pd.DataFrame(
+            [
+                {"group_name": "美股", "group_type": "CUSTOM"},
+                {"group_name": "Growth", "group_type": "CUSTOM"},
+            ]
+        )
+
+    def get_user_security(self, group_name):
+        return 0, pd.DataFrame(self.securities.get(group_name, []))
+
+
+class FakeAggregateWatchlistCtx:
+    def __init__(self):
+        self.groups_requested = []
+
+    def get_user_security_group(self, group_type="ALL"):
+        return 0, pd.DataFrame(
+            [
+                {"group_name": "US", "group_type": "SYSTEM"},
+                {"group_name": "All", "group_type": "SYSTEM"},
+                {"group_name": "Growth", "group_type": "CUSTOM"},
+            ]
+        )
+
+    def get_user_security(self, group_name):
+        self.groups_requested.append(group_name)
+        if group_name != "All":
+            return 1, "rate limited"
+        return 0, pd.DataFrame(
+            [
+                {"code": "US.AAPL", "stock_type": "STOCK", "option_type": "N/A"},
+                {"code": "US.LI", "stock_type": "STOCK", "option_type": "N/A"},
+            ]
+        )
+
+
+class FailingWatchlistCtx:
+    def get_user_security_group(self, group_type="ALL"):
+        return 1, "not logged in"
+
+
+def test_resolve_core_symbols_prefers_futu_watchlist(tmp_path):
+    core_file = tmp_path / "core.txt"
+    core_file.write_text("US.SPY\n", encoding="utf-8")
+    ctx = FakeWatchlistCtx()
+
+    symbols, meta = builder.resolve_core_symbols(
+        ctx,
+        core_symbols_file=core_file,
+        core_source="futu_watchlist",
+    )
+
+    assert symbols == ["US.LI", "US.QQQ", "US.TSLA"]
+    assert ctx.group_type == "ALL"
+    assert meta["core_symbol_source"] == "futu_watchlist"
+    assert meta["core_symbol_fallback_used"] is False
+    assert meta["core_watchlist_group_count"] == 2
+    assert meta["core_watchlist_us_symbol_count"] == 3
+
+
+def test_resolve_core_symbols_uses_aggregate_watchlist_group_when_available(tmp_path):
+    core_file = tmp_path / "core.txt"
+    core_file.write_text("US.SPY\n", encoding="utf-8")
+    ctx = FakeAggregateWatchlistCtx()
+
+    symbols, meta = builder.resolve_core_symbols(
+        ctx,
+        core_symbols_file=core_file,
+        core_source="futu_watchlist",
+    )
+
+    assert symbols == ["US.AAPL", "US.LI"]
+    assert ctx.groups_requested == ["All"]
+    assert meta["core_watchlist_groups"] == ["All"]
+    assert meta["core_watchlist_error_count"] == 0
+
+
+def test_resolve_core_symbols_falls_back_to_static_file_when_watchlist_unavailable(tmp_path):
+    core_file = tmp_path / "core.txt"
+    core_file.write_text("US.SPY\nUS.LI\n", encoding="utf-8")
+
+    symbols, meta = builder.resolve_core_symbols(
+        FailingWatchlistCtx(),
+        core_symbols_file=core_file,
+        core_source="futu_watchlist",
+    )
+
+    assert symbols == ["US.SPY", "US.LI"]
+    assert meta["core_symbol_source"] == "file_fallback"
+    assert meta["core_symbol_fallback_used"] is True
+    assert "get_user_security_group" in meta["core_symbol_fallback_reason"]
+
+
 def test_build_universe_scores_broad_market_and_keeps_core_symbol(tmp_path):
     candidates, scored, status = builder.build_universe(
         ctx=FakeUniverseCtx(),

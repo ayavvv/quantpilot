@@ -37,8 +37,14 @@ def test_collect_script_runs_futu_collector_with_nas_and_lock():
     assert "US_MICROSTRUCTURE_BUILD_UNIVERSE" in content
     assert "US_MICROSTRUCTURE_DYNAMIC_UNIVERSE_FILE" in content
     assert "US_MICROSTRUCTURE_UNIVERSE_TARGET_SIZE" in content
+    assert "US_MICROSTRUCTURE_CORE_SOURCE" in content
+    assert "US_MICROSTRUCTURE_CORE_WATCHLIST_GROUPS" in content
+    assert "US_MICROSTRUCTURE_CORE_WATCHLIST_GROUP_TYPE" in content
     assert "US_MICROSTRUCTURE_UNIVERSE_FILE" in content
     assert "config/us_microstructure_core_symbols.txt" in content
+    assert "--core-source" in content
+    assert "--core-watchlist-groups" in content
+    assert "--core-watchlist-group-type" in content
     assert '"$PYTHON_BIN" -m scripts.build_us_microstructure_universe' in content
     assert "dynamic universe build failed" in content
     assert "--nas-host" in content

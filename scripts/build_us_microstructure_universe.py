@@ -31,6 +31,10 @@ DATA_DIR = Path(os.environ.get("DATA_DIR", str(Path.home() / "quantpilot_data"))
 DEFAULT_BASE_DIR = Path(os.environ.get("US_MICROSTRUCTURE_DIR", str(DATA_DIR / "us_microstructure")))
 DEFAULT_NAS_DIR = "/volume1/docker/quantpilot/us_microstructure"
 DEFAULT_CORE_SYMBOLS_FILE = Path(__file__).resolve().parents[1] / "config" / "us_microstructure_core_symbols.txt"
+DEFAULT_CORE_SOURCE = "futu_watchlist"
+DEFAULT_CORE_WATCHLIST_GROUP_TYPE = "ALL"
+DEFAULT_CORE_WATCHLIST_MAX_GROUPS = 8
+FUTU_WATCHLIST_RATE_LIMIT_SLEEP_SECONDS = 31.0
 US_EASTERN = ZoneInfo("America/New_York")
 STATUS_SCHEMA_VERSION = 1
 
@@ -61,6 +65,225 @@ def _read_symbol_file(path: str | Path) -> list[str]:
         return []
     values = [line.strip() for line in resolved.read_text(encoding="utf-8").splitlines() if line.strip()]
     return normalize_us_symbols(values)
+
+
+def _normalize_core_source(value: object) -> str:
+    source = str(value or DEFAULT_CORE_SOURCE).strip().lower().replace("-", "_")
+    aliases = {
+        "futu": "futu_watchlist",
+        "watchlist": "futu_watchlist",
+        "futu_watchlist": "futu_watchlist",
+        "file": "file",
+        "static": "file",
+        "static_file": "file",
+        "core_file": "file",
+        "none": "none",
+        "disabled": "none",
+    }
+    if source not in aliases:
+        raise ValueError(f"unsupported core source: {value}")
+    return aliases[source]
+
+
+def _split_group_names(value: object) -> list[str]:
+    if value is None:
+        raw_values: Iterable[object] = []
+    elif isinstance(value, (list, tuple, set)):
+        raw_values = value
+    else:
+        raw_values = str(value).split(",")
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in raw_values:
+        name = str(item or "").strip()
+        if name and name not in seen:
+            result.append(name)
+            seen.add(name)
+    return result
+
+
+def _normalize_watchlist_code(value: object) -> str:
+    text = str(value or "").strip().upper()
+    if not text:
+        return ""
+    if text.startswith("US."):
+        return normalize_us_symbol(text)
+    if "." in text:
+        return ""
+    if not any(char.isalpha() for char in text):
+        return ""
+    return normalize_us_symbol(text)
+
+
+def _extract_us_watchlist_symbols(data: Any) -> tuple[list[str], int]:
+    frame = pd.DataFrame(data).copy() if data is not None else pd.DataFrame()
+    if frame.empty or "code" not in frame.columns:
+        return [], int(len(frame))
+
+    if "stock_type" in frame.columns:
+        stock_type = frame["stock_type"].fillna("").astype(str).str.upper()
+        frame = frame[stock_type.isin({"", "N/A", "STOCK", "ETF"})].copy()
+    if "option_type" in frame.columns:
+        option_type = frame["option_type"].fillna("").astype(str).str.upper()
+        frame = frame[option_type.isin({"", "N/A"})].copy()
+
+    return normalize_us_symbols(_normalize_watchlist_code(value) for value in frame["code"].tolist()), int(len(frame))
+
+
+def _select_default_watchlist_groups(group_frame: pd.DataFrame, *, max_groups: int = DEFAULT_CORE_WATCHLIST_MAX_GROUPS) -> list[str]:
+    if group_frame.empty or "group_name" not in group_frame.columns:
+        return []
+    names = _split_group_names(group_frame["group_name"].dropna().tolist())
+    name_by_lower = {name.lower(): name for name in names}
+    for preferred in ("All", "全部", "Favorites", "自选股"):
+        if preferred.lower() in name_by_lower:
+            return [name_by_lower[preferred.lower()]]
+
+    custom_names: list[str] = []
+    if "group_type" in group_frame.columns:
+        frame = group_frame.copy()
+        frame["group_type"] = frame["group_type"].fillna("").astype(str).str.upper()
+        custom_names = _split_group_names(frame.loc[frame["group_type"] == "CUSTOM", "group_name"].dropna().tolist())
+    selected = custom_names or names
+    return selected[: max(1, int(max_groups))]
+
+
+def _is_futu_watchlist_rate_limit_error(value: object) -> bool:
+    text = str(value or "").lower()
+    return "too frequent" in text or "频繁" in text or "频率" in text
+
+
+def _fetch_watchlist_groups_once(ctx: Any, groups: list[str]) -> tuple[list[str], dict[str, dict[str, int]], dict[str, str]]:
+    from futu import RET_OK
+
+    all_symbols: list[str] = []
+    group_status: dict[str, dict[str, int]] = {}
+    errors: dict[str, str] = {}
+    for group in groups:
+        try:
+            ret, data = ctx.get_user_security(group)
+        except Exception as exc:
+            errors[group] = str(exc)
+            continue
+        if ret != RET_OK:
+            errors[group] = str(data)
+            continue
+        symbols, row_count = _extract_us_watchlist_symbols(data)
+        group_status[group] = {
+            "row_count": int(row_count),
+            "us_symbol_count": int(len(symbols)),
+        }
+        all_symbols.extend(symbols)
+    return normalize_us_symbols(all_symbols), group_status, errors
+
+
+def fetch_futu_watchlist_core_symbols(
+    ctx: Any,
+    *,
+    group_names: object = "",
+    group_type: str = DEFAULT_CORE_WATCHLIST_GROUP_TYPE,
+) -> tuple[list[str], dict[str, object]]:
+    from futu import RET_OK
+
+    requested_groups = _split_group_names(group_names)
+    resolved_group_type = str(group_type or DEFAULT_CORE_WATCHLIST_GROUP_TYPE).strip().upper()
+    meta: dict[str, object] = {
+        "core_watchlist_group_type": resolved_group_type,
+        "core_watchlist_groups_requested": requested_groups,
+        "core_watchlist_groups": [],
+        "core_watchlist_group_count": 0,
+        "core_watchlist_error_count": 0,
+        "core_watchlist_errors": {},
+        "core_watchlist_us_symbol_count": 0,
+    }
+    if ctx is None:
+        meta["core_watchlist_error"] = "futu quote context unavailable"
+        return [], meta
+
+    groups = list(requested_groups)
+    if not groups:
+        try:
+            ret, data = ctx.get_user_security_group(group_type=resolved_group_type)
+        except Exception as exc:
+            meta["core_watchlist_error"] = f"get_user_security_group: {exc}"
+            return [], meta
+        if ret != RET_OK:
+            meta["core_watchlist_error"] = f"get_user_security_group: {data}"
+            return [], meta
+        group_frame = pd.DataFrame(data).copy() if data is not None else pd.DataFrame()
+        if group_frame.empty or "group_name" not in group_frame.columns:
+            meta["core_watchlist_error"] = "get_user_security_group: empty"
+            return [], meta
+        meta["core_watchlist_groups_discovered"] = _split_group_names(group_frame["group_name"].dropna().tolist())
+        groups = _select_default_watchlist_groups(group_frame)
+
+    symbols, group_status, errors = _fetch_watchlist_groups_once(ctx, groups)
+    if not symbols and errors and any(_is_futu_watchlist_rate_limit_error(error) for error in errors.values()):
+        time.sleep(FUTU_WATCHLIST_RATE_LIMIT_SLEEP_SECONDS)
+        retry_symbols, retry_group_status, retry_errors = _fetch_watchlist_groups_once(ctx, groups)
+        if retry_symbols:
+            symbols = retry_symbols
+            group_status = retry_group_status
+            errors = retry_errors
+            meta["core_watchlist_rate_limit_retry"] = True
+
+    meta.update(
+        {
+            "core_watchlist_groups": groups,
+            "core_watchlist_group_count": int(len(groups)),
+            "core_watchlist_group_status": group_status,
+            "core_watchlist_error_count": int(len(errors)),
+            "core_watchlist_errors": dict(list(errors.items())[:20]),
+            "core_watchlist_us_symbol_count": int(len(symbols)),
+        }
+    )
+    if errors and not symbols:
+        meta["core_watchlist_error"] = "; ".join(f"{group}: {error}" for group, error in list(errors.items())[:3])
+    elif not symbols:
+        meta["core_watchlist_error"] = "no US symbols in Futu watchlist"
+    return symbols, meta
+
+
+def resolve_core_symbols(
+    ctx: Any,
+    *,
+    core_symbols_file: str | Path,
+    core_source: object = DEFAULT_CORE_SOURCE,
+    core_watchlist_groups: object = "",
+    core_watchlist_group_type: str = DEFAULT_CORE_WATCHLIST_GROUP_TYPE,
+) -> tuple[list[str], dict[str, object]]:
+    source = _normalize_core_source(core_source)
+    file_symbols = _read_symbol_file(core_symbols_file)
+    meta: dict[str, object] = {
+        "core_symbol_source_requested": source,
+        "core_symbols_file": str(Path(core_symbols_file).expanduser()),
+        "core_file_symbol_count": int(len(file_symbols)),
+    }
+    if source == "none":
+        meta.update({"core_symbol_source": "none", "core_symbol_fallback_used": False})
+        return [], meta
+    if source == "file":
+        meta.update({"core_symbol_source": "file", "core_symbol_fallback_used": False})
+        return file_symbols, meta
+
+    watchlist_symbols, watchlist_meta = fetch_futu_watchlist_core_symbols(
+        ctx,
+        group_names=core_watchlist_groups,
+        group_type=core_watchlist_group_type,
+    )
+    meta.update(watchlist_meta)
+    if watchlist_symbols:
+        meta.update({"core_symbol_source": "futu_watchlist", "core_symbol_fallback_used": False})
+        return watchlist_symbols, meta
+
+    meta.update(
+        {
+            "core_symbol_source": "file_fallback",
+            "core_symbol_fallback_used": True,
+            "core_symbol_fallback_reason": str(watchlist_meta.get("core_watchlist_error") or "no US watchlist symbols"),
+        }
+    )
+    return file_symbols, meta
 
 
 def _number(value: object, default: float = 0.0) -> float:
@@ -558,6 +781,7 @@ def build_universe(
     minute_sleep_seconds: float,
     skip_daily_kline: bool,
     skip_minute_kline: bool,
+    core_metadata: dict[str, object] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, object]]:
     from futu import AuType, KLType
 
@@ -643,6 +867,7 @@ def build_universe(
         "minute_symbol_count": int(minute["symbol"].nunique()) if not minute.empty and "symbol" in minute.columns else 0,
         "candidate_count": int(len(candidates)),
         "core_symbol_count": int(len(normalize_us_symbols(core_symbols))),
+        "core_symbol_source": "explicit",
         "candidate_core_count": int(candidates["core_symbol"].sum()) if not candidates.empty and "core_symbol" in candidates.columns else 0,
         "candidate_liquidity_ranked_count": int(selection_source.get("liquidity_ranked", 0)),
         "candidate_fallback_ranked_count": int(selection_source.get("fallback_ranked", 0)),
@@ -671,6 +896,9 @@ def build_universe(
             ]
         ].to_dict("records") if not candidates.empty else [],
     }
+    if core_metadata:
+        status.update(core_metadata)
+        status["core_symbol_count"] = int(len(normalize_us_symbols(core_symbols)))
     return candidates, scored, status
 
 
@@ -692,6 +920,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--date", default=os.environ.get("US_MICROSTRUCTURE_UNIVERSE_DATE", _screen_date_from_utc()))
     parser.add_argument("--target-size", type=int, default=int(os.environ.get("US_MICROSTRUCTURE_UNIVERSE_TARGET_SIZE", "300")))
     parser.add_argument("--core-symbols-file", default=os.environ.get("US_MICROSTRUCTURE_CORE_SYMBOLS_FILE", str(DEFAULT_CORE_SYMBOLS_FILE)))
+    parser.add_argument("--core-source", default=os.environ.get("US_MICROSTRUCTURE_CORE_SOURCE", DEFAULT_CORE_SOURCE))
+    parser.add_argument("--core-watchlist-groups", default=os.environ.get("US_MICROSTRUCTURE_CORE_WATCHLIST_GROUPS", ""))
+    parser.add_argument("--core-watchlist-group-type", default=os.environ.get("US_MICROSTRUCTURE_CORE_WATCHLIST_GROUP_TYPE", DEFAULT_CORE_WATCHLIST_GROUP_TYPE))
     parser.add_argument("--host", default=os.environ.get("FUTU_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("FUTU_PORT", "11111")))
     parser.add_argument("--rsa-key", default=os.environ.get("FUTU_RSA_KEY", str(DEFAULT_RSA_KEY)))
@@ -723,10 +954,16 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parse_args(argv)
     base_dir = Path(args.base_dir).expanduser()
-    core_symbols = _read_symbol_file(args.core_symbols_file)
     _configure_futu_encryption(args.rsa_key)
     ctx = OpenQuoteContext(host=args.host, port=args.port)
     try:
+        core_symbols, core_metadata = resolve_core_symbols(
+            ctx,
+            core_symbols_file=args.core_symbols_file,
+            core_source=args.core_source,
+            core_watchlist_groups=args.core_watchlist_groups,
+            core_watchlist_group_type=args.core_watchlist_group_type,
+        )
         candidates, scored, status = build_universe(
             ctx=ctx,
             base_dir=base_dir,
@@ -750,6 +987,7 @@ def main(argv: list[str] | None = None) -> int:
             minute_sleep_seconds=args.minute_sleep_seconds,
             skip_daily_kline=bool(args.skip_daily_kline),
             skip_minute_kline=bool(args.skip_minute_kline),
+            core_metadata=core_metadata,
         )
     finally:
         try:
