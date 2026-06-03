@@ -532,12 +532,12 @@ def test_intraday_replay_summary_loads_metrics_for_report(tmp_path):
     assert summary["cumulative_date_count"] == 3
     assert summary["cumulative_quality_return_count"] == 16
     assert summary["cumulative_metrics"][0]["side"] == "accumulation"
-    assert "distribution" in markdown
+    assert "出货" in markdown
     assert "50.0%" in markdown
-    assert "Cumulative metrics" in markdown
+    assert "累计指标" in markdown
     assert "70.0%" in markdown
-    assert "Intraday replay cumulative" in html
-    assert "2026-05-28 to 2026-06-01" in html
+    assert "累计日内回放" in html
+    assert "2026-05-28 到 2026-06-01" in html
 
 
 def test_signal_scoring_ignores_premarket_rows_when_session_flag_exists():
@@ -716,13 +716,13 @@ def test_report_script_writes_warmup_artifacts(tmp_path, monkeypatch):
     html_report = (tmp_path / "reports/date=2026-06-01/us_microstructure_flow_report.html").read_text(encoding="utf-8")
     assert "追主力日报 - 2026-06-01" in html_report
     assert "今日结论" in html_report
-    assert "Data Quality By Symbol" in html_report
-    assert "Duplicate audit" in html_report
-    assert "Validation Progress By Side" in html_report
-    assert "Validation Event Eligibility" in html_report
-    assert "Confidence Readiness" in html_report
-    assert "Intraday Replay Calibration" in html_report
-    assert "missing 5d validation metrics" in html_report
+    assert "分标的数据质量" in html_report
+    assert "重复序列审计" in html_report
+    assert "分方向验证进度" in html_report
+    assert "验证样本入账资格" in html_report
+    assert "高置信准备度" in html_report
+    assert "日内回放校准" in html_report
+    assert "缺少 5 日验证指标" in html_report
 
 
 def test_report_script_updates_latest_aliases_for_final_report(tmp_path, monkeypatch):

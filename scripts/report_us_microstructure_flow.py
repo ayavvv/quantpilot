@@ -496,13 +496,15 @@ def _eligibility_markdown(summary: dict[str, object]) -> str:
     blockers = summary.get("blocking_counts", {})
     if not isinstance(blockers, dict):
         blockers = {}
+    blocker_text = ", ".join(
+        f"{_blocking_count_label_cn(key)}={value}" for key, value in sorted(blockers.items())
+    )
     lines = [
-        f"- Ledger-eligible events now: `{summary.get('validation_eligible_count', 0)}`",
-        f"- Ledger-eligible if this were final: `{summary.get('validation_eligible_if_final_count', 0)}`",
-        f"- Score pass / near score: `{summary.get('score_pass_count', 0)}` / `{summary.get('near_score_count', 0)}`; max score `{_score(summary.get('max_side_score'))}`",
-        f"- Watch-or-high / data-quality-pass / final rows: `{summary.get('watch_or_high_count', 0)}` / `{summary.get('data_quality_pass_count', 0)}` / `{summary.get('final_report_count', 0)}`",
-        "- Blockers: "
-        + ", ".join(f"{key}={value}" for key, value in sorted(blockers.items())),
+        f"- 当前可进入验证样本账本：`{summary.get('validation_eligible_count', 0)}`",
+        f"- 如果这是最终报告，可进入验证样本账本：`{summary.get('validation_eligible_if_final_count', 0)}`",
+        f"- 分数达标 / 接近达标：`{summary.get('score_pass_count', 0)}` / `{summary.get('near_score_count', 0)}`；最高分 `{_score(summary.get('max_side_score'))}`",
+        f"- 观察或高置信 / 数据质量通过 / 最终报告行数：`{summary.get('watch_or_high_count', 0)}` / `{summary.get('data_quality_pass_count', 0)}` / `{summary.get('final_report_count', 0)}`",
+        f"- 未进入样本的原因计数：{blocker_text}",
     ]
     return "\n".join(lines) + "\n"
 
@@ -510,10 +512,10 @@ def _eligibility_markdown(summary: dict[str, object]) -> str:
 def _validation_markdown_table(progress: dict[str, object]) -> str:
     rows = progress.get("sides", [])
     if not isinstance(rows, list) or not rows:
-        return "No validation-side rows.\n"
+        return "没有按方向拆分的验证记录。\n"
     header = (
-        "| Side | Validated | Reason | Obs | Days | Alpha | Hit | Recent Hit | "
-        "Wilson | Max Symbol |\n"
+        "| 方向 | 已验证 | 原因 | 样本数 | 天数 | Alpha | 命中率 | 近期命中率 | "
+        "Wilson 下界 | 单标的集中度 |\n"
     )
     sep = "|---|---:|---|---:|---:|---:|---:|---:|---:|---:|\n"
     body = []
@@ -522,9 +524,9 @@ def _validation_markdown_table(progress: dict[str, object]) -> str:
             continue
         body.append(
             "| {side} | {validated} | {reason} | {obs}/{min_obs} | {days}/{min_days} | {alpha}/{min_alpha} | {hit}/{min_hit} | {recent}/{min_recent} | {wilson}/{min_wilson} | {max_symbol}/{max_allowed} |".format(
-                side=row.get("side", ""),
-                validated="yes" if row.get("validated") else "no",
-                reason=str(row.get("reason") or "").replace("|", "/"),
+                side=_side_label_cn(row.get("side")),
+                validated=_yes_no_cn(row.get("validated")),
+                reason=_reason_cn(row.get("reason")).replace("|", "/"),
                 obs=int(row.get("observation_count") or 0),
                 min_obs=int(row.get("min_observations") or 0),
                 days=int(row.get("signal_day_count") or 0),
@@ -546,7 +548,7 @@ def _validation_markdown_table(progress: dict[str, object]) -> str:
 
 def _markdown_table(rows: pd.DataFrame) -> str:
     if rows.empty:
-        return "No candidates.\n"
+        return "没有候选标的。\n"
     columns = [
         "rank",
         "symbol",
@@ -561,7 +563,7 @@ def _markdown_table(rows: pd.DataFrame) -> str:
         "spread_bps",
         "reason",
     ]
-    header = "| Rank | Symbol | Side | Score | Confidence | Stage | Dollar Vol | Net Active | Buy Ratio | VWAP bps | Spread bps | Reason |\n"
+    header = "| 排名 | 标的 | 方向 | 分数 | 置信度 | 阶段 | 成交额 | 净主动资金 | 主动买入占比 | VWAP 偏离(bps) | 点差(bps) | 原因 |\n"
     sep = "|---:|---|---|---:|---|---|---:|---:|---:|---:|---:|---|\n"
     body = []
     for _, row in rows[columns].iterrows():
@@ -569,16 +571,16 @@ def _markdown_table(rows: pd.DataFrame) -> str:
             "| {rank} | {symbol} | {side} | {score} | {confidence} | {stage} | {dollar} | {net} | {buy_ratio} | {vwap} | {spread} | {reason} |".format(
                 rank=int(row["rank"]),
                 symbol=row["symbol"],
-                side=row["side"],
+                side=_side_label_cn(row["side"]),
                 score=_score(row["side_score"]),
-                confidence=row["confidence"],
-                stage=row["stage"],
+                confidence=_confidence_label_cn(row["confidence"]),
+                stage=_stage_label_cn(row["stage"]),
                 dollar=_money(row["dollar_volume"]),
                 net=_money(row["net_active_dollar"]),
                 buy_ratio=_pct(row["active_buy_ratio"]),
                 vwap=_bps(row["vwap_deviation_bps"]),
                 spread=_bps(row["spread_bps"]),
-                reason=str(row["reason"]).replace("|", "/"),
+                reason=_reason_cn(row["reason"]).replace("|", "/"),
             )
         )
     return header + sep + "\n".join(body) + "\n"
@@ -693,15 +695,15 @@ def _load_coarse_universe_summary(base_dir: Path, date: str) -> dict[str, object
 
 def _coarse_universe_markdown(summary: dict[str, object]) -> str:
     lines = [
-        f"- Coarse screen available: `{bool(summary.get('exists'))}`",
-        f"- Status/date: `{summary.get('status')}` / `{summary.get('date') or 'n/a'}`",
-        f"- Full-market universe / snapshot / daily / minute symbols: `{summary.get('universe_count', 0)}` / `{summary.get('snapshot_symbol_count', 0)}` / `{summary.get('daily_symbol_count', 0)}` / `{summary.get('minute_symbol_count', 0)}`",
-        f"- Candidate pool: `{summary.get('candidate_count', 0)}` target `{summary.get('target_size', 0)}`; core retained `{summary.get('candidate_core_count', 0)}` / `{summary.get('core_symbol_count', 0)}`",
-        f"- Error counts snapshot/daily/minute: `{summary.get('snapshot_error_count', 0)}` / `{summary.get('daily_error_count', 0)}` / `{summary.get('minute_error_count', 0)}`",
+        f"- 粗筛结果可用：`{_yes_no_cn(summary.get('exists'))}`",
+        f"- 状态 / 日期：`{summary.get('status')}` / `{summary.get('date') or 'n/a'}`",
+        f"- 全市场股票数 / 快照覆盖 / 日线覆盖 / 分钟线覆盖：`{summary.get('universe_count', 0)}` / `{summary.get('snapshot_symbol_count', 0)}` / `{summary.get('daily_symbol_count', 0)}` / `{summary.get('minute_symbol_count', 0)}`",
+        f"- 候选池：`{summary.get('candidate_count', 0)}`，目标 `{summary.get('target_size', 0)}`；核心标的保留 `{summary.get('candidate_core_count', 0)}` / `{summary.get('core_symbol_count', 0)}`",
+        f"- 快照 / 日线 / 分钟线错误数：`{summary.get('snapshot_error_count', 0)}` / `{summary.get('daily_error_count', 0)}` / `{summary.get('minute_error_count', 0)}`",
     ]
     issues = summary.get("issues", [])
     if isinstance(issues, list) and issues:
-        lines.append("- Issues: " + "; ".join(str(item) for item in issues))
+        lines.append("- 问题：" + "；".join(str(item) for item in issues))
     return "\n".join(lines) + "\n"
 
 
@@ -709,14 +711,14 @@ def _coarse_universe_html(summary: dict[str, object]) -> str:
     issues = summary.get("issues", [])
     issue_text = ""
     if isinstance(issues, list) and issues:
-        issue_text = "; issues=" + html.escape("; ".join(str(item) for item in issues))
+        issue_text = "；问题=" + html.escape("；".join(str(item) for item in issues))
     return (
-        "<div class='gate'><strong>Coarse universe:</strong> available={exists}; status={status}; "
-        "date={date}; universe={universe}; snapshot={snapshot}; daily={daily}; minute={minute}; "
-        "candidates={candidates}/{target}; core={candidate_core}/{core}; "
-        "errors snapshot/daily/minute={snapshot_errors}/{daily_errors}/{minute_errors}{issues}</div>"
+        "<div class='gate'><strong>粗筛股票池：</strong>可用={exists}；状态={status}；"
+        "日期={date}；全市场={universe}；快照覆盖={snapshot}；日线覆盖={daily}；分钟线覆盖={minute}；"
+        "候选={candidates}/{target}；核心={candidate_core}/{core}；"
+        "错误数（快照/日线/分钟线）={snapshot_errors}/{daily_errors}/{minute_errors}{issues}</div>"
     ).format(
-        exists=bool(summary.get("exists")),
+        exists=_yes_no_cn(summary.get("exists")),
         status=html.escape(str(summary.get("status") or "missing")),
         date=html.escape(str(summary.get("date") or "n/a")),
         universe=int(summary.get("universe_count") or 0),
@@ -736,9 +738,9 @@ def _coarse_universe_html(summary: dict[str, object]) -> str:
 
 def _intraday_metric_table_markdown(metrics: object) -> list[str]:
     if not isinstance(metrics, list) or not metrics:
-        return ["No intraday replay metric rows."]
+        return ["没有日内回放指标。"]
     lines = [
-        "| Side | Horizon min | Obs | Quality Obs | Hit | Avg Alpha | Max Symbol |",
+        "| 方向 | 观察窗口(分钟) | 样本数 | 合格样本 | 命中率 | 平均 Alpha | 最大单标的占比 |",
         "|---|---:|---:|---:|---:|---:|---:|",
     ]
     for row in metrics:
@@ -746,7 +748,7 @@ def _intraday_metric_table_markdown(metrics: object) -> list[str]:
             continue
         lines.append(
             "| {side} | {horizon} | {obs} | {quality} | {hit} | {alpha} | {symbol_share} |".format(
-                side=str(row.get("side") or ""),
+                side=_side_label_cn(row.get("side")),
                 horizon=int(row.get("horizon_minutes") or 0),
                 obs=int(row.get("observation_count") or 0),
                 quality=int(row.get("quality_observation_count") or 0),
@@ -760,18 +762,18 @@ def _intraday_metric_table_markdown(metrics: object) -> list[str]:
 
 def _intraday_replay_markdown(summary: dict[str, object]) -> str:
     lines = [
-        f"- Today replay available: `{bool(summary.get('exists'))}`",
-        f"- Today cutoffs / events / returns: `{summary.get('cutoff_count', 0)}` / `{summary.get('quality_event_count', 0)}` quality of `{summary.get('event_count', 0)}` / `{summary.get('quality_return_count', 0)}` quality of `{summary.get('return_count', 0)}`",
-        f"- Today horizons: `{summary.get('horizons_minutes') or []}`",
-        f"- Cumulative dates / events / returns: `{summary.get('cumulative_date_count', 0)}` / `{summary.get('cumulative_quality_event_count', 0)}` quality of `{summary.get('cumulative_event_count', 0)}` / `{summary.get('cumulative_quality_return_count', 0)}` quality of `{summary.get('cumulative_return_count', 0)}`",
-        f"- Cumulative window: `{summary.get('cumulative_first_date') or 'n/a'}` to `{summary.get('cumulative_last_date') or 'n/a'}`; horizons `{summary.get('cumulative_horizons_minutes') or []}`",
+        f"- 今日回放可用：`{_yes_no_cn(summary.get('exists'))}`",
+        f"- 今日切点 / 事件 / forward return：`{summary.get('cutoff_count', 0)}` / `{summary.get('quality_event_count', 0)}` 个合格事件（总 `{summary.get('event_count', 0)}`） / `{summary.get('quality_return_count', 0)}` 行合格收益（总 `{summary.get('return_count', 0)}`）",
+        f"- 今日观察窗口：`{summary.get('horizons_minutes') or []}`",
+        f"- 累计日期 / 事件 / forward return：`{summary.get('cumulative_date_count', 0)}` / `{summary.get('cumulative_quality_event_count', 0)}` 个合格事件（总 `{summary.get('cumulative_event_count', 0)}`） / `{summary.get('cumulative_quality_return_count', 0)}` 行合格收益（总 `{summary.get('cumulative_return_count', 0)}`）",
+        f"- 累计窗口：`{summary.get('cumulative_first_date') or 'n/a'}` 到 `{summary.get('cumulative_last_date') or 'n/a'}`；观察窗口 `{summary.get('cumulative_horizons_minutes') or []}`",
     ]
     issues = summary.get("issues", [])
     if isinstance(issues, list) and issues:
-        lines.append("- Issues: " + "; ".join(str(item) for item in issues))
-    lines.extend(["", "Today metrics:"])
+        lines.append("- 问题：" + "；".join(str(item) for item in issues))
+    lines.extend(["", "今日指标："])
     lines.extend(_intraday_metric_table_markdown(summary.get("metrics", [])))
-    lines.extend(["", "Cumulative metrics:"])
+    lines.extend(["", "累计指标："])
     lines.extend(_intraday_metric_table_markdown(summary.get("cumulative_metrics", [])))
     return "\n".join(lines) + "\n"
 
@@ -786,25 +788,27 @@ def _confidence_gap_markdown(summary: dict[str, object]) -> str:
     replay = summary.get("cumulative_intraday_replay", {})
     if not isinstance(replay, dict):
         replay = {}
+    req_text = ", ".join(
+        f"{_requirement_label_cn(key)}={_yes_no_cn(value)}" for key, value in sorted(requirements.items())
+    )
     lines = [
-        f"- High-confidence ready: `{bool(summary.get('ready'))}`",
-        "- Requirements: "
-        + ", ".join(f"{key}={bool(value)}" for key, value in sorted(requirements.items())),
-        f"- Official validation samples: `{summary.get('official_event_count', 0)}` events, `{summary.get('official_forward_return_count', 0)}` forward-return rows",
-        f"- Shadow samples: `{summary.get('shadow_event_count', 0)}` events, `{summary.get('shadow_forward_return_count', 0)}` forward-return rows",
-        f"- Exploration samples: `{summary.get('exploration_event_count', 0)}` events, `{summary.get('exploration_forward_return_count', 0)}` forward-return rows",
-        f"- Current report eligible samples: `{summary.get('validation_eligible_count', 0)}` now; `{summary.get('validation_eligible_if_final_count', 0)}` if final",
-        f"- Cumulative intraday replay: `{replay.get('date_count', 0)}` dates, `{replay.get('quality_event_count', 0)}` quality events, `{replay.get('quality_return_count', 0)}` quality returns",
+        f"- 高置信是否可发布：`{_yes_no_cn(summary.get('ready'))}`",
+        f"- 发布条件：{req_text}",
+        f"- 正式验证样本：`{summary.get('official_event_count', 0)}` 个事件，`{summary.get('official_forward_return_count', 0)}` 行 forward return",
+        f"- 影子样本：`{summary.get('shadow_event_count', 0)}` 个事件，`{summary.get('shadow_forward_return_count', 0)}` 行 forward return",
+        f"- 探索样本：`{summary.get('exploration_event_count', 0)}` 个事件，`{summary.get('exploration_forward_return_count', 0)}` 行 forward return",
+        f"- 当前报告可进入验证样本：`{summary.get('validation_eligible_count', 0)}`；如果是最终报告则为 `{summary.get('validation_eligible_if_final_count', 0)}`",
+        f"- 累计日内回放：`{replay.get('date_count', 0)}` 个日期，`{replay.get('quality_event_count', 0)}` 个合格事件，`{replay.get('quality_return_count', 0)}` 行合格收益",
     ]
     if blockers:
-        lines.append("- Blockers: " + "; ".join(str(item) for item in blockers))
+        lines.append("- 阻塞项：" + "；".join(_blocker_cn(item) for item in blockers))
     rows = summary.get("side_gaps", [])
     if not isinstance(rows, list) or not rows:
         return "\n".join(lines) + "\n"
     lines.extend(
         [
             "",
-            "| Side | Validated | Obs Need | Days Need | Alpha Gap | Hit Gap | Recent Hit Gap | Wilson Gap | Concentration Excess |",
+            "| 方向 | 已验证 | 还缺样本 | 还缺天数 | Alpha 差距 | 命中率差距 | 近期命中率差距 | Wilson 差距 | 集中度超限 |",
             "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
@@ -813,8 +817,8 @@ def _confidence_gap_markdown(summary: dict[str, object]) -> str:
             continue
         lines.append(
             "| {side} | {validated} | {obs} | {days} | {alpha} | {hit} | {recent} | {wilson} | {concentration} |".format(
-                side=str(row.get("side") or ""),
-                validated="yes" if row.get("validated") else "no",
+                side=_side_label_cn(row.get("side")),
+                validated=_yes_no_cn(row.get("validated")),
                 obs=int(row.get("observations_needed") or 0),
                 days=int(row.get("signal_days_needed") or 0),
                 alpha=_pct(row.get("alpha_gap")),
@@ -830,10 +834,10 @@ def _confidence_gap_markdown(summary: dict[str, object]) -> str:
 def _quality_markdown_table(data_quality: dict[str, object]) -> str:
     rows = data_quality.get("symbols", [])
     if not isinstance(rows, list) or not rows:
-        return "No data-quality rows.\n"
+        return "没有数据质量明细。\n"
     header = (
-        "| Symbol | Eligible | Coverage | Trade Cov | Book Cov | Quote Cov | "
-        "Trades | Raw Trades | Dup Rows | Dollar Vol | Dup Seq | Spread bps |\n"
+        "| 标的 | 合格 | 覆盖率 | 成交覆盖 | 盘口覆盖 | 报价覆盖 | "
+        "成交笔数 | 原始成交行 | 重复序列行 | 成交额 | 重复率 | 点差(bps) |\n"
     )
     sep = "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n"
     body = []
@@ -843,7 +847,7 @@ def _quality_markdown_table(data_quality: dict[str, object]) -> str:
         body.append(
             "| {symbol} | {eligible} | {coverage} | {trade_cov} | {book_cov} | {quote_cov} | {trades} | {raw_trades} | {dup_rows} | {dollar} | {dup} | {spread} |".format(
                 symbol=row.get("symbol", ""),
-                eligible="yes" if row.get("eligible") else "no",
+                eligible=_yes_no_cn(row.get("eligible")),
                 coverage=_pct(row.get("coverage_ratio_regular")),
                 trade_cov=_pct(row.get("trade_coverage_ratio_regular")),
                 book_cov=_pct(row.get("book_coverage_ratio_regular")),
@@ -893,6 +897,63 @@ def _blocker_cn(blocker: object) -> str:
         "full-session NAS raw uploads are incomplete": "NAS 全天原始数据上传还不完整",
         "report is not a final post-close report": "当前还不是收盘后的最终报告",
     }.get(text, text)
+
+
+def _yes_no_cn(value: object) -> str:
+    return "是" if bool(value) else "否"
+
+
+def _reason_cn(reason: object) -> str:
+    text = str(reason or "")
+    translations = {
+        "forward validation sample not promoted yet": "forward 验证样本还没有晋级",
+        "validation gate not configured": "验证门槛未配置",
+        "validation gate not promoted": "验证门槛还没有通过",
+        "missing 5d validation metrics": "缺少 5 日验证指标",
+        "insufficient independent evidence": "独立证据不足",
+        "positive active tape": "主动买盘偏强",
+        "negative active tape": "主动卖盘偏强",
+        "supportive bid/depth absorption": "买盘深度和承接较强",
+        "weak bid/depth or ask replenishment": "买盘深度偏弱或卖盘补单明显",
+        "price holds near/above VWAP with controlled impact": "价格守住或高于 VWAP，冲击可控",
+        "price below VWAP with controlled selling pressure": "价格低于 VWAP，卖压冲击可控",
+        "not final post-close report": "还不是收盘后的最终报告",
+    }
+    parts = [part.strip() for part in text.split(";") if part.strip()]
+    if not parts:
+        return ""
+    return "；".join(translations.get(part, part) for part in parts)
+
+
+def _stage_label_cn(stage: object) -> str:
+    return {
+        "stealth_accumulation": "隐蔽吸筹",
+        "accumulation_watch": "吸筹观察",
+        "accumulation_diagnostic": "吸筹诊断",
+        "distribution_risk": "出货风险",
+        "distribution_watch": "出货观察",
+        "distribution_diagnostic": "出货诊断",
+    }.get(str(stage or "").lower(), str(stage or "未知"))
+
+
+def _requirement_label_cn(key: object) -> str:
+    return {
+        "validation_gate_validated": "验证门槛通过",
+        "data_quality_gate_ready": "数据质量达标",
+        "nas_uploads_complete": "NAS 原始数据完整",
+        "final_report_complete": "收盘后最终报告",
+    }.get(str(key or ""), str(key or ""))
+
+
+def _blocking_count_label_cn(key: object) -> str:
+    return {
+        "missing_symbol": "缺少代码",
+        "invalid_side": "方向无效",
+        "score_below_min": "分数低于门槛",
+        "not_watch_or_high": "不是观察或高置信",
+        "data_quality_failed": "数据质量不通过",
+        "not_final_report": "非最终报告",
+    }.get(str(key or ""), str(key or ""))
 
 
 def _side_counts(signals: pd.DataFrame, confidence: str | None = None) -> tuple[int, int, int]:
@@ -1063,7 +1124,7 @@ def render_markdown_report(
         min_event_score=_validation_min_event_score(validation_gate),
     )
     high_count = int((signals.get("confidence", pd.Series(dtype=str)) == "high").sum()) if not signals.empty else 0
-    state = str(validation_gate.get("state") or "warmup")
+    state = _state_label_cn(validation_gate)
     lines = [
         f"# 追主力日报 - {date}",
         "",
@@ -1075,58 +1136,58 @@ def render_markdown_report(
             confidence_gap=confidence_gap,
         ),
         "",
-        f"State: `{state}`",
-        f"High-confidence candidates: `{high_count}`",
+        f"报告状态：`{state}`",
+        f"高置信候选：`{high_count}`",
         "",
-        "This report uses Futu OpenD trade prints, order-book snapshots, and quotes. "
-        "It does not claim account-level institutional identity.",
+        "本报告使用 Futu OpenD 的逐笔成交、盘口快照和报价数据。"
+        "它识别的是主力行为迹象，不声称能确认具体机构账户身份。",
         "",
-        "## Validation",
+        "## 验证状态",
         "",
-        f"- Gate validated: `{bool(validation_gate.get('validated'))}`",
-        f"- Gate reason: {validation_gate.get('reason', '')}",
-        f"- Validation samples: `{validation_progress.get('event_count', 0)}` events, `{validation_progress.get('forward_return_count', 0)}` forward-return rows",
-        f"- Shadow calibration samples: `{validation_progress.get('shadow_event_count', 0)}` events, `{validation_progress.get('shadow_forward_return_count', 0)}` forward-return rows; min score `{_score(validation_progress.get('shadow_min_event_score'))}`",
-        f"- Exploration calibration samples: `{validation_progress.get('exploration_event_count', 0)}` events, `{validation_progress.get('exploration_forward_return_count', 0)}` forward-return rows; min score `{_score(validation_progress.get('exploration_min_event_score'))}`",
-        f"- Promotion horizon: `{validation_progress.get('promotion_horizon', 0)}d`; benchmark: `{validation_progress.get('benchmark') or 'n/a'}`",
-        f"- Symbols eligible for high-confidence reporting: `{data_quality.get('eligible_symbol_count', 0)}` / `{data_quality.get('symbol_count', 0)}`",
-        f"- NAS raw uploads complete: `{bool(data_quality.get('nas_upload_complete'))}`; manifest rows: `{data_quality.get('manifest_count', 0)}`",
-        f"- Median trade/book coverage: `{_pct(data_quality.get('median_trade_coverage_ratio_regular'))}` / `{_pct(data_quality.get('median_book_coverage_ratio_regular'))}`",
-        f"- Duplicate sequence rows: `{data_quality.get('duplicate_sequence_count', 0)}` / `{data_quality.get('raw_trade_count', 0)}` (`{_pct(data_quality.get('duplicate_sequence_rate'))}`)",
+        f"- 验证门槛是否通过：`{_yes_no_cn(validation_gate.get('validated'))}`",
+        f"- 验证原因：{_reason_cn(validation_gate.get('reason', ''))}",
+        f"- 正式验证样本：`{validation_progress.get('event_count', 0)}` 个事件，`{validation_progress.get('forward_return_count', 0)}` 行 forward return",
+        f"- 影子校准样本：`{validation_progress.get('shadow_event_count', 0)}` 个事件，`{validation_progress.get('shadow_forward_return_count', 0)}` 行 forward return；最低分 `{_score(validation_progress.get('shadow_min_event_score'))}`",
+        f"- 探索校准样本：`{validation_progress.get('exploration_event_count', 0)}` 个事件，`{validation_progress.get('exploration_forward_return_count', 0)}` 行 forward return；最低分 `{_score(validation_progress.get('exploration_min_event_score'))}`",
+        f"- 晋级观察周期：`{validation_progress.get('promotion_horizon', 0)}d`；基准：`{validation_progress.get('benchmark') or 'n/a'}`",
+        f"- 可用于高置信报告的合格股票：`{data_quality.get('eligible_symbol_count', 0)}` / `{data_quality.get('symbol_count', 0)}`",
+        f"- NAS 原始数据上传完整：`{_yes_no_cn(data_quality.get('nas_upload_complete'))}`；manifest 行数：`{data_quality.get('manifest_count', 0)}`",
+        f"- 成交/盘口覆盖率中位数：`{_pct(data_quality.get('median_trade_coverage_ratio_regular'))}` / `{_pct(data_quality.get('median_book_coverage_ratio_regular'))}`",
+        f"- 重复序列行：`{data_quality.get('duplicate_sequence_count', 0)}` / `{data_quality.get('raw_trade_count', 0)}`（`{_pct(data_quality.get('duplicate_sequence_rate'))}`）",
         "",
-        "## Confidence Readiness",
+        "## 高置信准备度",
         "",
         _confidence_gap_markdown(confidence_gap),
         "",
-        "## Validation Progress By Side",
+        "## 分方向验证进度",
         "",
         _validation_markdown_table(validation_progress),
         "",
-        "## Validation Event Eligibility",
+        "## 验证样本入账资格",
         "",
         _eligibility_markdown(eligibility),
         "",
-        "## Intraday Replay Calibration",
+        "## 日内回放校准",
         "",
         _intraday_replay_markdown(intraday_replay),
         "",
-        "## Data Coverage",
+        "## 数据覆盖",
         "",
         _coarse_universe_markdown(coarse_universe),
         "",
-        f"- Raw trade rows: `{raw_counts.get('trades', 0)}`",
-        f"- Raw order-book rows: `{raw_counts.get('order_book', 0)}`",
-        f"- Raw quote rows: `{raw_counts.get('quotes', 0)}`",
-        f"- Symbols with features: `{coverage['symbol_count']}`",
-        f"- Feature minutes: `{coverage['minute_count']}`",
-        f"- Regular feature minutes: `{coverage['regular_minute_count']}`",
-        f"- Regular trade/book/quote minutes: `{coverage['regular_trade_minutes']}` / `{coverage['regular_book_minutes']}` / `{coverage['regular_quote_minutes']}`",
+        f"- 原始逐笔成交行数：`{raw_counts.get('trades', 0)}`",
+        f"- 原始盘口行数：`{raw_counts.get('order_book', 0)}`",
+        f"- 原始报价行数：`{raw_counts.get('quotes', 0)}`",
+        f"- 有特征的股票数：`{coverage['symbol_count']}`",
+        f"- 特征分钟数：`{coverage['minute_count']}`",
+        f"- 正常交易时段特征分钟数：`{coverage['regular_minute_count']}`",
+        f"- 正常交易时段成交/盘口/报价分钟数：`{coverage['regular_trade_minutes']}` / `{coverage['regular_book_minutes']}` / `{coverage['regular_quote_minutes']}`",
         "",
-        "## Candidates",
+        "## 候选标的",
         "",
         _markdown_table(view),
         "",
-        "## Data Quality By Symbol",
+        "## 分标的数据质量",
         "",
         _quality_markdown_table(data_quality),
     ]
@@ -1135,7 +1196,7 @@ def render_markdown_report(
 
 def _html_table(rows: pd.DataFrame) -> str:
     if rows.empty:
-        return "<p>No candidates.</p>"
+        return "<p>没有候选标的。</p>"
     table_rows = []
     for _, row in rows.iterrows():
         cls = "buy" if row.get("side") == "accumulation" else "sell"
@@ -1146,22 +1207,22 @@ def _html_table(rows: pd.DataFrame) -> str:
                 cls=cls,
                 rank=int(row.get("rank") or 0),
                 symbol=html.escape(str(row.get("symbol") or "")),
-                side=html.escape(str(row.get("side") or "")),
+                side=html.escape(_side_label_cn(row.get("side"))),
                 score=_score(row.get("side_score")),
-                confidence=html.escape(str(row.get("confidence") or "")),
-                stage=html.escape(str(row.get("stage") or "")),
+                confidence=html.escape(_confidence_label_cn(row.get("confidence"))),
+                stage=html.escape(_stage_label_cn(row.get("stage"))),
                 dollar=_money(row.get("dollar_volume")),
                 net=_money(row.get("net_active_dollar")),
                 buy_ratio=_pct(row.get("active_buy_ratio")),
                 vwap=_bps(row.get("vwap_deviation_bps")),
                 spread=_bps(row.get("spread_bps")),
-                reason=html.escape(str(row.get("reason") or "")),
+                reason=html.escape(_reason_cn(row.get("reason"))),
             )
         )
     return (
-        "<table><tr><th>Rank</th><th>Symbol</th><th>Side</th><th>Score</th><th>Confidence</th>"
-        "<th>Stage</th><th>Dollar Vol</th><th>Net Active</th><th>Buy Ratio</th>"
-        "<th>VWAP bps</th><th>Spread bps</th><th>Reason</th></tr>"
+        "<table><tr><th>排名</th><th>标的</th><th>方向</th><th>分数</th><th>置信度</th>"
+        "<th>阶段</th><th>成交额</th><th>净主动资金</th><th>主动买入占比</th>"
+        "<th>VWAP 偏离(bps)</th><th>点差(bps)</th><th>原因</th></tr>"
         + "\n".join(table_rows)
         + "</table>"
     )
@@ -1170,7 +1231,7 @@ def _html_table(rows: pd.DataFrame) -> str:
 def _quality_html_table(data_quality: dict[str, object]) -> str:
     rows = data_quality.get("symbols", [])
     if not isinstance(rows, list) or not rows:
-        return "<p>No data-quality rows.</p>"
+        return "<p>没有数据质量明细。</p>"
     table_rows = []
     for row in rows:
         if not isinstance(row, dict):
@@ -1182,7 +1243,7 @@ def _quality_html_table(data_quality: dict[str, object]) -> str:
             "<td>{raw_trades}</td><td>{dup_rows}</td><td>{dollar}</td><td>{dup}</td><td>{spread}</td></tr>".format(
                 cls=cls,
                 symbol=html.escape(str(row.get("symbol") or "")),
-                eligible="yes" if row.get("eligible") else "no",
+                eligible=_yes_no_cn(row.get("eligible")),
                 coverage=_pct(row.get("coverage_ratio_regular")),
                 trade_cov=_pct(row.get("trade_coverage_ratio_regular")),
                 book_cov=_pct(row.get("book_coverage_ratio_regular")),
@@ -1196,9 +1257,9 @@ def _quality_html_table(data_quality: dict[str, object]) -> str:
             )
         )
     return (
-        "<table><tr><th>Symbol</th><th>Eligible</th><th>Coverage</th><th>Trade Cov</th>"
-        "<th>Book Cov</th><th>Quote Cov</th><th>Trades</th><th>Raw Trades</th><th>Dup Rows</th><th>Dollar Vol</th>"
-        "<th>Dup Seq</th><th>Spread bps</th></tr>"
+        "<table><tr><th>标的</th><th>合格</th><th>覆盖率</th><th>成交覆盖</th>"
+        "<th>盘口覆盖</th><th>报价覆盖</th><th>成交笔数</th><th>原始成交行</th><th>重复序列行</th><th>成交额</th>"
+        "<th>重复率</th><th>点差(bps)</th></tr>"
         + "\n".join(table_rows)
         + "</table>"
     )
@@ -1207,7 +1268,7 @@ def _quality_html_table(data_quality: dict[str, object]) -> str:
 def _validation_html_table(progress: dict[str, object]) -> str:
     rows = progress.get("sides", [])
     if not isinstance(rows, list) or not rows:
-        return "<p>No validation-side rows.</p>"
+        return "<p>没有按方向拆分的验证记录。</p>"
     table_rows = []
     for row in rows:
         if not isinstance(row, dict):
@@ -1217,11 +1278,11 @@ def _validation_html_table(progress: dict[str, object]) -> str:
             "<tr class='{cls}'><td>{side}</td><td>{validated}</td><td>{reason}</td>"
             "<td>{obs}/{min_obs}</td><td>{days}/{min_days}</td><td>{alpha}/{min_alpha}</td>"
             "<td>{hit}/{min_hit}</td><td>{recent}/{min_recent}</td><td>{wilson}/{min_wilson}</td>"
-            "<td>{max_symbol}/{max_allowed}</td></tr>".format(
+                "<td>{max_symbol}/{max_allowed}</td></tr>".format(
                 cls=cls,
-                side=html.escape(str(row.get("side") or "")),
-                validated="yes" if row.get("validated") else "no",
-                reason=html.escape(str(row.get("reason") or "")),
+                side=html.escape(_side_label_cn(row.get("side"))),
+                validated=_yes_no_cn(row.get("validated")),
+                reason=html.escape(_reason_cn(row.get("reason"))),
                 obs=int(row.get("observation_count") or 0),
                 min_obs=int(row.get("min_observations") or 0),
                 days=int(row.get("signal_day_count") or 0),
@@ -1239,8 +1300,8 @@ def _validation_html_table(progress: dict[str, object]) -> str:
             )
         )
     return (
-        "<table><tr><th>Side</th><th>Validated</th><th>Reason</th><th>Obs</th><th>Days</th>"
-        "<th>Alpha</th><th>Hit</th><th>Recent Hit</th><th>Wilson</th><th>Max Symbol</th></tr>"
+        "<table><tr><th>方向</th><th>已验证</th><th>原因</th><th>样本数</th><th>天数</th>"
+        "<th>Alpha</th><th>命中率</th><th>近期命中率</th><th>Wilson 下界</th><th>单标的集中度</th></tr>"
         + "\n".join(table_rows)
         + "</table>"
     )
@@ -1250,13 +1311,15 @@ def _eligibility_html(summary: dict[str, object]) -> str:
     blockers = summary.get("blocking_counts", {})
     if not isinstance(blockers, dict):
         blockers = {}
-    blocker_text = ", ".join(f"{html.escape(str(key))}={int(value or 0)}" for key, value in sorted(blockers.items()))
+    blocker_text = "，".join(
+        f"{html.escape(_blocking_count_label_cn(key))}={int(value or 0)}" for key, value in sorted(blockers.items())
+    )
     return (
-        "<div class='gate'><strong>Validation event eligibility:</strong> "
-        "eligible={eligible}; eligible_if_final={eligible_if_final}; "
-        "score_pass={score_pass}; near_score={near_score}; max_score={max_score}; "
-        "watch_or_high={watch}; data_quality_pass={quality}; final_rows={final}; "
-        "blockers={blockers}</div>"
+        "<div class='gate'><strong>验证样本入账资格：</strong>"
+        "当前可入账={eligible}；如果是最终报告可入账={eligible_if_final}；"
+        "分数达标={score_pass}；接近达标={near_score}；最高分={max_score}；"
+        "观察或高置信={watch}；数据质量通过={quality}；最终报告行数={final}；"
+        "未入账原因={blockers}</div>"
     ).format(
         eligible=int(summary.get("validation_eligible_count") or 0),
         eligible_if_final=int(summary.get("validation_eligible_if_final_count") or 0),
@@ -1272,7 +1335,7 @@ def _eligibility_html(summary: dict[str, object]) -> str:
 
 def _intraday_metric_table_html(metrics: object) -> str:
     if not isinstance(metrics, list) or not metrics:
-        return "<p>No intraday replay metric rows.</p>"
+        return "<p>没有日内回放指标。</p>"
     rows = []
     for row in metrics:
         if not isinstance(row, dict):
@@ -1280,7 +1343,7 @@ def _intraday_metric_table_html(metrics: object) -> str:
         rows.append(
             "<tr><td>{side}</td><td>{horizon}</td><td>{obs}</td><td>{quality}</td>"
             "<td>{hit}</td><td>{alpha}</td><td>{symbol_share}</td></tr>".format(
-                side=html.escape(str(row.get("side") or "")),
+                side=html.escape(_side_label_cn(row.get("side"))),
                 horizon=int(row.get("horizon_minutes") or 0),
                 obs=int(row.get("observation_count") or 0),
                 quality=int(row.get("quality_observation_count") or 0),
@@ -1290,10 +1353,10 @@ def _intraday_metric_table_html(metrics: object) -> str:
             )
         )
     if not rows:
-        return "<p>No intraday replay metric rows.</p>"
+        return "<p>没有日内回放指标。</p>"
     return (
-        "<table><tr><th>Side</th><th>Horizon min</th><th>Obs</th><th>Quality Obs</th>"
-        "<th>Hit</th><th>Avg Alpha</th><th>Max Symbol</th></tr>"
+        "<table><tr><th>方向</th><th>观察窗口(分钟)</th><th>样本数</th><th>合格样本</th>"
+        "<th>命中率</th><th>平均 Alpha</th><th>最大单标的占比</th></tr>"
         + "\n".join(rows)
         + "</table>"
     )
@@ -1309,10 +1372,10 @@ def _confidence_gap_html(summary: dict[str, object]) -> str:
     replay = summary.get("cumulative_intraday_replay", {})
     if not isinstance(replay, dict):
         replay = {}
-    req_text = ", ".join(
-        f"{html.escape(str(key))}={bool(value)}" for key, value in sorted(requirements.items())
+    req_text = "，".join(
+        f"{html.escape(_requirement_label_cn(key))}={_yes_no_cn(value)}" for key, value in sorted(requirements.items())
     )
-    blocker_text = "; ".join(html.escape(str(item)) for item in blockers) if blockers else "none"
+    blocker_text = "；".join(html.escape(_blocker_cn(item)) for item in blockers) if blockers else "无"
     rows = []
     side_gaps = summary.get("side_gaps", [])
     if isinstance(side_gaps, list):
@@ -1323,8 +1386,8 @@ def _confidence_gap_html(summary: dict[str, object]) -> str:
                 "<tr><td>{side}</td><td>{validated}</td><td>{obs}</td><td>{days}</td>"
                 "<td>{alpha}</td><td>{hit}</td><td>{recent}</td><td>{wilson}</td>"
                 "<td>{concentration}</td></tr>".format(
-                    side=html.escape(str(row.get("side") or "")),
-                    validated="yes" if row.get("validated") else "no",
+                    side=html.escape(_side_label_cn(row.get("side"))),
+                    validated=_yes_no_cn(row.get("validated")),
                     obs=int(row.get("observations_needed") or 0),
                     days=int(row.get("signal_days_needed") or 0),
                     alpha=_pct(row.get("alpha_gap")),
@@ -1334,26 +1397,26 @@ def _confidence_gap_html(summary: dict[str, object]) -> str:
                     concentration=_pct(row.get("concentration_excess")),
                 )
             )
-    table = "<p>No confidence gap rows.</p>"
+    table = "<p>没有高置信差距明细。</p>"
     if rows:
         table = (
-            "<table><tr><th>Side</th><th>Validated</th><th>Obs Need</th><th>Days Need</th>"
-            "<th>Alpha Gap</th><th>Hit Gap</th><th>Recent Hit Gap</th><th>Wilson Gap</th>"
-            "<th>Concentration Excess</th></tr>"
+            "<table><tr><th>方向</th><th>已验证</th><th>还缺样本</th><th>还缺天数</th>"
+            "<th>Alpha 差距</th><th>命中率差距</th><th>近期命中率差距</th><th>Wilson 差距</th>"
+            "<th>集中度超限</th></tr>"
             + "\n".join(rows)
             + "</table>"
         )
     return (
-        "<div class='gate'><strong>Confidence readiness:</strong> ready={ready}; "
-        "requirements={requirements}; blockers={blockers}</div>"
-        "<div class='gate'><strong>Validation sample gap:</strong> official_events={official_events}; "
-        "official_forward_returns={official_returns}; shadow_events={shadow_events}; "
-        "shadow_forward_returns={shadow_returns}; exploration_events={exploration_events}; "
-        "exploration_forward_returns={exploration_returns}; eligible_now={eligible}; eligible_if_final={eligible_if_final}; "
-        "cumulative_replay_dates={replay_dates}; cumulative_quality_events={replay_events}; "
-        "cumulative_quality_returns={replay_returns}</div>{table}"
+        "<div class='gate'><strong>高置信准备度：</strong>可发布={ready}；"
+        "条件={requirements}；阻塞项={blockers}</div>"
+        "<div class='gate'><strong>验证样本差距：</strong>正式事件={official_events}；"
+        "正式 forward return={official_returns}；影子事件={shadow_events}；"
+        "影子 forward return={shadow_returns}；探索事件={exploration_events}；"
+        "探索 forward return={exploration_returns}；当前可入账={eligible}；最终报告可入账={eligible_if_final}；"
+        "累计回放日期={replay_dates}；累计合格事件={replay_events}；"
+        "累计合格收益={replay_returns}</div>{table}"
     ).format(
-        ready=bool(summary.get("ready")),
+        ready=_yes_no_cn(summary.get("ready")),
         requirements=req_text,
         blockers=blocker_text,
         official_events=int(summary.get("official_event_count") or 0),
@@ -1377,25 +1440,25 @@ def _intraday_replay_html(summary: dict[str, object]) -> str:
     issues = summary.get("issues", [])
     issue_text = ""
     if isinstance(issues, list) and issues:
-        issue_text = "; issues=" + html.escape("; ".join(str(item) for item in issues))
+        issue_text = "；问题=" + html.escape("；".join(str(item) for item in issues))
     if summary.get("cumulative_first_date") or summary.get("cumulative_last_date"):
-        cumulative_window = "{first} to {last}".format(
+        cumulative_window = "{first} 到 {last}".format(
             first=html.escape(str(summary.get("cumulative_first_date") or "n/a")),
             last=html.escape(str(summary.get("cumulative_last_date") or "n/a")),
         )
     else:
         cumulative_window = "n/a"
     return (
-        "<div class='gate'><strong>Intraday replay today:</strong> available={exists}; "
-        "cutoffs={cutoffs}; quality_events={quality_events}/{events}; "
-        "quality_returns={quality_returns}/{returns}; horizons={horizons}{issues}</div>"
-        "<h3>Today Metrics</h3>{today_table}"
-        "<div class='gate'><strong>Intraday replay cumulative:</strong> dates={cum_dates}; "
-        "window={cum_window}; quality_events={cum_quality_events}/{cum_events}; "
-        "quality_returns={cum_quality_returns}/{cum_returns}; horizons={cum_horizons}</div>"
-        "<h3>Cumulative Metrics</h3>{cumulative_table}"
+        "<div class='gate'><strong>今日日内回放：</strong>可用={exists}；"
+        "切点={cutoffs}；合格事件={quality_events}/{events}；"
+        "合格收益={quality_returns}/{returns}；观察窗口={horizons}{issues}</div>"
+        "<h3>今日指标</h3>{today_table}"
+        "<div class='gate'><strong>累计日内回放：</strong>日期数={cum_dates}；"
+        "窗口={cum_window}；合格事件={cum_quality_events}/{cum_events}；"
+        "合格收益={cum_quality_returns}/{cum_returns}；观察窗口={cum_horizons}</div>"
+        "<h3>累计指标</h3>{cumulative_table}"
     ).format(
-        exists=bool(summary.get("exists")),
+        exists=_yes_no_cn(summary.get("exists")),
         cutoffs=int(summary.get("cutoff_count") or 0),
         quality_events=int(summary.get("quality_event_count") or 0),
         events=int(summary.get("event_count") or 0),
@@ -1437,8 +1500,8 @@ def render_html_report(
         min_event_score=_validation_min_event_score(validation_gate),
     )
     high_count = int((signals.get("confidence", pd.Series(dtype=str)) == "high").sum()) if not signals.empty else 0
-    state = html.escape(str(validation_gate.get("state") or "warmup"))
-    reason = html.escape(str(validation_gate.get("reason") or ""))
+    state = html.escape(_state_label_cn(validation_gate))
+    reason = html.escape(_reason_cn(validation_gate.get("reason") or ""))
     chinese_conclusion = _chinese_conclusion_html(
         signals=signals,
         validation_gate=validation_gate,
@@ -1477,27 +1540,27 @@ tr.sell {{ background: #fff1f2; }}
 <div class="metric"><div class="value">{coverage['symbol_count']}</div><div class="label">股票数</div></div>
 <div class="metric"><div class="value">{coverage['minute_count']}</div><div class="label">特征分钟数</div></div>
 {chinese_conclusion}
-<p class="muted">Uses Futu OpenD tick prints, order-book snapshots, and quotes. It does not claim account-level institutional identity.</p>
-<div class="gate"><strong>Validation gate:</strong> validated={bool(validation_gate.get('validated'))}; {reason}</div>
-<div class="gate"><strong>Validation samples:</strong> events={validation_progress.get('event_count', 0)}; forward_returns={validation_progress.get('forward_return_count', 0)}; promotion_horizon={validation_progress.get('promotion_horizon', 0)}d; benchmark={html.escape(str(validation_progress.get('benchmark') or 'n/a'))}</div>
-<div class="gate"><strong>Shadow calibration:</strong> events={validation_progress.get('shadow_event_count', 0)}; forward_returns={validation_progress.get('shadow_forward_return_count', 0)}; min_score={_score(validation_progress.get('shadow_min_event_score'))}</div>
-<div class="gate"><strong>Exploration calibration:</strong> events={validation_progress.get('exploration_event_count', 0)}; forward_returns={validation_progress.get('exploration_forward_return_count', 0)}; min_score={_score(validation_progress.get('exploration_min_event_score'))}</div>
-<div class="gate"><strong>Data quality gate:</strong> eligible_symbols={data_quality.get('eligible_symbol_count', 0)}/{data_quality.get('symbol_count', 0)}; median trade/book coverage={_pct(data_quality.get('median_trade_coverage_ratio_regular'))}/{_pct(data_quality.get('median_book_coverage_ratio_regular'))}; nas_upload_complete={bool(data_quality.get('nas_upload_complete'))}; manifest_rows={data_quality.get('manifest_count', 0)}</div>
-<div class="gate"><strong>Duplicate audit:</strong> duplicate_sequence_rows={data_quality.get('duplicate_sequence_count', 0)}/{data_quality.get('raw_trade_count', 0)} ({_pct(data_quality.get('duplicate_sequence_rate'))})</div>
-<h2>Confidence Readiness</h2>
+<p class="muted">本报告使用 Futu OpenD 的逐笔成交、盘口快照和报价数据。它识别的是主力行为迹象，不声称能确认具体机构账户身份。</p>
+<div class="gate"><strong>验证门槛：</strong>已通过={_yes_no_cn(validation_gate.get('validated'))}；{reason}</div>
+<div class="gate"><strong>正式验证样本：</strong>事件={validation_progress.get('event_count', 0)}；forward return={validation_progress.get('forward_return_count', 0)}；晋级观察周期={validation_progress.get('promotion_horizon', 0)}d；基准={html.escape(str(validation_progress.get('benchmark') or 'n/a'))}</div>
+<div class="gate"><strong>影子校准：</strong>事件={validation_progress.get('shadow_event_count', 0)}；forward return={validation_progress.get('shadow_forward_return_count', 0)}；最低分={_score(validation_progress.get('shadow_min_event_score'))}</div>
+<div class="gate"><strong>探索校准：</strong>事件={validation_progress.get('exploration_event_count', 0)}；forward return={validation_progress.get('exploration_forward_return_count', 0)}；最低分={_score(validation_progress.get('exploration_min_event_score'))}</div>
+<div class="gate"><strong>数据质量门槛：</strong>合格股票={data_quality.get('eligible_symbol_count', 0)}/{data_quality.get('symbol_count', 0)}；成交/盘口覆盖中位数={_pct(data_quality.get('median_trade_coverage_ratio_regular'))}/{_pct(data_quality.get('median_book_coverage_ratio_regular'))}；NAS 上传完整={_yes_no_cn(data_quality.get('nas_upload_complete'))}；manifest 行数={data_quality.get('manifest_count', 0)}</div>
+<div class="gate"><strong>重复序列审计：</strong>重复序列行={data_quality.get('duplicate_sequence_count', 0)}/{data_quality.get('raw_trade_count', 0)}（{_pct(data_quality.get('duplicate_sequence_rate'))}）</div>
+<h2>高置信准备度</h2>
 {_confidence_gap_html(confidence_gap)}
-<h2>Validation Progress By Side</h2>
+<h2>分方向验证进度</h2>
 {_validation_html_table(validation_progress)}
-<h2>Validation Event Eligibility</h2>
+<h2>验证样本入账资格</h2>
 {_eligibility_html(eligibility)}
-<h2>Intraday Replay Calibration</h2>
+<h2>日内回放校准</h2>
 {_intraday_replay_html(intraday_replay)}
-<h2>Data Coverage</h2>
+<h2>数据覆盖</h2>
 {_coarse_universe_html(coarse_universe)}
-<p>Raw trades={raw_counts.get('trades', 0)}, order_book={raw_counts.get('order_book', 0)}, quotes={raw_counts.get('quotes', 0)}. Regular trade/book/quote minutes={coverage['regular_trade_minutes']} / {coverage['regular_book_minutes']} / {coverage['regular_quote_minutes']}.</p>
-<h2>Candidates</h2>
+<p>原始逐笔成交={raw_counts.get('trades', 0)}，原始盘口={raw_counts.get('order_book', 0)}，原始报价={raw_counts.get('quotes', 0)}。正常交易时段成交/盘口/报价分钟数={coverage['regular_trade_minutes']} / {coverage['regular_book_minutes']} / {coverage['regular_quote_minutes']}。</p>
+<h2>候选标的</h2>
 {_html_table(view)}
-<h2>Data Quality By Symbol</h2>
+<h2>分标的数据质量</h2>
 {_quality_html_table(data_quality)}
 </body>
 </html>
