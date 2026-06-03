@@ -40,11 +40,23 @@ def test_collect_script_runs_futu_collector_with_nas_and_lock():
     assert "US_MICROSTRUCTURE_CORE_SOURCE" in content
     assert "US_MICROSTRUCTURE_CORE_WATCHLIST_GROUPS" in content
     assert "US_MICROSTRUCTURE_CORE_WATCHLIST_GROUP_TYPE" in content
+    assert "US_MICROSTRUCTURE_FOLLOWUP_ENABLE" in content
+    assert "US_MICROSTRUCTURE_FOLLOWUP_DAYS" in content
+    assert "US_MICROSTRUCTURE_FOLLOWUP_MAX_SYMBOLS" in content
+    assert "US_MICROSTRUCTURE_FOLLOWUP_MIN_SCORE" in content
+    assert "US_MICROSTRUCTURE_COLLECTION_MAX_SYMBOLS" in content
+    assert "US_MICROSTRUCTURE_COLLECTION_UNIVERSE_FILE" in content
     assert "US_MICROSTRUCTURE_UNIVERSE_FILE" in content
     assert "config/us_microstructure_core_symbols.txt" in content
     assert "--core-source" in content
     assert "--core-watchlist-groups" in content
     assert "--core-watchlist-group-type" in content
+    assert '"$PYTHON_BIN" -m scripts.build_us_microstructure_collection_universe' in content
+    assert "--followup-days" in content
+    assert "--followup-max-symbols" in content
+    assert "--followup-min-score" in content
+    assert "--max-total-symbols" in content
+    assert "rolling collection universe build failed" in content
     assert '"$PYTHON_BIN" -m scripts.build_us_microstructure_universe' in content
     assert "dynamic universe build failed" in content
     assert "--nas-host" in content

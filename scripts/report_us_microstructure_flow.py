@@ -658,7 +658,11 @@ def _load_coarse_universe_summary(base_dir: Path, date: str) -> dict[str, object
     dated_status = base_dir / "universe" / f"date={date}" / "status.json"
     latest_status = base_dir / "universe" / "us_microstructure_universe_status_latest.json"
     status_path = dated_status if dated_status.exists() else latest_status
+    dated_collection_status = base_dir / "universe" / f"date={date}" / "collection_status.json"
+    latest_collection_status = base_dir / "universe" / "us_microstructure_collection_universe_status_latest.json"
+    collection_status_path = dated_collection_status if dated_collection_status.exists() else latest_collection_status
     payload: dict[str, object] = {}
+    collection_payload: dict[str, object] = {}
     issues: list[str] = []
     if status_path.exists():
         try:
@@ -671,6 +675,13 @@ def _load_coarse_universe_summary(base_dir: Path, date: str) -> dict[str, object
             issues.append(f"coarse universe status unreadable: {exc}")
     else:
         issues.append("coarse universe status missing")
+    if collection_status_path.exists():
+        try:
+            raw = json.loads(collection_status_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                collection_payload = raw
+        except Exception as exc:
+            issues.append(f"collection universe status unreadable: {exc}")
     return {
         "exists": status_path.exists(),
         "status_path": str(status_path),
@@ -688,6 +699,12 @@ def _load_coarse_universe_summary(base_dir: Path, date: str) -> dict[str, object
         "core_symbol_fallback_used": bool(payload.get("core_symbol_fallback_used")),
         "core_watchlist_us_symbol_count": _count(payload.get("core_watchlist_us_symbol_count")),
         "candidate_core_count": _count(payload.get("candidate_core_count")),
+        "collection_exists": collection_status_path.exists(),
+        "collection_status_path": str(collection_status_path),
+        "collection_symbol_count": _count(collection_payload.get("collection_symbol_count")),
+        "collection_followup_count": _count(collection_payload.get("followup_selected_count")),
+        "collection_followup_days": _count(collection_payload.get("followup_days")),
+        "collection_max_total_symbols": _count(collection_payload.get("max_total_symbols")),
         "snapshot_error_count": _count(payload.get("snapshot_error_count")),
         "daily_error_count": _count(payload.get("daily_error_count")),
         "minute_error_count": _count(payload.get("minute_error_count")),
@@ -703,6 +720,7 @@ def _coarse_universe_markdown(summary: dict[str, object]) -> str:
         f"- 全市场股票数 / 快照覆盖 / 日线覆盖 / 分钟线覆盖：`{summary.get('universe_count', 0)}` / `{summary.get('snapshot_symbol_count', 0)}` / `{summary.get('daily_symbol_count', 0)}` / `{summary.get('minute_symbol_count', 0)}`",
         f"- 候选池：`{summary.get('candidate_count', 0)}`，目标 `{summary.get('target_size', 0)}`；核心标的保留 `{summary.get('candidate_core_count', 0)}` / `{summary.get('core_symbol_count', 0)}`",
         f"- 核心来源：`{_core_symbol_source_cn(summary.get('core_symbol_source'))}`；Futu 自选股美股数 `{summary.get('core_watchlist_us_symbol_count', 0)}`；启用静态兜底 `{_yes_no_cn(summary.get('core_symbol_fallback_used'))}`",
+        f"- 实际采集池：`{summary.get('collection_symbol_count', 0)}`；滚动追踪票 `{summary.get('collection_followup_count', 0)}`；追踪窗口 `{summary.get('collection_followup_days', 0)}` 天",
         f"- 快照 / 日线 / 分钟线错误数：`{summary.get('snapshot_error_count', 0)}` / `{summary.get('daily_error_count', 0)}` / `{summary.get('minute_error_count', 0)}`",
     ]
     issues = summary.get("issues", [])
@@ -720,6 +738,7 @@ def _coarse_universe_html(summary: dict[str, object]) -> str:
         "<div class='gate'><strong>粗筛股票池：</strong>可用={exists}；状态={status}；"
         "日期={date}；全市场={universe}；快照覆盖={snapshot}；日线覆盖={daily}；分钟线覆盖={minute}；"
         "候选={candidates}/{target}；核心={candidate_core}/{core}；核心来源={core_source}；Futu自选美股={watchlist_core}；静态兜底={fallback_used}；"
+        "实际采集={collection_count}；滚动追踪={followup_count}；追踪窗口={followup_days}天；"
         "错误数（快照/日线/分钟线）={snapshot_errors}/{daily_errors}/{minute_errors}{issues}</div>"
     ).format(
         exists=_yes_no_cn(summary.get("exists")),
@@ -736,6 +755,9 @@ def _coarse_universe_html(summary: dict[str, object]) -> str:
         core_source=html.escape(_core_symbol_source_cn(summary.get("core_symbol_source"))),
         watchlist_core=int(summary.get("core_watchlist_us_symbol_count") or 0),
         fallback_used=_yes_no_cn(summary.get("core_symbol_fallback_used")),
+        collection_count=int(summary.get("collection_symbol_count") or 0),
+        followup_count=int(summary.get("collection_followup_count") or 0),
+        followup_days=int(summary.get("collection_followup_days") or 0),
         snapshot_errors=int(summary.get("snapshot_error_count") or 0),
         daily_errors=int(summary.get("daily_error_count") or 0),
         minute_errors=int(summary.get("minute_error_count") or 0),
