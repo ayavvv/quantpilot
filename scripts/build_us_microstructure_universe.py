@@ -449,9 +449,26 @@ def select_candidates(scored: pd.DataFrame, *, target_size: int, core_symbols: l
     target_size = max(1, int(target_size))
     core_set = set(normalize_us_symbols(core_symbols))
     core = scored[scored["symbol"].isin(core_set)].copy()
+    if not core.empty:
+        core["selection_source"] = "core"
     ranked = scored[(scored["liquidity_pass"]) & (~scored["symbol"].isin(core_set))].copy()
     remaining_slots = max(0, target_size - len(core))
-    selected = pd.concat([ranked.head(remaining_slots), core], ignore_index=True)
+    selected_ranked = ranked.head(remaining_slots).copy()
+    if not selected_ranked.empty:
+        selected_ranked["selection_source"] = "liquidity_ranked"
+    selected_frames = [selected_ranked, core]
+    selected_symbols = set(selected_ranked["symbol"].dropna().astype(str))
+    selected_symbols.update(core["symbol"].dropna().astype(str))
+    fallback_slots = max(0, target_size - len(selected_ranked) - len(core))
+    if fallback_slots > 0:
+        fallback = scored[
+            (~scored["symbol"].isin(core_set))
+            & (~scored["symbol"].isin(selected_symbols))
+        ].head(fallback_slots).copy()
+        if not fallback.empty:
+            fallback["selection_source"] = "fallback_ranked"
+            selected_frames.insert(1, fallback)
+    selected = pd.concat(selected_frames, ignore_index=True)
     selected = selected.drop_duplicates("symbol", keep="first")
     selected = selected.sort_values(["coarse_score", "snapshot_turnover"], ascending=[False, False])
     selected = selected.reset_index(drop=True)
@@ -606,6 +623,11 @@ def build_universe(
         min_snapshot_volume=min_snapshot_volume,
     )
     candidates = select_candidates(scored, target_size=target_size, core_symbols=core_symbols)
+    selection_source = (
+        candidates["selection_source"].value_counts().to_dict()
+        if not candidates.empty and "selection_source" in candidates.columns
+        else {}
+    )
     status = {
         "status_schema_version": STATUS_SCHEMA_VERSION,
         "status": "ok" if not candidates.empty else "empty",
@@ -622,6 +644,9 @@ def build_universe(
         "candidate_count": int(len(candidates)),
         "core_symbol_count": int(len(normalize_us_symbols(core_symbols))),
         "candidate_core_count": int(candidates["core_symbol"].sum()) if not candidates.empty and "core_symbol" in candidates.columns else 0,
+        "candidate_liquidity_ranked_count": int(selection_source.get("liquidity_ranked", 0)),
+        "candidate_fallback_ranked_count": int(selection_source.get("fallback_ranked", 0)),
+        "candidate_target_shortfall": max(0, int(target_size) - int(len(candidates))),
         "min_price": float(min_price),
         "min_snapshot_turnover": float(min_snapshot_turnover),
         "min_snapshot_volume": float(min_snapshot_volume),
@@ -638,9 +663,13 @@ def build_universe(
         "snapshot_errors": dict(list(snapshot_errors.items())[:20]),
         "daily_errors": dict(list(daily_errors.items())[:20]),
         "minute_errors": dict(list(minute_errors.items())[:20]),
-        "candidates": candidates[["rank", "symbol", "coarse_score", "screen_reason"]].to_dict("records")
-        if not candidates.empty
-        else [],
+        "candidates": candidates[
+            [
+                column
+                for column in ("rank", "symbol", "coarse_score", "screen_reason", "selection_source")
+                if column in candidates.columns
+            ]
+        ].to_dict("records") if not candidates.empty else [],
     }
     return candidates, scored, status
 

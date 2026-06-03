@@ -101,6 +101,31 @@ def test_build_universe_scores_broad_market_and_keeps_core_symbol(tmp_path):
     assert status["daily_symbol_count"] == 3
     assert status["minute_symbol_count"] == 3
     assert status["candidate_core_count"] == 1
+    assert status["candidate_liquidity_ranked_count"] == 1
+    assert status["candidate_fallback_ranked_count"] == 0
+    assert status["candidate_target_shortfall"] == 0
+
+
+def test_select_candidates_falls_back_to_ranked_universe_when_liquidity_gate_is_empty():
+    scored = pd.DataFrame(
+        [
+            {"symbol": "US.AAA", "coarse_score": 80.0, "snapshot_turnover": 0.0, "liquidity_pass": False, "core_symbol": False},
+            {"symbol": "US.BBB", "coarse_score": 70.0, "snapshot_turnover": 0.0, "liquidity_pass": False, "core_symbol": False},
+            {"symbol": "US.CCC", "coarse_score": 60.0, "snapshot_turnover": 0.0, "liquidity_pass": False, "core_symbol": False},
+            {"symbol": "US.DDD", "coarse_score": 50.0, "snapshot_turnover": 0.0, "liquidity_pass": False, "core_symbol": False},
+            {"symbol": "US.AAPL", "coarse_score": 10.0, "snapshot_turnover": 0.0, "liquidity_pass": False, "core_symbol": True},
+        ]
+    )
+
+    candidates = builder.select_candidates(scored, target_size=4, core_symbols=["US.AAPL"])
+
+    assert len(candidates) == 4
+    assert set(candidates["symbol"]) == {"US.AAA", "US.BBB", "US.CCC", "US.AAPL"}
+    assert candidates["selection_source"].value_counts().to_dict() == {
+        "fallback_ranked": 3,
+        "core": 1,
+    }
+    assert "US.DDD" not in set(candidates["symbol"])
 
 
 def test_write_universe_outputs_writes_latest_text_and_status(tmp_path):
