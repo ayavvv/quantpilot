@@ -1138,6 +1138,20 @@ def _top_signal_lines_cn(signals: pd.DataFrame, *, confidence: str, limit: int =
     return lines
 
 
+def _alphabet_bias_warning_cn(coarse_universe: dict[str, object] | None) -> str:
+    if not isinstance(coarse_universe, dict) or not bool(coarse_universe.get("alphabet_bias_warning")):
+        return ""
+    details = []
+    candidate_text = _letter_summary_text(coarse_universe.get("candidate_dominant_letter", {}))
+    collection_text = _letter_summary_text(coarse_universe.get("collection_dominant_letter", {}))
+    if candidate_text != "n/a":
+        details.append(f"候选池 {candidate_text}")
+    if collection_text != "n/a":
+        details.append(f"实际采集池 {collection_text}")
+    detail_text = "；".join(details) if details else "股票池首字母过度集中"
+    return f"采集池异常：{detail_text}。今日候选作废，不展示观察名单，不能作为全市场追主力结论。"
+
+
 def _chinese_conclusion_lines(
     *,
     signals: pd.DataFrame,
@@ -1145,12 +1159,16 @@ def _chinese_conclusion_lines(
     data_quality: dict[str, object],
     validation_progress: dict[str, object],
     confidence_gap: dict[str, object],
+    coarse_universe: dict[str, object] | None = None,
 ) -> list[str]:
     high_count, high_accumulation, high_distribution = _side_counts(signals, "high")
     watch_count, _, _ = _side_counts(signals, "watch")
     diagnostic_count, _, _ = _side_counts(signals, "diagnostic")
     state = _state_label_cn(validation_gate)
-    if high_count > 0:
+    alphabet_warning = _alphabet_bias_warning_cn(coarse_universe)
+    if alphabet_warning:
+        first_line = "结论：今日股票池采集异常，本日报作废，不发布主力进出结论。"
+    elif high_count > 0:
         first_line = f"结论：今日有 {high_count} 个高置信追主力信号（吸筹 {high_accumulation} 个，出货 {high_distribution} 个）。"
     elif bool(confidence_gap.get("ready")):
         first_line = "结论：今日没有高置信主力进出信号。"
@@ -1189,9 +1207,13 @@ def _chinese_conclusion_lines(
     ]
     if blockers:
         lines.append("没有高置信的主要原因：" + "；".join(_blocker_cn(item) for item in blockers[:4]) + "。")
+    if alphabet_warning:
+        lines.append(alphabet_warning)
 
     top_high = _top_signal_lines_cn(signals, confidence="high")
-    if top_high:
+    if alphabet_warning:
+        lines.append("今日观察候选：不展示，已屏蔽偏置股票池产生的候选。")
+    elif top_high:
         lines.append("高置信标的：" + "；".join(top_high) + "。")
     else:
         top_watch = _top_signal_lines_cn(signals, confidence="watch")
@@ -1210,6 +1232,7 @@ def _chinese_conclusion_markdown(
     data_quality: dict[str, object],
     validation_progress: dict[str, object],
     confidence_gap: dict[str, object],
+    coarse_universe: dict[str, object] | None = None,
 ) -> str:
     lines = _chinese_conclusion_lines(
         signals=signals,
@@ -1217,6 +1240,7 @@ def _chinese_conclusion_markdown(
         data_quality=data_quality,
         validation_progress=validation_progress,
         confidence_gap=confidence_gap,
+        coarse_universe=coarse_universe,
     )
     return "## 今日结论\n\n" + "\n".join(f"- {line}" for line in lines) + "\n"
 
@@ -1228,6 +1252,7 @@ def _chinese_conclusion_html(
     data_quality: dict[str, object],
     validation_progress: dict[str, object],
     confidence_gap: dict[str, object],
+    coarse_universe: dict[str, object] | None = None,
 ) -> str:
     lines = _chinese_conclusion_lines(
         signals=signals,
@@ -1235,6 +1260,7 @@ def _chinese_conclusion_html(
         data_quality=data_quality,
         validation_progress=validation_progress,
         confidence_gap=confidence_gap,
+        coarse_universe=coarse_universe,
     )
     if not lines:
         return ""
@@ -1280,6 +1306,7 @@ def render_markdown_report(
             data_quality=data_quality,
             validation_progress=validation_progress,
             confidence_gap=confidence_gap,
+            coarse_universe=coarse_universe,
         ),
         "",
         f"报告状态：`{state}`",
@@ -1654,6 +1681,7 @@ def render_html_report(
         data_quality=data_quality,
         validation_progress=validation_progress,
         confidence_gap=confidence_gap,
+        coarse_universe=coarse_universe,
     )
     return f"""
 <html>

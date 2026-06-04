@@ -224,6 +224,38 @@ def test_coarse_universe_summary_flags_alphabet_biased_collection(tmp_path):
     assert "不能作为全市场追主力结论" in markdown
 
 
+def test_chinese_conclusion_suppresses_candidates_when_universe_is_alphabet_biased():
+    signals = pd.DataFrame(
+        [
+            {
+                "symbol": "US.AEC",
+                "side": "accumulation",
+                "confidence": "watch",
+                "side_score": 85.0,
+                "net_active_dollar": 1_000_000.0,
+                "active_buy_ratio": 0.78,
+            }
+        ]
+    )
+
+    markdown = report_script._chinese_conclusion_markdown(
+        signals=signals,
+        validation_gate={"state": "warmup", "validated": False},
+        data_quality={"symbol_count": 300, "eligible_symbol_count": 250},
+        validation_progress={},
+        confidence_gap={"ready": False},
+        coarse_universe={
+            "alphabet_bias_warning": True,
+            "candidate_dominant_letter": {"letter": "A", "count": 262, "total": 300, "share": 0.873},
+            "collection_dominant_letter": {"letter": "A", "count": 262, "total": 304, "share": 0.862},
+        },
+    )
+
+    assert "本日报作废" in markdown
+    assert "今日观察候选：不展示" in markdown
+    assert "AEC：吸筹" not in markdown
+
+
 def test_signal_scoring_requires_side_specific_validation_for_high_confidence():
     minutes = pd.date_range("2026-06-01 13:30:00+00:00", periods=6, freq="min")
     features = pd.DataFrame(
