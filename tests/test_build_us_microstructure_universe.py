@@ -343,6 +343,49 @@ def test_select_candidates_falls_back_to_ranked_universe_when_liquidity_gate_is_
     assert "US.DDD" not in set(candidates["symbol"])
 
 
+def test_select_candidates_stratifies_fallback_to_avoid_alphabet_bias():
+    scored = pd.DataFrame(
+        [
+            *[
+                {
+                    "symbol": f"US.A{i:03d}",
+                    "coarse_score": 100.0 - i,
+                    "snapshot_turnover": 0.0,
+                    "liquidity_pass": False,
+                    "core_symbol": False,
+                }
+                for i in range(20)
+            ],
+            *[
+                {
+                    "symbol": f"US.B{i:03d}",
+                    "coarse_score": 70.0 - i,
+                    "snapshot_turnover": 0.0,
+                    "liquidity_pass": False,
+                    "core_symbol": False,
+                }
+                for i in range(20)
+            ],
+            *[
+                {
+                    "symbol": f"US.C{i:03d}",
+                    "coarse_score": 40.0 - i,
+                    "snapshot_turnover": 0.0,
+                    "liquidity_pass": False,
+                    "core_symbol": False,
+                }
+                for i in range(20)
+            ],
+        ]
+    )
+
+    candidates = builder.select_candidates(scored, target_size=12, core_symbols=[])
+
+    letters = candidates["symbol"].str.split(".").str[-1].str[0].value_counts().to_dict()
+    assert letters == {"A": 4, "B": 4, "C": 4}
+    assert candidates["selection_source"].value_counts().to_dict() == {"fallback_ranked": 12}
+
+
 def test_write_universe_outputs_writes_latest_text_and_status(tmp_path):
     candidates = pd.DataFrame(
         [

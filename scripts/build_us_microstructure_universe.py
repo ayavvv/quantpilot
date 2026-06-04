@@ -372,6 +372,31 @@ def _stratify_symbols_by_first_letter(symbols: Iterable[object]) -> list[str]:
     return result
 
 
+def _take_rows_stratified_by_first_letter(frame: pd.DataFrame, *, limit: int) -> pd.DataFrame:
+    limit = max(0, int(limit))
+    if limit <= 0 or frame.empty or "symbol" not in frame.columns:
+        return frame.head(0).copy()
+
+    work = frame.copy()
+    work["_first_letter"] = work["symbol"].map(_symbol_first_letter)
+    buckets: OrderedDict[str, list[int]] = OrderedDict()
+    for index, letter in work["_first_letter"].items():
+        buckets.setdefault(letter, []).append(index)
+
+    selected_indexes: list[int] = []
+    while buckets and len(selected_indexes) < limit:
+        for letter in list(buckets.keys()):
+            bucket = buckets[letter]
+            if bucket:
+                selected_indexes.append(bucket.pop(0))
+                if len(selected_indexes) >= limit:
+                    break
+            if not bucket:
+                del buckets[letter]
+
+    return work.loc[selected_indexes].drop(columns="_first_letter").copy()
+
+
 def _snapshot_positive_liquidity_count(snapshot: pd.DataFrame) -> int:
     if snapshot.empty or "snapshot_turnover" not in snapshot.columns or "snapshot_volume" not in snapshot.columns:
         return 0
@@ -861,10 +886,11 @@ def select_candidates(scored: pd.DataFrame, *, target_size: int, core_symbols: l
     selected_symbols.update(core["symbol"].dropna().astype(str))
     fallback_slots = max(0, target_size - len(selected_ranked) - len(core))
     if fallback_slots > 0:
-        fallback = scored[
+        fallback_pool = scored[
             (~scored["symbol"].isin(core_set))
             & (~scored["symbol"].isin(selected_symbols))
-        ].head(fallback_slots).copy()
+        ].copy()
+        fallback = _take_rows_stratified_by_first_letter(fallback_pool, limit=fallback_slots)
         if not fallback.empty:
             fallback["selection_source"] = "fallback_ranked"
             selected_frames.insert(1, fallback)
