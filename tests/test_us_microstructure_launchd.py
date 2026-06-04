@@ -46,11 +46,17 @@ def test_collect_script_runs_futu_collector_with_nas_and_lock():
     assert "US_MICROSTRUCTURE_FOLLOWUP_MIN_SCORE" in content
     assert "US_MICROSTRUCTURE_COLLECTION_MAX_SYMBOLS" in content
     assert "US_MICROSTRUCTURE_COLLECTION_UNIVERSE_FILE" in content
+    assert "US_MICROSTRUCTURE_FLOW_RANKING_FILE" in content
+    assert "US_MICROSTRUCTURE_UNIVERSE_HISTORY_SLEEP_SECONDS" in content
+    assert "US_MICROSTRUCTURE_UNIVERSE_MINUTE_SLEEP_SECONDS" in content
     assert "US_MICROSTRUCTURE_UNIVERSE_FILE" in content
     assert "config/us_microstructure_core_symbols.txt" in content
     assert "--core-source" in content
     assert "--core-watchlist-groups" in content
     assert "--core-watchlist-group-type" in content
+    assert "--flow-ranking-file" in content
+    assert "--history-sleep-seconds" in content
+    assert "--minute-sleep-seconds" in content
     assert '"$PYTHON_BIN" -m scripts.build_us_microstructure_collection_universe' in content
     assert "--followup-days" in content
     assert "--followup-max-symbols" in content

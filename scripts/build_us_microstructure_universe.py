@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import time
+from collections import OrderedDict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -31,9 +32,11 @@ DATA_DIR = Path(os.environ.get("DATA_DIR", str(Path.home() / "quantpilot_data"))
 DEFAULT_BASE_DIR = Path(os.environ.get("US_MICROSTRUCTURE_DIR", str(DATA_DIR / "us_microstructure")))
 DEFAULT_NAS_DIR = "/volume1/docker/quantpilot/us_microstructure"
 DEFAULT_CORE_SYMBOLS_FILE = Path(__file__).resolve().parents[1] / "config" / "us_microstructure_core_symbols.txt"
+DEFAULT_FLOW_RANKING_FILE = DATA_DIR / "capital_flow" / "futu_market" / "US_latest_flow.csv"
 DEFAULT_CORE_SOURCE = "futu_watchlist"
 DEFAULT_CORE_WATCHLIST_GROUP_TYPE = "ALL"
 DEFAULT_CORE_WATCHLIST_MAX_GROUPS = 8
+DEFAULT_HISTORY_SLEEP_SECONDS = 0.55
 FUTU_WATCHLIST_RATE_LIMIT_SLEEP_SECONDS = 31.0
 US_EASTERN = ZoneInfo("America/New_York")
 STATUS_SCHEMA_VERSION = 1
@@ -326,6 +329,57 @@ def _percentile_rank(series: pd.Series) -> pd.Series:
     return values.rank(pct=True).fillna(0.0)
 
 
+def _symbol_first_letter(symbol: object) -> str:
+    text = normalize_us_symbol(symbol)
+    ticker = text.split(".", 1)[1] if "." in text else text
+    for char in ticker:
+        if char.isalpha():
+            return char.upper()
+    return "0"
+
+
+def _first_letter_counts(symbols: Iterable[object]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for symbol in symbols:
+        letter = _symbol_first_letter(symbol)
+        counts[letter] = counts.get(letter, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _unique_symbols(symbols: Iterable[object]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for symbol in normalize_us_symbols(symbols):
+        if symbol and symbol not in seen:
+            result.append(symbol)
+            seen.add(symbol)
+    return result
+
+
+def _stratify_symbols_by_first_letter(symbols: Iterable[object]) -> list[str]:
+    buckets: OrderedDict[str, list[str]] = OrderedDict()
+    for symbol in _unique_symbols(symbols):
+        buckets.setdefault(_symbol_first_letter(symbol), []).append(symbol)
+
+    result: list[str] = []
+    while buckets:
+        for letter in list(buckets.keys()):
+            bucket = buckets[letter]
+            if bucket:
+                result.append(bucket.pop(0))
+            if not bucket:
+                del buckets[letter]
+    return result
+
+
+def _snapshot_positive_liquidity_count(snapshot: pd.DataFrame) -> int:
+    if snapshot.empty or "snapshot_turnover" not in snapshot.columns or "snapshot_volume" not in snapshot.columns:
+        return 0
+    turnover = pd.to_numeric(snapshot["snapshot_turnover"], errors="coerce").fillna(0.0)
+    volume = pd.to_numeric(snapshot["snapshot_volume"], errors="coerce").fillna(0.0)
+    return int(((turnover > 0) & (volume > 0)).sum())
+
+
 def _normalize_snapshot_frame(snapshot: pd.DataFrame) -> pd.DataFrame:
     if snapshot.empty:
         return pd.DataFrame(
@@ -360,9 +414,10 @@ def _normalize_snapshot_frame(snapshot: pd.DataFrame) -> pd.DataFrame:
         (frame["snapshot_price"] / frame["snapshot_prev_close"] - 1.0) * 100.0
     ).where(frame["snapshot_prev_close"] > 0)
     frame["snapshot_change_pct"] = change.where(change.notna(), computed_change).fillna(0.0)
+    valid_open = (frame["snapshot_open"] > 0) & (frame["snapshot_prev_close"] > 0)
     frame["snapshot_gap_pct"] = (
         (frame["snapshot_open"] / frame["snapshot_prev_close"] - 1.0) * 100.0
-    ).where(frame["snapshot_prev_close"] > 0).fillna(0.0)
+    ).where(valid_open).fillna(0.0)
     frame["snapshot_turn_rate"] = _series_number(frame, ["turn_rate", "turnover_rate"], default=0.0)
     keep = [
         "symbol",
@@ -408,6 +463,114 @@ def fetch_market_snapshots(
             time.sleep(sleep_seconds)
     snapshot = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     return _normalize_snapshot_frame(snapshot), errors
+
+
+def load_flow_ranking(path: str | Path | None) -> pd.DataFrame:
+    if not path:
+        return pd.DataFrame()
+    resolved = Path(path).expanduser()
+    if not resolved.exists():
+        return pd.DataFrame()
+    try:
+        frame = pd.read_csv(resolved)
+    except Exception:
+        return pd.DataFrame()
+    if frame.empty:
+        return pd.DataFrame()
+
+    result = frame.copy()
+    if "symbol" not in result.columns:
+        result["symbol"] = result["code"] if "code" in result.columns else ""
+    result["symbol"] = result["symbol"].map(normalize_us_symbol)
+    result = result[result["symbol"] != ""].drop_duplicates("symbol", keep="first").reset_index(drop=True)
+    if result.empty:
+        return pd.DataFrame()
+
+    flow_columns = [
+        "latest_main_in_flow",
+        "latest_super_in_flow",
+        "latest_big_in_flow",
+        "main_3d_sum",
+        "super_3d_sum",
+        "big_3d_sum",
+        "main_5d_sum",
+        "super_5d_sum",
+        "big_5d_sum",
+        "main_10d_sum",
+        "super_10d_sum",
+        "big_10d_sum",
+    ]
+    available = [column for column in flow_columns if column in result.columns]
+    if available:
+        numeric = result[available].apply(pd.to_numeric, errors="coerce").fillna(0.0).abs()
+        result["flow_activity"] = numeric.max(axis=1)
+    else:
+        result["flow_activity"] = 0.0
+
+    result["flow_activity_component"] = _percentile_rank(result["flow_activity"].map(lambda value: max(value, 0.0)) ** 0.5)
+    rename_map = {
+        "capital_flow_status": "flow_status",
+        "capital_flow_latest_date": "flow_latest_date",
+        "latest_main_in_flow": "flow_latest_main_in_flow",
+        "main_3d_sum": "flow_main_3d_sum",
+        "main_5d_sum": "flow_main_5d_sum",
+        "main_10d_sum": "flow_main_10d_sum",
+    }
+    result = result.rename(columns={old: new for old, new in rename_map.items() if old in result.columns})
+    keep = [
+        "symbol",
+        "flow_activity",
+        "flow_activity_component",
+        "flow_status",
+        "flow_latest_date",
+        "flow_latest_main_in_flow",
+        "flow_main_3d_sum",
+        "flow_main_5d_sum",
+        "flow_main_10d_sum",
+    ]
+    for column in keep:
+        if column not in result.columns:
+            result[column] = "" if column in {"flow_status", "flow_latest_date"} else 0.0
+    return result[keep].reset_index(drop=True)
+
+
+def select_enrichment_symbols(
+    universe_symbols: list[str],
+    snapshot: pd.DataFrame,
+    flow_ranking: pd.DataFrame,
+    *,
+    core_symbols: list[str],
+    limit: int,
+) -> tuple[list[str], str]:
+    limit = max(0, int(limit))
+    if limit <= 0:
+        return [], "disabled"
+
+    selected: list[str] = []
+    selected.extend(normalize_us_symbols(core_symbols))
+    positive_snapshot_count = _snapshot_positive_liquidity_count(snapshot)
+    source = "stratified_universe"
+
+    if positive_snapshot_count >= max(20, min(limit, len(snapshot)) // 5):
+        ranked = (
+            snapshot.sort_values(["snapshot_turnover", "snapshot_volume"], ascending=[False, False])["symbol"].tolist()
+            if "symbol" in snapshot.columns
+            else []
+        )
+        selected.extend(ranked)
+        source = "snapshot_liquidity"
+    elif not flow_ranking.empty and "flow_activity" in flow_ranking.columns:
+        ranked_flow = flow_ranking[pd.to_numeric(flow_ranking["flow_activity"], errors="coerce").fillna(0.0) > 0].copy()
+        if not ranked_flow.empty:
+            universe_set = set(normalize_us_symbols(universe_symbols))
+            ranked_flow = ranked_flow[ranked_flow["symbol"].isin(universe_set)].copy()
+        if not ranked_flow.empty:
+            ranked_flow = ranked_flow.sort_values(["flow_activity", "symbol"], ascending=[False, True])
+            selected.extend(ranked_flow["symbol"].tolist())
+            source = "capital_flow_activity"
+
+    selected.extend(_stratify_symbols_by_first_letter(universe_symbols))
+    return _unique_symbols(selected)[:limit], source
 
 
 def _kline_date_column(frame: pd.DataFrame) -> pd.Series:
@@ -572,6 +735,7 @@ def _score_candidates(
     snapshot: pd.DataFrame,
     daily: pd.DataFrame,
     minute: pd.DataFrame,
+    flow_ranking: pd.DataFrame | None = None,
     *,
     core_symbols: list[str],
     min_price: float,
@@ -594,6 +758,8 @@ def _score_candidates(
         result = result.merge(daily.drop_duplicates("symbol"), on="symbol", how="left")
     if not minute.empty:
         result = result.merge(minute.drop_duplicates("symbol"), on="symbol", how="left")
+    if flow_ranking is not None and not flow_ranking.empty:
+        result = result.merge(flow_ranking.drop_duplicates("symbol"), on="symbol", how="left")
 
     numeric_defaults = [
         "snapshot_price",
@@ -603,6 +769,7 @@ def _score_candidates(
         "snapshot_gap_pct",
         "snapshot_turn_rate",
         "daily_turnover",
+        "daily_close",
         "daily_volume",
         "daily_avg_turnover_20d",
         "daily_avg_volume_20d",
@@ -610,6 +777,8 @@ def _score_candidates(
         "daily_volume_ratio_20d",
         "minute_turnover_last5",
         "minute_turnover_burst_ratio",
+        "flow_activity",
+        "flow_activity_component",
     ]
     for column in numeric_defaults:
         if column not in result.columns:
@@ -618,17 +787,20 @@ def _score_candidates(
 
     core_set = set(normalize_us_symbols(core_symbols))
     result["core_symbol"] = result["symbol"].isin(core_set)
+    fallback_price = result["daily_close"] if "daily_close" in result.columns else 0.0
+    result["active_price_for_liquidity"] = result["snapshot_price"].where(result["snapshot_price"] > 0, fallback_price)
+    result["active_turnover_for_liquidity"] = result["snapshot_turnover"].where(result["snapshot_turnover"] > 0, result["daily_turnover"])
+    result["active_volume_for_liquidity"] = result["snapshot_volume"].where(result["snapshot_volume"] > 0, result["daily_volume"])
     result["liquidity_pass"] = (
         result["core_symbol"]
         | (
-            (result["snapshot_price"] >= float(min_price))
-            & (result["snapshot_turnover"] >= float(min_snapshot_turnover))
-            & (result["snapshot_volume"] >= float(min_snapshot_volume))
+            (result["active_price_for_liquidity"] >= float(min_price))
+            & (result["active_turnover_for_liquidity"] >= float(min_snapshot_turnover))
+            & (result["active_volume_for_liquidity"] >= float(min_snapshot_volume))
         )
     )
-    active_turnover = result["snapshot_turnover"].where(result["snapshot_turnover"] > 0, result["daily_turnover"])
-    avg_turnover = result["daily_avg_turnover_20d"].where(result["daily_avg_turnover_20d"] > 0, active_turnover)
-    result["liquidity_score_component"] = _percentile_rank(active_turnover.map(lambda value: max(value, 0.0)) ** 0.5)
+    avg_turnover = result["daily_avg_turnover_20d"].where(result["daily_avg_turnover_20d"] > 0, result["active_turnover_for_liquidity"])
+    result["liquidity_score_component"] = _percentile_rank(result["active_turnover_for_liquidity"].map(lambda value: max(value, 0.0)) ** 0.5)
     result["daily_liquidity_component"] = _percentile_rank(avg_turnover.map(lambda value: max(value, 0.0)) ** 0.5)
     result["move_component"] = _percentile_rank(result["snapshot_change_pct"].abs())
     result["gap_component"] = _percentile_rank(result["snapshot_gap_pct"].abs())
@@ -643,10 +815,11 @@ def _score_candidates(
         + 15.0 * result["move_component"]
         + 10.0 * result["gap_component"]
         + 7.0 * result["minute_component"]
+        + 10.0 * result["flow_activity_component"]
     )
     result.loc[result["core_symbol"], "coarse_score"] = result.loc[result["core_symbol"], "coarse_score"] + 5.0
     result["screen_reason"] = result.apply(_screen_reason, axis=1)
-    return result.sort_values(["coarse_score", "snapshot_turnover"], ascending=[False, False]).reset_index(drop=True)
+    return result.sort_values(["coarse_score", "active_turnover_for_liquidity"], ascending=[False, False]).reset_index(drop=True)
 
 
 def _screen_reason(row: pd.Series) -> str:
@@ -655,6 +828,10 @@ def _screen_reason(row: pd.Series) -> str:
         reasons.append("core")
     if _number(row.get("snapshot_turnover")) > 0:
         reasons.append("turnover")
+    elif _number(row.get("daily_turnover")) > 0:
+        reasons.append("daily_liquidity")
+    if _number(row.get("flow_activity")) > 0:
+        reasons.append("flow_activity")
     if abs(_number(row.get("snapshot_change_pct"))) >= 3.0:
         reasons.append("move")
     if abs(_number(row.get("snapshot_gap_pct"))) >= 2.0:
@@ -693,7 +870,8 @@ def select_candidates(scored: pd.DataFrame, *, target_size: int, core_symbols: l
             selected_frames.insert(1, fallback)
     selected = pd.concat(selected_frames, ignore_index=True)
     selected = selected.drop_duplicates("symbol", keep="first")
-    selected = selected.sort_values(["coarse_score", "snapshot_turnover"], ascending=[False, False])
+    tie_breaker = "active_turnover_for_liquidity" if "active_turnover_for_liquidity" in selected.columns else "snapshot_turnover"
+    selected = selected.sort_values(["coarse_score", tie_breaker], ascending=[False, False])
     selected = selected.reset_index(drop=True)
     selected["rank"] = range(1, len(selected) + 1)
     return selected
@@ -781,6 +959,7 @@ def build_universe(
     minute_sleep_seconds: float,
     skip_daily_kline: bool,
     skip_minute_kline: bool,
+    flow_ranking_file: str | Path | None = None,
     core_metadata: dict[str, object] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, object]]:
     from futu import AuType, KLType
@@ -807,12 +986,25 @@ def build_universe(
         batch_size=snapshot_batch_size,
         sleep_seconds=snapshot_sleep_seconds,
     )
-    snapshot_ranked = snapshot.sort_values(["snapshot_turnover", "snapshot_volume"], ascending=[False, False]).reset_index(drop=True)
+    flow_ranking = load_flow_ranking(flow_ranking_file)
+    flow_positive_count = (
+        int((pd.to_numeric(flow_ranking["flow_activity"], errors="coerce").fillna(0.0) > 0).sum())
+        if not flow_ranking.empty and "flow_activity" in flow_ranking.columns
+        else 0
+    )
+    enrichment_symbols, enrichment_ranking_source = select_enrichment_symbols(
+        universe_symbols,
+        snapshot,
+        flow_ranking,
+        core_symbols=core_symbols,
+        limit=max(int(history_pool_size), int(minute_pool_size), int(target_size)),
+    )
 
     daily = pd.DataFrame()
     daily_errors: dict[str, str] = {}
-    if not skip_daily_kline and not snapshot_ranked.empty:
-        daily_symbols = snapshot_ranked["symbol"].head(max(0, int(history_pool_size))).tolist()
+    daily_symbols: list[str] = []
+    if not skip_daily_kline and enrichment_symbols:
+        daily_symbols = enrichment_symbols[: max(0, int(history_pool_size))]
         daily, daily_errors = fetch_daily_metrics(
             ctx,
             daily_symbols,
@@ -825,8 +1017,9 @@ def build_universe(
 
     minute = pd.DataFrame()
     minute_errors: dict[str, str] = {}
-    if not skip_minute_kline and not snapshot_ranked.empty:
-        minute_symbols = snapshot_ranked["symbol"].head(max(0, int(minute_pool_size))).tolist()
+    minute_symbols: list[str] = []
+    if not skip_minute_kline and enrichment_symbols:
+        minute_symbols = enrichment_symbols[: max(0, int(minute_pool_size))]
         minute, minute_errors = fetch_minute_metrics(
             ctx,
             minute_symbols,
@@ -841,6 +1034,7 @@ def build_universe(
         snapshot,
         daily,
         minute,
+        flow_ranking,
         core_symbols=core_symbols,
         min_price=min_price,
         min_snapshot_turnover=min_snapshot_turnover,
@@ -863,9 +1057,19 @@ def build_universe(
         "target_size": int(target_size),
         "universe_count": int(len(universe)),
         "snapshot_symbol_count": int(snapshot["symbol"].nunique()) if not snapshot.empty else 0,
+        "snapshot_positive_liquidity_count": _snapshot_positive_liquidity_count(snapshot),
+        "flow_ranking_file": str(Path(flow_ranking_file).expanduser()) if flow_ranking_file else "",
+        "flow_ranking_symbol_count": int(flow_ranking["symbol"].nunique()) if not flow_ranking.empty and "symbol" in flow_ranking.columns else 0,
+        "flow_ranking_positive_count": int(flow_positive_count),
+        "enrichment_ranking_source": enrichment_ranking_source,
+        "enrichment_symbol_count": int(len(enrichment_symbols)),
+        "enrichment_first_letter_counts": _first_letter_counts(enrichment_symbols),
+        "daily_symbol_requested_count": int(len(daily_symbols)),
+        "minute_symbol_requested_count": int(len(minute_symbols)),
         "daily_symbol_count": int(daily["symbol"].nunique()) if not daily.empty and "symbol" in daily.columns else 0,
         "minute_symbol_count": int(minute["symbol"].nunique()) if not minute.empty and "symbol" in minute.columns else 0,
         "candidate_count": int(len(candidates)),
+        "candidate_first_letter_counts": _first_letter_counts(candidates["symbol"].tolist()) if not candidates.empty and "symbol" in candidates.columns else {},
         "core_symbol_count": int(len(normalize_us_symbols(core_symbols))),
         "core_symbol_source": "explicit",
         "candidate_core_count": int(candidates["core_symbol"].sum()) if not candidates.empty and "core_symbol" in candidates.columns else 0,
@@ -926,6 +1130,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--host", default=os.environ.get("FUTU_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("FUTU_PORT", "11111")))
     parser.add_argument("--rsa-key", default=os.environ.get("FUTU_RSA_KEY", str(DEFAULT_RSA_KEY)))
+    parser.add_argument("--flow-ranking-file", default=os.environ.get("US_MICROSTRUCTURE_FLOW_RANKING_FILE", str(DEFAULT_FLOW_RANKING_FILE)))
     parser.add_argument("--include-exchange-types", default=os.environ.get("US_MICROSTRUCTURE_UNIVERSE_INCLUDE_EXCHANGE_TYPES", ""))
     parser.add_argument("--exclude-exchange-types", default=os.environ.get("US_MICROSTRUCTURE_UNIVERSE_EXCLUDE_EXCHANGE_TYPES", "US_PINK,N/A"))
     parser.add_argument("--exclude-security-classes", default=os.environ.get("US_MICROSTRUCTURE_UNIVERSE_EXCLUDE_SECURITY_CLASSES", DEFAULT_EXCLUDE_SECURITY_CLASSES))
@@ -939,7 +1144,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--minute-lookback", type=int, default=int(os.environ.get("US_MICROSTRUCTURE_UNIVERSE_MINUTE_LOOKBACK", "30")))
     parser.add_argument("--snapshot-batch-size", type=int, default=int(os.environ.get("US_MICROSTRUCTURE_UNIVERSE_SNAPSHOT_BATCH_SIZE", "200")))
     parser.add_argument("--snapshot-sleep-seconds", type=float, default=float(os.environ.get("US_MICROSTRUCTURE_UNIVERSE_SNAPSHOT_SLEEP_SECONDS", "0.05")))
-    parser.add_argument("--history-sleep-seconds", type=float, default=float(os.environ.get("US_MICROSTRUCTURE_UNIVERSE_HISTORY_SLEEP_SECONDS", "0.02")))
+    parser.add_argument("--history-sleep-seconds", type=float, default=float(os.environ.get("US_MICROSTRUCTURE_UNIVERSE_HISTORY_SLEEP_SECONDS", str(DEFAULT_HISTORY_SLEEP_SECONDS))))
     parser.add_argument("--minute-sleep-seconds", type=float, default=float(os.environ.get("US_MICROSTRUCTURE_UNIVERSE_MINUTE_SLEEP_SECONDS", "0.02")))
     parser.add_argument("--skip-daily-kline", action="store_true")
     parser.add_argument("--skip-minute-kline", action="store_true")
@@ -987,6 +1192,7 @@ def main(argv: list[str] | None = None) -> int:
             minute_sleep_seconds=args.minute_sleep_seconds,
             skip_daily_kline=bool(args.skip_daily_kline),
             skip_minute_kline=bool(args.skip_minute_kline),
+            flow_ranking_file=args.flow_ranking_file,
             core_metadata=core_metadata,
         )
     finally:

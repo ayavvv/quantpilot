@@ -68,6 +68,47 @@ class FakeUniverseCtx:
         return 0, pd.DataFrame(self.minute_rows.get(code, []))
 
 
+class FakeZeroSnapshotFlowCtx:
+    def __init__(self):
+        self.basic_rows = [
+            {"code": "US.AAA", "name": "AAA Corp", "exchange_type": "US_NASDAQ", "delisting": False},
+            {"code": "US.BBB", "name": "BBB Corp", "exchange_type": "US_NYSE", "delisting": False},
+            {"code": "US.XYZ", "name": "XYZ Corp", "exchange_type": "US_NASDAQ", "delisting": False},
+            {"code": "US.ZZZ", "name": "ZZZ Corp", "exchange_type": "US_NYSE", "delisting": False},
+        ]
+        self.daily_rows = {
+            "US.XYZ": [
+                {"time_key": "2026-05-29 00:00:00", "close": 20, "volume": 100000, "turnover": 2000000},
+                {"time_key": "2026-06-01 00:00:00", "close": 30, "volume": 400000, "turnover": 12000000},
+            ],
+            "US.ZZZ": [
+                {"time_key": "2026-05-29 00:00:00", "close": 40, "volume": 100000, "turnover": 4000000},
+                {"time_key": "2026-06-01 00:00:00", "close": 50, "volume": 500000, "turnover": 25000000},
+            ],
+        }
+
+    def get_stock_basicinfo(self, market, security_type):
+        return 0, pd.DataFrame(self.basic_rows)
+
+    def get_market_snapshot(self, codes):
+        rows = [
+            {
+                "code": code,
+                "last_price": 0,
+                "open_price": 0,
+                "prev_close_price": 10,
+                "volume": 0,
+                "turnover": 0,
+                "change_rate": 0,
+            }
+            for code in codes
+        ]
+        return 0, pd.DataFrame(rows)
+
+    def request_history_kline(self, code, start, end, ktype, autype, max_count, page_req_key=None):
+        return 0, pd.DataFrame(self.daily_rows.get(code, [])), None
+
+
 class FakeWatchlistCtx:
     def __init__(self):
         self.group_type = None
@@ -215,6 +256,69 @@ def test_build_universe_scores_broad_market_and_keeps_core_symbol(tmp_path):
     assert status["candidate_liquidity_ranked_count"] == 1
     assert status["candidate_fallback_ranked_count"] == 0
     assert status["candidate_target_shortfall"] == 0
+
+
+def test_build_universe_uses_flow_ranking_when_snapshot_liquidity_is_zero(tmp_path):
+    flow_path = tmp_path / "US_latest_flow.csv"
+    pd.DataFrame(
+        [
+            {"code": "US.ZZZ", "capital_flow_status": "ok", "main_3d_sum": 100_000_000},
+            {"code": "US.XYZ", "capital_flow_status": "ok", "main_3d_sum": 50_000_000},
+            {"code": "US.AAA", "capital_flow_status": "ok", "main_3d_sum": 1},
+        ]
+    ).to_csv(flow_path, index=False)
+
+    candidates, scored, status = builder.build_universe(
+        ctx=FakeZeroSnapshotFlowCtx(),
+        base_dir=tmp_path,
+        date_value="2026-06-01",
+        target_size=2,
+        core_symbols=[],
+        include_exchange_types=set(),
+        exclude_exchange_types=set(),
+        exclude_security_classes=set(),
+        max_universe_codes=0,
+        min_price=2,
+        min_snapshot_turnover=1_000_000,
+        min_snapshot_volume=50_000,
+        history_pool_size=2,
+        minute_pool_size=0,
+        daily_lookback_days=30,
+        minute_lookback=30,
+        snapshot_batch_size=10,
+        snapshot_sleep_seconds=0,
+        history_sleep_seconds=0,
+        minute_sleep_seconds=0,
+        skip_daily_kline=False,
+        skip_minute_kline=True,
+        flow_ranking_file=flow_path,
+    )
+
+    assert candidates["symbol"].tolist() == ["US.ZZZ", "US.XYZ"]
+    assert set(scored[scored["daily_status"] == "ok"]["symbol"]) == {"US.ZZZ", "US.XYZ"}
+    assert status["snapshot_positive_liquidity_count"] == 0
+    assert status["enrichment_ranking_source"] == "capital_flow_activity"
+    assert status["daily_symbol_requested_count"] == 2
+    assert status["candidate_liquidity_ranked_count"] == 2
+
+
+def test_normalize_snapshot_frame_ignores_zero_open_for_gap():
+    snapshot = builder._normalize_snapshot_frame(
+        pd.DataFrame(
+            [
+                {
+                    "code": "US.AAA",
+                    "last_price": 10,
+                    "open_price": 0,
+                    "prev_close_price": 10,
+                    "volume": 0,
+                    "turnover": 0,
+                }
+            ]
+        )
+    )
+
+    assert snapshot.loc[0, "snapshot_gap_pct"] == 0.0
 
 
 def test_select_candidates_falls_back_to_ranked_universe_when_liquidity_gate_is_empty():
