@@ -192,6 +192,38 @@ def test_signal_scoring_keeps_strong_candidate_warmup_without_validation_gate():
     assert row["duplicate_sequence_count"] == 0
 
 
+def test_coarse_universe_summary_flags_alphabet_biased_collection(tmp_path):
+    universe_dir = tmp_path / "universe" / "date=2026-06-03"
+    universe_dir.mkdir(parents=True)
+    (universe_dir / "status.json").write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "date": "2026-06-03",
+                "candidate_count": 5,
+                "target_size": 5,
+                "universe_count": 100,
+            }
+        ),
+        encoding="utf-8",
+    )
+    pd.DataFrame({"symbol": ["US.AAA", "US.AAB", "US.AAC", "US.AAD", "US.BBB"]}).to_csv(
+        universe_dir / "us_microstructure_candidates.csv",
+        index=False,
+    )
+    pd.DataFrame({"symbol": [f"US.A{i:03d}" for i in range(60)] + ["US.BBB", "US.CCC"]}).to_csv(
+        universe_dir / "us_microstructure_collection_universe.csv",
+        index=False,
+    )
+
+    summary = report_script._load_coarse_universe_summary(tmp_path, "2026-06-03")
+    markdown = report_script._coarse_universe_markdown(summary)
+
+    assert summary["alphabet_bias_warning"] is True
+    assert summary["collection_dominant_letter"]["letter"] == "A"
+    assert "不能作为全市场追主力结论" in markdown
+
+
 def test_signal_scoring_requires_side_specific_validation_for_high_confidence():
     minutes = pd.date_range("2026-06-01 13:30:00+00:00", periods=6, freq="min")
     features = pd.DataFrame(

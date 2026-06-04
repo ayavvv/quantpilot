@@ -116,6 +116,67 @@ def _count(value: object) -> int:
         return 0
 
 
+def _symbol_first_letter(symbol: object) -> str:
+    text = str(symbol or "").strip().upper()
+    if text.startswith("US."):
+        text = text[3:]
+    for char in text:
+        if char.isalpha():
+            return char
+    return "0"
+
+
+def _first_letter_counts(symbols: Iterable[object]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for symbol in symbols:
+        letter = _symbol_first_letter(symbol)
+        counts[letter] = counts.get(letter, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _dominant_letter_summary(counts: object) -> dict[str, object]:
+    if not isinstance(counts, dict) or not counts:
+        return {"letter": "", "count": 0, "total": 0, "share": 0.0, "biased": False}
+    parsed = {str(key): _count(value) for key, value in counts.items()}
+    parsed = {key: value for key, value in parsed.items() if value > 0}
+    total = sum(parsed.values())
+    if total <= 0:
+        return {"letter": "", "count": 0, "total": 0, "share": 0.0, "biased": False}
+    letter, count = max(parsed.items(), key=lambda item: item[1])
+    share = count / total
+    return {
+        "letter": letter,
+        "count": int(count),
+        "total": int(total),
+        "share": float(share),
+        "biased": bool(total >= 50 and share >= 0.60),
+    }
+
+
+def _read_symbol_counts_from_csv(path: Path, *, column: str = "symbol") -> dict[str, int]:
+    if not path.exists():
+        return {}
+    try:
+        frame = pd.read_csv(path, usecols=[column])
+    except Exception:
+        return {}
+    if frame.empty or column not in frame.columns:
+        return {}
+    return _first_letter_counts(frame[column].dropna().astype(str).tolist())
+
+
+def _letter_summary_text(summary: dict[str, object]) -> str:
+    total = int(summary.get("total") or 0)
+    if total <= 0:
+        return "n/a"
+    return "{letter} {count}/{total}（{share}）".format(
+        letter=str(summary.get("letter") or ""),
+        count=int(summary.get("count") or 0),
+        total=total,
+        share=_pct(summary.get("share")),
+    )
+
+
 def _raw_counts(inputs: dict[str, pd.DataFrame]) -> dict[str, int]:
     return {kind: int(len(frame)) for kind, frame in inputs.items()}
 
@@ -658,9 +719,15 @@ def _load_coarse_universe_summary(base_dir: Path, date: str) -> dict[str, object
     dated_status = base_dir / "universe" / f"date={date}" / "status.json"
     latest_status = base_dir / "universe" / "us_microstructure_universe_status_latest.json"
     status_path = dated_status if dated_status.exists() else latest_status
+    dated_candidates = base_dir / "universe" / f"date={date}" / "us_microstructure_candidates.csv"
+    latest_candidates = base_dir / "universe" / "us_microstructure_candidates_latest.csv"
+    candidates_path = dated_candidates if dated_candidates.exists() else latest_candidates
     dated_collection_status = base_dir / "universe" / f"date={date}" / "collection_status.json"
     latest_collection_status = base_dir / "universe" / "us_microstructure_collection_universe_status_latest.json"
     collection_status_path = dated_collection_status if dated_collection_status.exists() else latest_collection_status
+    dated_collection = base_dir / "universe" / f"date={date}" / "us_microstructure_collection_universe.csv"
+    latest_collection = base_dir / "universe" / "us_microstructure_collection_universe_latest.csv"
+    collection_path = dated_collection if dated_collection.exists() else latest_collection
     payload: dict[str, object] = {}
     collection_payload: dict[str, object] = {}
     issues: list[str] = []
@@ -682,6 +749,28 @@ def _load_coarse_universe_summary(base_dir: Path, date: str) -> dict[str, object
                 collection_payload = raw
         except Exception as exc:
             issues.append(f"collection universe status unreadable: {exc}")
+    candidate_counts = payload.get("candidate_first_letter_counts")
+    if not isinstance(candidate_counts, dict) or not candidate_counts:
+        candidate_rows = payload.get("candidates", [])
+        if isinstance(candidate_rows, list):
+            candidate_counts = _first_letter_counts(
+                row.get("symbol") for row in candidate_rows if isinstance(row, dict)
+            )
+    if not isinstance(candidate_counts, dict) or not candidate_counts:
+        candidate_counts = _read_symbol_counts_from_csv(candidates_path)
+    collection_counts = _read_symbol_counts_from_csv(collection_path)
+    candidate_dominant = _dominant_letter_summary(candidate_counts)
+    collection_dominant = _dominant_letter_summary(collection_counts)
+    if bool(candidate_dominant.get("biased")):
+        issues.append(
+            "candidate universe first-letter concentration: "
+            f"{_letter_summary_text(candidate_dominant)}"
+        )
+    if bool(collection_dominant.get("biased")):
+        issues.append(
+            "collection universe first-letter concentration: "
+            f"{_letter_summary_text(collection_dominant)}"
+        )
     return {
         "exists": status_path.exists(),
         "status_path": str(status_path),
@@ -701,6 +790,8 @@ def _load_coarse_universe_summary(base_dir: Path, date: str) -> dict[str, object
         "candidate_core_count": _count(payload.get("candidate_core_count")),
         "collection_exists": collection_status_path.exists(),
         "collection_status_path": str(collection_status_path),
+        "candidates_path": str(candidates_path),
+        "collection_path": str(collection_path),
         "collection_symbol_count": _count(collection_payload.get("collection_symbol_count")),
         "collection_followup_count": _count(collection_payload.get("followup_selected_count")),
         "collection_followup_days": _count(collection_payload.get("followup_days")),
@@ -708,6 +799,11 @@ def _load_coarse_universe_summary(base_dir: Path, date: str) -> dict[str, object
         "snapshot_error_count": _count(payload.get("snapshot_error_count")),
         "daily_error_count": _count(payload.get("daily_error_count")),
         "minute_error_count": _count(payload.get("minute_error_count")),
+        "candidate_first_letter_counts": candidate_counts if isinstance(candidate_counts, dict) else {},
+        "candidate_dominant_letter": candidate_dominant,
+        "collection_first_letter_counts": collection_counts if isinstance(collection_counts, dict) else {},
+        "collection_dominant_letter": collection_dominant,
+        "alphabet_bias_warning": bool(candidate_dominant.get("biased")) or bool(collection_dominant.get("biased")),
         "candidates": payload.get("candidates", []) if isinstance(payload.get("candidates"), list) else [],
         "issues": issues,
     }
@@ -721,8 +817,11 @@ def _coarse_universe_markdown(summary: dict[str, object]) -> str:
         f"- 候选池：`{summary.get('candidate_count', 0)}`，目标 `{summary.get('target_size', 0)}`；核心标的保留 `{summary.get('candidate_core_count', 0)}` / `{summary.get('core_symbol_count', 0)}`",
         f"- 核心来源：`{_core_symbol_source_cn(summary.get('core_symbol_source'))}`；Futu 自选股美股数 `{summary.get('core_watchlist_us_symbol_count', 0)}`；启用静态兜底 `{_yes_no_cn(summary.get('core_symbol_fallback_used'))}`",
         f"- 实际采集池：`{summary.get('collection_symbol_count', 0)}`；滚动追踪票 `{summary.get('collection_followup_count', 0)}`；追踪窗口 `{summary.get('collection_followup_days', 0)}` 天",
+        f"- 候选池首字母最高占比：`{_letter_summary_text(summary.get('candidate_dominant_letter', {}))}`；实际采集池首字母最高占比：`{_letter_summary_text(summary.get('collection_dominant_letter', {}))}`",
         f"- 快照 / 日线 / 分钟线错误数：`{summary.get('snapshot_error_count', 0)}` / `{summary.get('daily_error_count', 0)}` / `{summary.get('minute_error_count', 0)}`",
     ]
+    if bool(summary.get("alphabet_bias_warning")):
+        lines.append("- 注意：今日候选池或实际采集池存在明显首字母集中，不能作为全市场追主力结论，只能解读已采集股票。")
     issues = summary.get("issues", [])
     if isinstance(issues, list) and issues:
         lines.append("- 问题：" + "；".join(str(item) for item in issues))
@@ -734,12 +833,16 @@ def _coarse_universe_html(summary: dict[str, object]) -> str:
     issue_text = ""
     if isinstance(issues, list) and issues:
         issue_text = "；问题=" + html.escape("；".join(str(item) for item in issues))
+    warning_text = ""
+    if bool(summary.get("alphabet_bias_warning")):
+        warning_text = "；注意=今日候选池或实际采集池存在明显首字母集中，不能作为全市场追主力结论"
     return (
         "<div class='gate'><strong>粗筛股票池：</strong>可用={exists}；状态={status}；"
         "日期={date}；全市场={universe}；快照覆盖={snapshot}；日线覆盖={daily}；分钟线覆盖={minute}；"
         "候选={candidates}/{target}；核心={candidate_core}/{core}；核心来源={core_source}；Futu自选美股={watchlist_core}；静态兜底={fallback_used}；"
         "实际采集={collection_count}；滚动追踪={followup_count}；追踪窗口={followup_days}天；"
-        "错误数（快照/日线/分钟线）={snapshot_errors}/{daily_errors}/{minute_errors}{issues}</div>"
+        "候选首字母最高占比={candidate_letter}；采集首字母最高占比={collection_letter}；"
+        "错误数（快照/日线/分钟线）={snapshot_errors}/{daily_errors}/{minute_errors}{warning}{issues}</div>"
     ).format(
         exists=_yes_no_cn(summary.get("exists")),
         status=html.escape(str(summary.get("status") or "missing")),
@@ -758,9 +861,12 @@ def _coarse_universe_html(summary: dict[str, object]) -> str:
         collection_count=int(summary.get("collection_symbol_count") or 0),
         followup_count=int(summary.get("collection_followup_count") or 0),
         followup_days=int(summary.get("collection_followup_days") or 0),
+        candidate_letter=html.escape(_letter_summary_text(summary.get("candidate_dominant_letter", {}))),
+        collection_letter=html.escape(_letter_summary_text(summary.get("collection_dominant_letter", {}))),
         snapshot_errors=int(summary.get("snapshot_error_count") or 0),
         daily_errors=int(summary.get("daily_error_count") or 0),
         minute_errors=int(summary.get("minute_error_count") or 0),
+        warning=warning_text,
         issues=issue_text,
     )
 
