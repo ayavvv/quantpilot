@@ -256,6 +256,16 @@ def test_chinese_conclusion_suppresses_candidates_when_universe_is_alphabet_bias
     assert "AEC：吸筹" not in markdown
 
 
+def test_email_subject_marks_alphabet_biased_report_void():
+    subject = report_script._subject(
+        pd.DataFrame(),
+        {"state": "warmup", "validated": False},
+        {"alphabet_bias_warning": True},
+    )
+
+    assert subject == "追主力日报 - 股票池异常，本日报作废"
+
+
 def test_signal_scoring_requires_side_specific_validation_for_high_confidence():
     minutes = pd.date_range("2026-06-01 13:30:00+00:00", periods=6, freq="min")
     features = pd.DataFrame(

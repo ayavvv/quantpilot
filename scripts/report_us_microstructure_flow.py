@@ -1840,7 +1840,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _subject(signals: pd.DataFrame, gate: dict[str, object]) -> str:
+def _subject(
+    signals: pd.DataFrame,
+    gate: dict[str, object],
+    coarse_universe: dict[str, object] | None = None,
+) -> str:
+    if isinstance(coarse_universe, dict) and bool(coarse_universe.get("alphabet_bias_warning")):
+        return "追主力日报 - 股票池异常，本日报作废"
     high_count, accumulation_count, distribution_count = _side_counts(signals, "high")
     if high_count > 0:
         return f"追主力日报 - 高置信 {high_count} 个（吸筹 {accumulation_count} / 出货 {distribution_count}）"
@@ -1902,7 +1908,7 @@ def main(argv: list[str] | None = None) -> int:
         signals,
         min_event_score=_validation_min_event_score(report_gate),
     )
-    email_subject = _subject(signals, report_gate)
+    email_subject = _subject(signals, report_gate, coarse_universe)
     confidence_gap = build_confidence_gap(
         report_gate,
         data_quality=data_quality,
