@@ -5,6 +5,14 @@ import pandas as pd
 import scripts.build_us_microstructure_universe as builder
 
 
+def test_parse_args_defaults_to_focused_target_size(monkeypatch):
+    monkeypatch.delenv("US_MICROSTRUCTURE_UNIVERSE_TARGET_SIZE", raising=False)
+
+    args = builder.parse_args([])
+
+    assert args.target_size == 124
+
+
 class FakeUniverseCtx:
     def __init__(self):
         self.basic_rows = [

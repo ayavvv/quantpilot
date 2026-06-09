@@ -1148,7 +1148,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build dynamic US microstructure collection universe.")
     parser.add_argument("--base-dir", default=os.environ.get("US_MICROSTRUCTURE_DIR", str(DEFAULT_BASE_DIR)))
     parser.add_argument("--date", default=os.environ.get("US_MICROSTRUCTURE_UNIVERSE_DATE", _screen_date_from_utc()))
-    parser.add_argument("--target-size", type=int, default=int(os.environ.get("US_MICROSTRUCTURE_UNIVERSE_TARGET_SIZE", "300")))
+    parser.add_argument("--target-size", type=int, default=int(os.environ.get("US_MICROSTRUCTURE_UNIVERSE_TARGET_SIZE", "124")))
     parser.add_argument("--core-symbols-file", default=os.environ.get("US_MICROSTRUCTURE_CORE_SYMBOLS_FILE", str(DEFAULT_CORE_SYMBOLS_FILE)))
     parser.add_argument("--core-source", default=os.environ.get("US_MICROSTRUCTURE_CORE_SOURCE", DEFAULT_CORE_SOURCE))
     parser.add_argument("--core-watchlist-groups", default=os.environ.get("US_MICROSTRUCTURE_CORE_WATCHLIST_GROUPS", ""))

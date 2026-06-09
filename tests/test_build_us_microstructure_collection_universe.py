@@ -5,6 +5,14 @@ import pandas as pd
 import scripts.build_us_microstructure_collection_universe as builder
 
 
+def test_parse_args_defaults_to_focused_collection_cap(monkeypatch):
+    monkeypatch.delenv("US_MICROSTRUCTURE_COLLECTION_MAX_SYMBOLS", raising=False)
+
+    args = builder.parse_args([])
+
+    assert args.max_total_symbols == 124
+
+
 def _write_signals(base_dir, date_value, rows):
     path = base_dir / "signals" / f"date={date_value}"
     path.mkdir(parents=True, exist_ok=True)
