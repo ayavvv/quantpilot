@@ -9,6 +9,20 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
+# Single-flight: hold an exclusive flock for this run's whole lifetime. The kernel
+# releases it on ANY exit (incl. SIGKILL/reboot), so a crashed run can never leave a
+# stale lock that wedges later runs -- no PID/age heuristics, no TOCTOU. We re-exec
+# ourselves once under flock_run.py; a concurrent run that can't get the lock exits 0.
+LOCK_FILE="${LOCK_FILE:-$PROJECT_DIR/logs/us_microstructure_recover.flock}"
+if [ -z "${US_MICROSTRUCTURE_RECOVER_FLOCKED:-}" ]; then
+    if [ -x /usr/bin/python3 ]; then
+        mkdir -p "$PROJECT_DIR/logs"
+        export US_MICROSTRUCTURE_RECOVER_FLOCKED=1
+        exec /usr/bin/python3 "$SCRIPT_DIR/flock_run.py" "$LOCK_FILE" /bin/bash "$0" "$@"
+    fi
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] run_us_microstructure_recover: WARNING /usr/bin/python3 missing; running WITHOUT single-flight lock" >&2
+fi
+
 EXTERNAL_DATA_DIR="${DATA_DIR-}"
 EXTERNAL_US_MICROSTRUCTURE_DIR="${US_MICROSTRUCTURE_DIR-}"
 EXTERNAL_US_MICROSTRUCTURE_REMOTE_HOST="${US_MICROSTRUCTURE_REMOTE_HOST-}"
@@ -55,18 +69,12 @@ US_MICROSTRUCTURE_RECOVER_REPORT_END="${US_MICROSTRUCTURE_RECOVER_REPORT_END:-18
 US_MICROSTRUCTURE_RECOVER_MIN_COLLECT_SECONDS="${US_MICROSTRUCTURE_RECOVER_MIN_COLLECT_SECONDS:-900}"
 US_MICROSTRUCTURE_RECOVER_REQUIRE_EMAIL="${US_MICROSTRUCTURE_RECOVER_REQUIRE_EMAIL:-true}"
 US_MICROSTRUCTURE_RECOVER_SEND_EMAIL="${US_MICROSTRUCTURE_RECOVER_SEND_EMAIL:-true}"
-LOCK_DIR="${LOCK_DIR:-$PROJECT_DIR/logs/us_microstructure_recover.lock}"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] run_us_microstructure_recover: $*"
 }
 
 mkdir -p "$PROJECT_DIR/logs"
-if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    log "skip (lock exists: $LOCK_DIR)"
-    exit 0
-fi
-trap 'rmdir "$LOCK_DIR"' EXIT
 
 if [ ! -x "$PYTHON_BIN" ]; then
     PYTHON_BIN="$(command -v python3 || true)"

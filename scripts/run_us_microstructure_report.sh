@@ -9,6 +9,20 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
+# Single-flight: hold an exclusive flock for this run's whole lifetime. The kernel
+# releases it on ANY exit (incl. SIGKILL/reboot), so a crashed run can never leave a
+# stale lock that wedges later runs -- no PID/age heuristics, no TOCTOU. We re-exec
+# ourselves once under flock_run.py; a concurrent run that can't get the lock exits 0.
+LOCK_FILE="${LOCK_FILE:-$PROJECT_DIR/logs/us_microstructure_report.flock}"
+if [ -z "${US_MICROSTRUCTURE_REPORT_FLOCKED:-}" ]; then
+    if [ -x /usr/bin/python3 ]; then
+        mkdir -p "$PROJECT_DIR/logs"
+        export US_MICROSTRUCTURE_REPORT_FLOCKED=1
+        exec /usr/bin/python3 "$SCRIPT_DIR/flock_run.py" "$LOCK_FILE" /bin/bash "$0" "$@"
+    fi
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] run_us_microstructure_report: WARNING /usr/bin/python3 missing; running WITHOUT single-flight lock" >&2
+fi
+
 EXTERNAL_DATA_DIR="${DATA_DIR-}"
 EXTERNAL_REPORT_DELIVERY_METHOD="${REPORT_DELIVERY_METHOD-}"
 EXTERNAL_REPORT_TO="${REPORT_TO-}"
@@ -90,7 +104,6 @@ US_MICROSTRUCTURE_RUN_INTRADAY_REPLAY="${US_MICROSTRUCTURE_RUN_INTRADAY_REPLAY:-
 US_MICROSTRUCTURE_PRICE_CSV="${US_MICROSTRUCTURE_PRICE_CSV:-}"
 US_MICROSTRUCTURE_PRICE_LOOKBACK_DAYS="${US_MICROSTRUCTURE_PRICE_LOOKBACK_DAYS:-45}"
 QLIB_DATA_DIR="${QLIB_DATA_DIR:-$DATA_DIR/qlib_data}"
-LOCK_DIR="${LOCK_DIR:-$PROJECT_DIR/logs/us_microstructure_report.lock}"
 
 if [ -z "$US_MICROSTRUCTURE_DATE" ]; then
     US_MICROSTRUCTURE_DATE="$(PYTHONPATH="$PYTHONPATH" DATA_DIR="$DATA_DIR" "$PYTHON_BIN" -m scripts.us_microstructure_dates default-report-date --base-dir "$US_MICROSTRUCTURE_DIR")"
@@ -102,12 +115,6 @@ fi
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
 }
-
-if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    log "run_us_microstructure_report: skip (lock exists: $LOCK_DIR)"
-    exit 0
-fi
-trap 'rmdir "$LOCK_DIR"' EXIT
 
 run_validation() {
     local validation_end="$1"
