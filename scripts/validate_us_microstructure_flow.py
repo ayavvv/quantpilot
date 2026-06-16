@@ -77,12 +77,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--min-signal-days-per-side",
         type=int,
-        default=int(os.environ.get("US_MICROSTRUCTURE_MIN_SIGNAL_DAYS_PER_SIDE", "20")),
+        default=int(os.environ.get("US_MICROSTRUCTURE_MIN_SIGNAL_DAYS_PER_SIDE", "10")),
     )
     parser.add_argument(
         "--min-observations-per-side",
         type=int,
-        default=int(os.environ.get("US_MICROSTRUCTURE_MIN_OBSERVATIONS_PER_SIDE", "100")),
+        default=int(os.environ.get("US_MICROSTRUCTURE_MIN_OBSERVATIONS_PER_SIDE", "40")),
     )
     parser.add_argument("--min-alpha", type=float, default=float(os.environ.get("US_MICROSTRUCTURE_MIN_ALPHA", "0.0075")))
     parser.add_argument("--min-hit-rate", type=float, default=float(os.environ.get("US_MICROSTRUCTURE_MIN_HIT_RATE", "0.58")))

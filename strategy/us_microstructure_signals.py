@@ -288,6 +288,29 @@ def _summarize_symbol(symbol: str, part: pd.DataFrame, cfg: MicrostructureSignal
     }
 
 
+def data_quality_pass_from_row(row: Any, config: MicrostructureSignalConfig | None = None) -> bool:
+    """Per-symbol intraday data-quality verdict.
+
+    This depends ONLY on per-symbol coverage/liquidity/spread evidence — never on
+    whether the full-session raw tape finished uploading to NAS. NAS-archive
+    completeness is a separate high-confidence release gate (see
+    ``us_microstructure_confidence.build_confidence_gap`` and the daily report's
+    ``nas_upload_complete`` flag); it must not retroactively poison the
+    forward-validation ledger, which is built from this verdict.
+    """
+
+    cfg = config or MicrostructureSignalConfig()
+    return (
+        _finite(row.get("coverage_ratio_regular"), 0.0) >= cfg.min_data_coverage
+        and _finite(row.get("trade_coverage_ratio_regular"), 0.0) >= cfg.min_data_coverage
+        and _finite(row.get("book_coverage_ratio_regular"), 0.0) >= cfg.min_data_coverage
+        and _finite(row.get("trade_count"), 0.0) >= cfg.min_trade_count
+        and _finite(row.get("dollar_volume"), 0.0) >= cfg.min_dollar_volume
+        and _finite(row.get("spread_bps"), cfg.max_spread_bps) <= cfg.max_spread_bps
+        and _finite(row.get("duplicate_sequence_rate"), 0.0) < 0.01
+    )
+
+
 def _attach_side(row: pd.Series, cfg: MicrostructureSignalConfig, gate: dict[str, Any]) -> dict[str, Any]:
     acc = _finite(row.get("accumulation_score"), 0.0)
     dist = _finite(row.get("distribution_score"), 0.0)
@@ -302,15 +325,7 @@ def _attach_side(row: pd.Series, cfg: MicrostructureSignalConfig, gate: dict[str
         evidence_blocks = int(row.get("dist_evidence_blocks") or 0)
         reason = str(row.get("dist_reason") or "")
 
-    has_data_quality = (
-        _finite(row.get("coverage_ratio_regular"), 0.0) >= cfg.min_data_coverage
-        and _finite(row.get("trade_coverage_ratio_regular"), 0.0) >= cfg.min_data_coverage
-        and _finite(row.get("book_coverage_ratio_regular"), 0.0) >= cfg.min_data_coverage
-        and int(row.get("trade_count") or 0) >= cfg.min_trade_count
-        and _finite(row.get("dollar_volume"), 0.0) >= cfg.min_dollar_volume
-        and _finite(row.get("spread_bps"), cfg.max_spread_bps) <= cfg.max_spread_bps
-        and _finite(row.get("duplicate_sequence_rate"), 0.0) < 0.01
-    )
+    has_data_quality = data_quality_pass_from_row(row, cfg)
     gate_validated = bool(gate.get("validated"))
     validated_sides = gate.get("validated_sides")
     if isinstance(validated_sides, dict):

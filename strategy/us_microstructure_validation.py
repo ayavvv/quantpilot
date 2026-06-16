@@ -20,6 +20,10 @@ import pandas as pd
 
 from converter.incremental import QlibBinReader
 from strategy.us_microstructure_features import normalize_us_symbol
+from strategy.us_microstructure_signals import (
+    MicrostructureSignalConfig,
+    data_quality_pass_from_row,
+)
 
 
 EVENT_AUDIT_COLUMNS = (
@@ -36,6 +40,7 @@ EVENT_AUDIT_COLUMNS = (
     "evidence_blocks",
     "is_final_report",
     "data_quality_pass",
+    "nas_upload_complete",
 )
 
 
@@ -46,8 +51,15 @@ class ForwardValidationConfig:
     entry_lag_days: int = 1
     min_event_score: float = 70.0
     promotion_horizon: int = 5
-    min_signal_days_per_side: int = 20
-    min_observations_per_side: int = 100
+    # Sample-size floors for promotion. These were relaxed from 20/100 to 10/40 to
+    # shorten cold-start: live collection began 2026-06-01 with no historical tape
+    # to backfill, so 20 signal-days x 100 observations per side was many months
+    # away. The statistical-quality guards below (min_hit_rate, min_alpha,
+    # min_wilson_lower, max_symbol_sample_share) are UNCHANGED — and the Wilson
+    # lower bound automatically tightens on smaller samples, so a side still cannot
+    # promote on a lucky-but-thin record. Override via the validate CLI / env vars.
+    min_signal_days_per_side: int = 10
+    min_observations_per_side: int = 40
     min_alpha: float = 0.0075
     min_hit_rate: float = 0.58
     min_recent_hit_rate: float = 0.55
@@ -126,9 +138,43 @@ def _load_normalized_signal_rows(signal_files: Iterable[str | Path]) -> pd.DataF
         events["data_quality_pass"] = events["data_quality_pass"].astype(str).str.lower().isin({"1", "true", "yes", "y"})
     else:
         events["data_quality_pass"] = False
+    # Preserve NAS-upload completeness as an audit field (kept as bool, not numeric)
+    # so a validated event can be traced back to whether its day's raw tape was
+    # fully archived — even though it no longer gates the per-symbol quality verdict.
+    if "nas_upload_complete" in events.columns:
+        events["nas_upload_complete"] = events["nas_upload_complete"].astype(str).str.lower().isin({"1", "true", "yes", "y"})
+    else:
+        events["nas_upload_complete"] = False
     for column in EVENT_AUDIT_COLUMNS:
-        if column in events.columns and column != "data_quality_pass":
+        if column in events.columns and column not in {"data_quality_pass", "nas_upload_complete"}:
             events[column] = pd.to_numeric(events[column], errors="coerce")
+    # Recompute the per-symbol data-quality verdict from the coverage/liquidity
+    # columns instead of trusting the stored flag. The daily report force-zeroes
+    # the stored data_quality_pass for the WHOLE day whenever the NAS raw-tape
+    # upload is incomplete, which would otherwise permanently exclude good signal
+    # days from this forward-validation ledger — even after the NAS upload is
+    # later repaired (the signal CSV is not regenerated). NAS-archive completeness
+    # remains a separate high-confidence release gate; it must not poison the
+    # ledger. See strategy/us_microstructure_signals.data_quality_pass_from_row.
+    # Recompute only when EVERY input to data_quality_pass_from_row is present.
+    # If a partial/legacy CSV is missing a liquidity/spread column the helper would
+    # silently default it (spread/dup default to passing, trade_count/dollar_volume
+    # default to failing), so we fall back to the stored flag rather than admit bad
+    # data or drop good rows.
+    quality_input_columns = (
+        "coverage_ratio_regular",
+        "trade_coverage_ratio_regular",
+        "book_coverage_ratio_regular",
+        "trade_count",
+        "dollar_volume",
+        "spread_bps",
+        "duplicate_sequence_rate",
+    )
+    if not events.empty and all(column in events.columns for column in quality_input_columns):
+        dq_config = MicrostructureSignalConfig()
+        events["data_quality_pass"] = events.apply(
+            lambda row: data_quality_pass_from_row(row, dq_config), axis=1
+        ).astype(bool)
     return events
 
 

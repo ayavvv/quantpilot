@@ -485,7 +485,13 @@ def test_validation_eligibility_summary_exposes_sample_blockers():
     assert summary["blocking_counts"]["not_final_report"] == 1
 
 
-def test_manifest_gate_prevents_high_confidence_and_validation_sample():
+def test_manifest_gate_downgrades_high_but_keeps_per_symbol_data_quality():
+    # An incomplete NAS raw-tape upload must downgrade a "high" label and flag
+    # nas_upload_complete=False, but it must NOT zero the per-symbol
+    # data_quality_pass: that would permanently starve the forward-validation
+    # ledger for the whole day on a transient upload hiccup, even after the upload
+    # is later repaired. NAS completeness stays a separate high-confidence release
+    # gate (build_confidence_gap.nas_uploads_complete + the high->watch downgrade).
     signals = pd.DataFrame(
         [
             {
@@ -493,6 +499,7 @@ def test_manifest_gate_prevents_high_confidence_and_validation_sample():
                 "side": "accumulation",
                 "side_score": 90,
                 "confidence": "high",
+                "is_final_report": True,
                 "data_quality_pass": True,
                 "validation_reason": "validated",
             }
@@ -506,11 +513,87 @@ def test_manifest_gate_prevents_high_confidence_and_validation_sample():
     summary = report_script._validation_eligibility_summary(adjusted, min_event_score=70)
 
     assert adjusted.iloc[0]["confidence"] == "watch"
-    assert bool(adjusted.iloc[0]["data_quality_pass"]) is False
+    assert bool(adjusted.iloc[0]["data_quality_pass"]) is True
     assert bool(adjusted.iloc[0]["nas_upload_complete"]) is False
     assert "manifest contains failed NAS uploads" in adjusted.iloc[0]["validation_reason"]
-    assert summary["data_quality_pass_count"] == 0
-    assert summary["validation_eligible_count"] == 0
+    # Per-symbol quality is preserved, so the day still feeds the validation ledger.
+    assert summary["data_quality_pass_count"] == 1
+    assert summary["validation_eligible_if_final_count"] == 1
+    assert summary["validation_eligible_count"] == 1
+
+
+def test_load_signal_events_recomputes_data_quality_from_coverage_not_nas_flag(tmp_path):
+    # Reproduces the production starvation: the daily report force-zeroes the
+    # stored data_quality_pass for the whole day when the NAS raw-tape upload is
+    # incomplete, but per-symbol coverage is fine. The validation ledger must
+    # recompute the verdict from the coverage columns and still admit the event.
+    rows = [
+        {
+            "symbol": "US.AAPL",
+            "side": "distribution",
+            "side_score": 88,
+            "rank": 1,
+            "confidence": "watch",
+            "stage": "distribution_watch",
+            "reason": "test",
+            "is_final_report": True,
+            "data_quality_pass": False,  # NAS-poisoned stored flag
+            "coverage_ratio_regular": 0.99,
+            "trade_coverage_ratio_regular": 0.99,
+            "book_coverage_ratio_regular": 0.90,
+            "quote_coverage_ratio_regular": 0.90,
+            "trade_count": 50_000,
+            "raw_trade_count": 50_000,
+            "duplicate_sequence_count": 0,
+            "duplicate_sequence_rate": 0.0,
+            "dollar_volume": 8.0e8,
+            "spread_bps": 4.0,
+        }
+    ]
+    signal_dir = tmp_path / "signals" / "date=2026-01-02"
+    signal_dir.mkdir(parents=True)
+    signal_path = signal_dir / "us_major_flow_signals.csv"
+    pd.DataFrame(rows).to_csv(signal_path, index=False)
+
+    events = load_signal_events([signal_path], min_event_score=70)
+
+    assert len(events) == 1
+    assert events.iloc[0]["symbol"] == "US.AAPL"
+    assert bool(events.iloc[0]["data_quality_pass"]) is True
+
+
+def test_load_signal_events_excludes_genuinely_poor_coverage(tmp_path):
+    # The decoupling must not admit genuinely low-coverage days (e.g. the
+    # 300-symbol book-coverage collapse): recompute must still reject them.
+    rows = [
+        {
+            "symbol": "US.AAPL",
+            "side": "distribution",
+            "side_score": 88,
+            "rank": 1,
+            "confidence": "watch",
+            "stage": "distribution_watch",
+            "reason": "test",
+            "is_final_report": True,
+            "data_quality_pass": True,  # stored True, but coverage is poor
+            "coverage_ratio_regular": 0.99,
+            "trade_coverage_ratio_regular": 0.99,
+            "book_coverage_ratio_regular": 0.36,  # below the 0.80 gate
+            "quote_coverage_ratio_regular": 0.36,
+            "trade_count": 50_000,
+            "duplicate_sequence_rate": 0.0,
+            "dollar_volume": 8.0e8,
+            "spread_bps": 4.0,
+        }
+    ]
+    signal_dir = tmp_path / "signals" / "date=2026-01-02"
+    signal_dir.mkdir(parents=True)
+    signal_path = signal_dir / "us_major_flow_signals.csv"
+    pd.DataFrame(rows).to_csv(signal_path, index=False)
+
+    events = load_signal_events([signal_path], min_event_score=70)
+
+    assert events.empty
 
 
 def test_final_report_gate_downgrades_intraday_high_confidence():

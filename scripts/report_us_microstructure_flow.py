@@ -386,8 +386,15 @@ def _apply_manifest_quality_to_signals(
     if manifest_ok:
         return result
     reason = f"NAS/raw manifest gate failed: {_manifest_gate_reason(manifest_quality)}"
-    result["data_quality_pass"] = False
     result["validation_reason"] = reason
+    # NOTE: per-symbol data_quality_pass is intentionally left intact. An
+    # incomplete NAS raw-tape upload is an archival/reproducibility concern, not a
+    # statement about the per-symbol intraday data quality used to score the
+    # signal or to compute its forward return. NAS completeness still blocks a
+    # "high" release via nas_upload_complete (build_confidence_gap) and the
+    # high->watch downgrade below; previously this line also force-zeroed
+    # data_quality_pass for the whole day, which permanently starved the
+    # forward-validation ledger on every day a NAS upload hiccuped.
     if "confidence" in result.columns:
         result.loc[result["confidence"].astype(str).str.lower() == "high", "confidence"] = "watch"
     return result
