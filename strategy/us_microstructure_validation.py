@@ -49,6 +49,15 @@ class ForwardValidationConfig:
     horizons: tuple[int, ...] = (1, 3, 5)
     benchmark: str = "US.SPY"
     entry_lag_days: int = 1
+    # Minimum score for the broad, final-report calibration ledger. This is
+    # deliberately lower than the reportable watch score: promotion is decided
+    # later by score-threshold metrics, not by admitting low-score rows directly
+    # to high-confidence output.
+    official_min_event_score: float = 50.0
+    score_thresholds: tuple[float, ...] = (50.0, 55.0, 60.0, 65.0, 68.0, 70.0, 75.0, 80.0, 85.0)
+    # Backward-compatible reportable/watch floor. Rows above this score are
+    # still tracked as the stricter reportable ledger, but they no longer define
+    # the whole official sample pool.
     min_event_score: float = 70.0
     promotion_horizon: int = 5
     # Sample-size floors for promotion. These were relaxed from 20/100 to 10/40 to
@@ -209,6 +218,13 @@ def load_signal_events(
     *,
     min_event_score: float = 70.0,
 ) -> pd.DataFrame:
+    """Load strict reportable watch/high events.
+
+    This remains available for audit/backward-compatible tests. Production gate
+    promotion uses ``load_official_calibration_events`` so the forward ledger is
+    not starved by the visible report watch threshold.
+    """
+
     events = _load_normalized_signal_rows(signal_files)
     if events.empty:
         return pd.DataFrame()
@@ -218,6 +234,34 @@ def load_signal_events(
         & (events["side"].isin({"accumulation", "distribution"}))
         & (events["side_score"] >= float(min_event_score))
         & (events["confidence"].isin({"watch", "high"}))
+        & (events["is_final_report"])
+        & (events["data_quality_pass"])
+    ].copy()
+    return _finalize_events(events, scope="official")
+
+
+def load_official_calibration_events(
+    signal_files: Iterable[str | Path],
+    *,
+    min_event_score: float = 50.0,
+) -> pd.DataFrame:
+    """Load broad final, data-quality-passing rows for the official gate.
+
+    The gate evaluates score thresholds after forward returns are known. Keeping
+    diagnostic rows in the official calibration pool fixes sample starvation
+    without allowing those rows to become high-confidence unless a score floor is
+    later validated by ``build_active_gate``.
+    """
+
+    events = _load_normalized_signal_rows(signal_files)
+    if events.empty:
+        return pd.DataFrame()
+    events = events[
+        (events["symbol"] != "")
+        & (events["signal_date"].str.len() == 10)
+        & (events["side"].isin({"accumulation", "distribution"}))
+        & (events["side_score"] >= float(min_event_score))
+        & (events["confidence"].isin({"diagnostic", "watch", "high"}))
         & (events["is_final_report"])
         & (events["data_quality_pass"])
     ].copy()
@@ -468,9 +512,77 @@ def build_rule_metrics(
     return pd.DataFrame(rows).sort_values(["side", "horizon"]).reset_index(drop=True)
 
 
+def build_score_threshold_metrics(
+    forward_returns: pd.DataFrame,
+    *,
+    thresholds: Iterable[float] | None = None,
+    config: ForwardValidationConfig | None = None,
+) -> pd.DataFrame:
+    """Build forward metrics at each candidate score threshold."""
+
+    cfg = config or ForwardValidationConfig()
+    if forward_returns.empty:
+        return pd.DataFrame()
+    score_thresholds = thresholds if thresholds is not None else cfg.score_thresholds
+    frames: list[pd.DataFrame] = []
+    scores = pd.to_numeric(forward_returns.get("side_score", np.nan), errors="coerce")
+    for raw_threshold in sorted({float(item) for item in score_thresholds}):
+        sample = forward_returns[scores >= raw_threshold].copy()
+        if sample.empty:
+            continue
+        metrics = build_rule_metrics(sample, config=cfg)
+        if metrics.empty:
+            continue
+        metrics["score_threshold"] = raw_threshold
+        frames.append(metrics)
+    if not frames:
+        return pd.DataFrame()
+    return (
+        pd.concat(frames, ignore_index=True)
+        .sort_values(["side", "horizon", "score_threshold"])
+        .reset_index(drop=True)
+    )
+
+
+def _promotion_checks(record: dict[str, object], cfg: ForwardValidationConfig) -> dict[str, bool]:
+    return {
+        "signal_days": int(record.get("signal_day_count") or 0) >= cfg.min_signal_days_per_side,
+        "observations": int(record.get("observation_count") or 0) >= cfg.min_observations_per_side,
+        "alpha": _safe_float(record.get("avg_alpha"), 0.0) >= cfg.min_alpha,
+        "hit_rate": _safe_float(record.get("hit_rate"), 0.0) >= cfg.min_hit_rate,
+        "recent_hit_rate": _safe_float(record.get("recent_hit_rate"), 0.0) >= cfg.min_recent_hit_rate,
+        "wilson_lower": _safe_float(record.get("wilson_lower"), 0.0) > cfg.min_wilson_lower,
+        "concentration": _safe_float(record.get("max_symbol_sample_share"), 1.0) <= cfg.max_symbol_sample_share,
+    }
+
+
+def _select_threshold_record(rows: pd.DataFrame, cfg: ForwardValidationConfig) -> tuple[dict[str, object], dict[str, bool]]:
+    candidates: list[tuple[tuple[float, ...], dict[str, object], dict[str, bool]]] = []
+    for _, row in rows.iterrows():
+        record = row.to_dict()
+        checks = _promotion_checks(record, cfg)
+        sample_readiness = int(checks["signal_days"]) + int(checks["observations"])
+        passed_count = int(sum(1 for passed in checks.values() if passed))
+        # Prefer a passing threshold; otherwise prefer the row that has enough
+        # sample mass and the most passing statistical guards. Higher thresholds
+        # win only after those quality dimensions tie.
+        sort_key = (
+            float(all(checks.values())),
+            float(sample_readiness),
+            float(passed_count),
+            float(record.get("observation_count") or 0),
+            float(record.get("signal_day_count") or 0),
+            float(record.get("score_threshold") or 0),
+        )
+        candidates.append((sort_key, record, checks))
+    _, selected, selected_checks = sorted(candidates, key=lambda item: item[0], reverse=True)[0]
+    return selected, selected_checks
+
+
 def build_active_gate(
     metrics: pd.DataFrame,
     *,
+    threshold_metrics: pd.DataFrame | None = None,
     config: ForwardValidationConfig | None = None,
 ) -> dict[str, object]:
     cfg = config or ForwardValidationConfig()
@@ -481,26 +593,27 @@ def build_active_gate(
 
     for side in validated_sides:
         row = pd.DataFrame()
-        if not metrics.empty:
-            row = metrics[(metrics["side"] == side) & (metrics["horizon"] == cfg.promotion_horizon)]
+        use_threshold_metrics = threshold_metrics is not None and not threshold_metrics.empty
+        source_metrics = threshold_metrics if use_threshold_metrics else metrics
+        if not source_metrics.empty:
+            row = source_metrics[(source_metrics["side"] == side) & (source_metrics["horizon"] == cfg.promotion_horizon)]
         if row.empty:
             side_reasons[side] = f"missing {cfg.promotion_horizon}d validation metrics"
             side_metrics[side] = {}
             continue
-        record = row.iloc[-1].to_dict()
+        if use_threshold_metrics:
+            record, checks = _select_threshold_record(row, cfg)
+        else:
+            record = row.iloc[-1].to_dict()
+            checks = _promotion_checks(record, cfg)
         side_metrics[side] = {key: (_safe_float(value, 0.0) if not isinstance(value, str) else value) for key, value in record.items()}
-        checks = {
-            "signal_days": int(record.get("signal_day_count") or 0) >= cfg.min_signal_days_per_side,
-            "observations": int(record.get("observation_count") or 0) >= cfg.min_observations_per_side,
-            "alpha": _safe_float(record.get("avg_alpha"), 0.0) >= cfg.min_alpha,
-            "hit_rate": _safe_float(record.get("hit_rate"), 0.0) >= cfg.min_hit_rate,
-            "recent_hit_rate": _safe_float(record.get("recent_hit_rate"), 0.0) >= cfg.min_recent_hit_rate,
-            "wilson_lower": _safe_float(record.get("wilson_lower"), 0.0) > cfg.min_wilson_lower,
-            "concentration": _safe_float(record.get("max_symbol_sample_share"), 1.0) <= cfg.max_symbol_sample_share,
-        }
+        side_metrics[side]["checks"] = checks
         validated_sides[side] = all(checks.values())
         failed = [name for name, passed in checks.items() if not passed]
-        side_reasons[side] = "passed" if not failed else "failed: " + ", ".join(failed)
+        threshold_text = ""
+        if "score_threshold" in record:
+            threshold_text = f" score_threshold>={_safe_float(record.get('score_threshold'), 0.0):g}"
+        side_reasons[side] = f"passed{threshold_text}" if not failed else f"{threshold_text.strip()} failed: " + ", ".join(failed)
 
     validated = any(validated_sides.values())
     state = "validated" if validated else "warmup"
@@ -523,6 +636,7 @@ def write_validation_outputs(
     forward_returns: pd.DataFrame,
     metrics: pd.DataFrame,
     gate: dict[str, object],
+    threshold_metrics: pd.DataFrame | None = None,
 ) -> dict[str, Path]:
     validation_dir = Path(base_dir).expanduser() / "validation"
     validation_dir.mkdir(parents=True, exist_ok=True)
@@ -530,10 +644,15 @@ def write_validation_outputs(
         "signal_events": validation_dir / "signal_events.parquet",
         "forward_returns": validation_dir / "forward_returns.parquet",
         "rule_metrics_csv": validation_dir / "rule_metrics.csv",
+        "score_threshold_metrics_csv": validation_dir / "score_threshold_metrics.csv",
         "active_gate": validation_dir / "active_gate.json",
     }
     events.to_parquet(outputs["signal_events"], index=False)
     forward_returns.to_parquet(outputs["forward_returns"], index=False)
     metrics.to_csv(outputs["rule_metrics_csv"], index=False)
+    (threshold_metrics if threshold_metrics is not None else pd.DataFrame()).to_csv(
+        outputs["score_threshold_metrics_csv"],
+        index=False,
+    )
     outputs["active_gate"].write_text(json.dumps(gate, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return outputs

@@ -332,7 +332,13 @@ def _attach_side(row: pd.Series, cfg: MicrostructureSignalConfig, gate: dict[str
         side_validated = bool(validated_sides.get(side, False))
     else:
         side_validated = gate_validated
-    if side_score >= cfg.high_score and evidence_blocks >= 2 and has_data_quality and side_validated:
+    side_metrics = gate.get("side_metrics")
+    high_score_floor = cfg.high_score
+    if isinstance(side_metrics, dict):
+        metrics = side_metrics.get(side)
+        if isinstance(metrics, dict) and metrics.get("score_threshold") is not None:
+            high_score_floor = max(cfg.watch_score, _finite(metrics.get("score_threshold"), cfg.high_score))
+    if side_score >= high_score_floor and evidence_blocks >= 2 and has_data_quality and side_validated:
         confidence = "high"
         report_state = "validated"
     elif side_score >= cfg.watch_score and evidence_blocks >= 2:

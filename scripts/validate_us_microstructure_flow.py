@@ -14,13 +14,14 @@ from strategy.us_microstructure_validation import (
     ForwardValidationConfig,
     build_active_gate,
     build_rule_metrics,
+    build_score_threshold_metrics,
     compute_forward_returns,
     discover_signal_files,
     load_price_history_from_csv,
     load_price_history_from_qlib,
     load_exploration_signal_events,
+    load_official_calibration_events,
     load_shadow_signal_events,
-    load_signal_events,
     merge_price_history,
     write_validation_outputs,
 )
@@ -40,6 +41,17 @@ def _parse_int_tuple(raw: str) -> tuple[int, ...]:
             result.append(int(item))
     if not result:
         raise ValueError("expected at least one horizon")
+    return tuple(result)
+
+
+def _parse_float_tuple(raw: str) -> tuple[float, ...]:
+    result = []
+    for item in str(raw or "").split(","):
+        item = item.strip()
+        if item:
+            result.append(float(item))
+    if not result:
+        raise ValueError("expected at least one score threshold")
     return tuple(result)
 
 
@@ -64,6 +76,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--horizons", default=os.environ.get("US_MICROSTRUCTURE_VALIDATION_HORIZONS", "1,3,5"))
     parser.add_argument("--entry-lag-days", type=int, default=int(os.environ.get("US_MICROSTRUCTURE_ENTRY_LAG_DAYS", "1")))
     parser.add_argument("--min-event-score", type=float, default=float(os.environ.get("US_MICROSTRUCTURE_VALIDATION_MIN_SCORE", "70")))
+    parser.add_argument(
+        "--official-min-event-score",
+        type=float,
+        default=float(os.environ.get("US_MICROSTRUCTURE_OFFICIAL_MIN_SCORE", "50")),
+    )
+    parser.add_argument(
+        "--score-thresholds",
+        default=os.environ.get("US_MICROSTRUCTURE_SCORE_THRESHOLDS", "50,55,60,65,68,70,75,80,85"),
+    )
     parser.add_argument(
         "--shadow-min-event-score",
         type=float,
@@ -108,6 +129,8 @@ def main(argv: list[str] | None = None) -> int:
         horizons=_parse_int_tuple(args.horizons),
         benchmark=args.benchmark,
         entry_lag_days=args.entry_lag_days,
+        official_min_event_score=args.official_min_event_score,
+        score_thresholds=_parse_float_tuple(args.score_thresholds),
         min_event_score=args.min_event_score,
         min_signal_days_per_side=args.min_signal_days_per_side,
         min_observations_per_side=args.min_observations_per_side,
@@ -116,7 +139,7 @@ def main(argv: list[str] | None = None) -> int:
         min_recent_hit_rate=args.min_recent_hit_rate,
     )
     signal_files = discover_signal_files(base_dir, start_date=args.start_date, end_date=args.end_date)
-    events = load_signal_events(signal_files, min_event_score=cfg.min_event_score)
+    events = load_official_calibration_events(signal_files, min_event_score=cfg.official_min_event_score)
     shadow_cfg = ForwardValidationConfig(
         horizons=cfg.horizons,
         benchmark=cfg.benchmark,
@@ -166,12 +189,16 @@ def main(argv: list[str] | None = None) -> int:
     prices = merge_price_history(qlib_prices, csv_prices)
     forward_returns = compute_forward_returns(events, prices, config=cfg)
     metrics = build_rule_metrics(forward_returns, config=cfg)
+    threshold_metrics = build_score_threshold_metrics(forward_returns, thresholds=cfg.score_thresholds, config=cfg)
     shadow_forward_returns = compute_forward_returns(shadow_events, prices, config=shadow_cfg)
     shadow_metrics = build_rule_metrics(shadow_forward_returns, config=shadow_cfg)
     exploration_forward_returns = compute_forward_returns(exploration_events, prices, config=exploration_cfg)
     exploration_metrics = build_rule_metrics(exploration_forward_returns, config=exploration_cfg)
-    gate = build_active_gate(metrics, config=cfg)
+    gate = build_active_gate(metrics, threshold_metrics=threshold_metrics, config=cfg)
     gate["signal_file_count"] = len(signal_files)
+    gate["official_min_event_score"] = float(cfg.official_min_event_score)
+    gate["reportable_min_event_score"] = float(cfg.min_event_score)
+    gate["score_thresholds"] = [float(item) for item in cfg.score_thresholds]
     gate["event_count"] = int(len(events))
     gate["forward_return_count"] = int(len(forward_returns))
     gate["shadow_min_event_score"] = float(shadow_cfg.min_event_score)
@@ -192,6 +219,7 @@ def main(argv: list[str] | None = None) -> int:
         forward_returns=forward_returns,
         metrics=metrics,
         gate=gate,
+        threshold_metrics=threshold_metrics,
     )
     validation_dir = base_dir / "validation"
     outputs["shadow_signal_events"] = validation_dir / "shadow_signal_events.parquet"

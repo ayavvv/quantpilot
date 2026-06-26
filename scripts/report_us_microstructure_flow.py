@@ -102,6 +102,17 @@ def _score(value: object) -> str:
         return "n/a"
 
 
+def _score_list(values: object) -> str:
+    if not isinstance(values, (list, tuple)):
+        return "n/a"
+    formatted = []
+    for value in values:
+        text = _score(value)
+        if text != "n/a":
+            formatted.append(text)
+    return ", ".join(formatted) if formatted else "n/a"
+
+
 def _number(value: object, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -451,6 +462,7 @@ def _validation_progress(validation_gate: dict[str, object]) -> dict[str, object
                 "side": side,
                 "validated": bool(validated_sides.get(side, default_side_validated)),
                 "reason": str(side_reasons.get(side) or ""),
+                "score_threshold": metrics.get("score_threshold"),
                 "observation_count": observations,
                 "min_observations": min_observations,
                 "observation_progress": observations / min_observations if min_observations > 0 else 0.0,
@@ -475,6 +487,15 @@ def _validation_progress(validation_gate: dict[str, object]) -> dict[str, object
         "validated": bool(validation_gate.get("validated")),
         "reason": str(validation_gate.get("reason") or ""),
         "signal_file_count": _count(validation_gate.get("signal_file_count")),
+        "official_min_event_score": _number(
+            validation_gate.get("official_min_event_score"),
+            _number(criteria.get("official_min_event_score"), _number(criteria.get("min_event_score"), 70.0)),
+        ),
+        "reportable_min_event_score": _number(
+            validation_gate.get("reportable_min_event_score"),
+            _number(criteria.get("min_event_score"), 70.0),
+        ),
+        "score_thresholds": validation_gate.get("score_thresholds", criteria.get("score_thresholds", [])),
         "event_count": _count(validation_gate.get("event_count")),
         "forward_return_count": _count(validation_gate.get("forward_return_count")),
         "shadow_min_event_score": _number(validation_gate.get("shadow_min_event_score"), 65.0),
@@ -494,8 +515,11 @@ def _validation_progress(validation_gate: dict[str, object]) -> dict[str, object
 def _validation_min_event_score(validation_gate: dict[str, object]) -> float:
     criteria = validation_gate.get("criteria", {})
     if not isinstance(criteria, dict):
-        return 70.0
-    return _number(criteria.get("min_event_score"), 70.0)
+        return _number(validation_gate.get("official_min_event_score"), 70.0)
+    return _number(
+        validation_gate.get("official_min_event_score"),
+        _number(criteria.get("official_min_event_score"), _number(criteria.get("min_event_score"), 70.0)),
+    )
 
 
 def _truthy_series(frame: pd.DataFrame, column: str, default: bool = False) -> pd.Series:
@@ -515,6 +539,7 @@ def _validation_eligibility_summary(signals: pd.DataFrame, *, min_event_score: f
             "max_side_score": 0.0,
             "score_pass_count": 0,
             "near_score_count": 0,
+            "validation_confidence_count": 0,
             "watch_or_high_count": 0,
             "data_quality_pass_count": 0,
             "final_report_count": 0,
@@ -535,8 +560,9 @@ def _validation_eligibility_summary(signals: pd.DataFrame, *, min_event_score: f
     side_pass = sides.isin({"accumulation", "distribution"})
     score_pass = side_scores >= float(min_event_score)
     near_score = (side_scores >= float(min_event_score) - 5.0) & (side_scores < float(min_event_score))
-    confidence_pass = confidence.isin({"watch", "high"})
-    eligible_if_final = symbol_pass & side_pass & score_pass & confidence_pass & data_quality
+    validation_confidence_pass = confidence.isin({"diagnostic", "watch", "high"})
+    reportable_confidence_pass = confidence.isin({"watch", "high"})
+    eligible_if_final = symbol_pass & side_pass & score_pass & validation_confidence_pass & data_quality
     eligible = eligible_if_final & final_report
     return {
         "signal_count": int(len(frame)),
@@ -544,7 +570,8 @@ def _validation_eligibility_summary(signals: pd.DataFrame, *, min_event_score: f
         "max_side_score": float(side_scores.max()) if len(side_scores) else 0.0,
         "score_pass_count": int(score_pass.sum()),
         "near_score_count": int(near_score.sum()),
-        "watch_or_high_count": int(confidence_pass.sum()),
+        "validation_confidence_count": int(validation_confidence_pass.sum()),
+        "watch_or_high_count": int(reportable_confidence_pass.sum()),
         "data_quality_pass_count": int(data_quality.sum()),
         "final_report_count": int(final_report.sum()),
         "validation_eligible_count": int(eligible.sum()),
@@ -553,7 +580,7 @@ def _validation_eligibility_summary(signals: pd.DataFrame, *, min_event_score: f
             "missing_symbol": int((~symbol_pass).sum()),
             "invalid_side": int((~side_pass).sum()),
             "score_below_min": int((~score_pass).sum()),
-            "not_watch_or_high": int((~confidence_pass).sum()),
+            "not_validation_confidence": int((~validation_confidence_pass).sum()),
             "data_quality_failed": int((~data_quality).sum()),
             "not_final_report": int((~final_report).sum()),
         },
@@ -568,10 +595,10 @@ def _eligibility_markdown(summary: dict[str, object]) -> str:
         f"{_blocking_count_label_cn(key)}={value}" for key, value in sorted(blockers.items())
     )
     lines = [
-        f"- 当前可进入验证样本账本：`{summary.get('validation_eligible_count', 0)}`",
-        f"- 如果这是最终报告，可进入验证样本账本：`{summary.get('validation_eligible_if_final_count', 0)}`",
+        f"- 当前可进入正式校准样本账本：`{summary.get('validation_eligible_count', 0)}`",
+        f"- 如果这是最终报告，可进入正式校准样本账本：`{summary.get('validation_eligible_if_final_count', 0)}`",
         f"- 分数达标 / 接近达标：`{summary.get('score_pass_count', 0)}` / `{summary.get('near_score_count', 0)}`；最高分 `{_score(summary.get('max_side_score'))}`",
-        f"- 观察或高置信 / 数据质量通过 / 最终报告行数：`{summary.get('watch_or_high_count', 0)}` / `{summary.get('data_quality_pass_count', 0)}` / `{summary.get('final_report_count', 0)}`",
+        f"- 校准置信度 / 观察或高置信 / 数据质量通过 / 最终报告行数：`{summary.get('validation_confidence_count', 0)}` / `{summary.get('watch_or_high_count', 0)}` / `{summary.get('data_quality_pass_count', 0)}` / `{summary.get('final_report_count', 0)}`",
         f"- 未进入样本的原因计数：{blocker_text}",
     ]
     return "\n".join(lines) + "\n"
@@ -582,18 +609,19 @@ def _validation_markdown_table(progress: dict[str, object]) -> str:
     if not isinstance(rows, list) or not rows:
         return "没有按方向拆分的验证记录。\n"
     header = (
-        "| 方向 | 已验证 | 原因 | 样本数 | 天数 | Alpha | 命中率 | 近期命中率 | "
+        "| 方向 | 已验证 | 分数阈值 | 原因 | 样本数 | 天数 | Alpha | 命中率 | 近期命中率 | "
         "Wilson 下界 | 单标的集中度 |\n"
     )
-    sep = "|---|---:|---|---:|---:|---:|---:|---:|---:|---:|\n"
+    sep = "|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|\n"
     body = []
     for row in rows:
         if not isinstance(row, dict):
             continue
         body.append(
-            "| {side} | {validated} | {reason} | {obs}/{min_obs} | {days}/{min_days} | {alpha}/{min_alpha} | {hit}/{min_hit} | {recent}/{min_recent} | {wilson}/{min_wilson} | {max_symbol}/{max_allowed} |".format(
+            "| {side} | {validated} | {threshold} | {reason} | {obs}/{min_obs} | {days}/{min_days} | {alpha}/{min_alpha} | {hit}/{min_hit} | {recent}/{min_recent} | {wilson}/{min_wilson} | {max_symbol}/{max_allowed} |".format(
                 side=_side_label_cn(row.get("side")),
                 validated=_yes_no_cn(row.get("validated")),
+                threshold=_score(row.get("score_threshold")),
                 reason=_reason_cn(row.get("reason")).replace("|", "/"),
                 obs=int(row.get("observation_count") or 0),
                 min_obs=int(row.get("min_observations") or 0),
@@ -936,10 +964,10 @@ def _confidence_gap_markdown(summary: dict[str, object]) -> str:
     lines = [
         f"- 高置信是否可发布：`{_yes_no_cn(summary.get('ready'))}`",
         f"- 发布条件：{req_text}",
-        f"- 正式验证样本：`{summary.get('official_event_count', 0)}` 个事件，`{summary.get('official_forward_return_count', 0)}` 行 forward return",
+        f"- 正式校准样本：`{summary.get('official_event_count', 0)}` 个事件，`{summary.get('official_forward_return_count', 0)}` 行 forward return",
         f"- 影子样本：`{summary.get('shadow_event_count', 0)}` 个事件，`{summary.get('shadow_forward_return_count', 0)}` 行 forward return",
         f"- 探索样本：`{summary.get('exploration_event_count', 0)}` 个事件，`{summary.get('exploration_forward_return_count', 0)}` 行 forward return",
-        f"- 当前报告可进入验证样本：`{summary.get('validation_eligible_count', 0)}`；如果是最终报告则为 `{summary.get('validation_eligible_if_final_count', 0)}`",
+        f"- 当前报告可进入正式校准样本：`{summary.get('validation_eligible_count', 0)}`；如果是最终报告则为 `{summary.get('validation_eligible_if_final_count', 0)}`",
         f"- 累计日内回放：`{replay.get('date_count', 0)}` 个日期，`{replay.get('quality_event_count', 0)}` 个合格事件，`{replay.get('quality_return_count', 0)}` 行合格收益",
     ]
     if blockers:
@@ -950,17 +978,18 @@ def _confidence_gap_markdown(summary: dict[str, object]) -> str:
     lines.extend(
         [
             "",
-            "| 方向 | 已验证 | 还缺样本 | 还缺天数 | Alpha 差距 | 命中率差距 | 近期命中率差距 | Wilson 差距 | 集中度超限 |",
-            "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+            "| 方向 | 已验证 | 分数阈值 | 还缺样本 | 还缺天数 | Alpha 差距 | 命中率差距 | 近期命中率差距 | Wilson 差距 | 集中度超限 |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for row in rows:
         if not isinstance(row, dict):
             continue
         lines.append(
-            "| {side} | {validated} | {obs} | {days} | {alpha} | {hit} | {recent} | {wilson} | {concentration} |".format(
+            "| {side} | {validated} | {threshold} | {obs} | {days} | {alpha} | {hit} | {recent} | {wilson} | {concentration} |".format(
                 side=_side_label_cn(row.get("side")),
                 validated=_yes_no_cn(row.get("validated")),
+                threshold=_score(row.get("score_threshold")),
                 obs=int(row.get("observations_needed") or 0),
                 days=int(row.get("signal_days_needed") or 0),
                 alpha=_pct(row.get("alpha_gap")),
@@ -1104,6 +1133,7 @@ def _blocking_count_label_cn(key: object) -> str:
         "invalid_side": "方向无效",
         "score_below_min": "分数低于门槛",
         "not_watch_or_high": "不是观察或高置信",
+        "not_validation_confidence": "不是校准置信度",
         "data_quality_failed": "数据质量不通过",
         "not_final_report": "非最终报告",
     }.get(str(key or ""), str(key or ""))
@@ -1326,7 +1356,8 @@ def render_markdown_report(
         "",
         f"- 验证门槛是否通过：`{_yes_no_cn(validation_gate.get('validated'))}`",
         f"- 验证原因：{_reason_cn(validation_gate.get('reason', ''))}",
-        f"- 正式验证样本：`{validation_progress.get('event_count', 0)}` 个事件，`{validation_progress.get('forward_return_count', 0)}` 行 forward return",
+        f"- 正式校准样本：`{validation_progress.get('event_count', 0)}` 个事件，`{validation_progress.get('forward_return_count', 0)}` 行 forward return；校准最低分 `{_score(validation_progress.get('official_min_event_score'))}`；观察展示最低分 `{_score(validation_progress.get('reportable_min_event_score'))}`",
+        f"- 候选分数阈值：`{_score_list(validation_progress.get('score_thresholds'))}`",
         f"- 影子校准样本：`{validation_progress.get('shadow_event_count', 0)}` 个事件，`{validation_progress.get('shadow_forward_return_count', 0)}` 行 forward return；最低分 `{_score(validation_progress.get('shadow_min_event_score'))}`",
         f"- 探索校准样本：`{validation_progress.get('exploration_event_count', 0)}` 个事件，`{validation_progress.get('exploration_forward_return_count', 0)}` 行 forward return；最低分 `{_score(validation_progress.get('exploration_min_event_score'))}`",
         f"- 晋级观察周期：`{validation_progress.get('promotion_horizon', 0)}d`；基准：`{validation_progress.get('benchmark') or 'n/a'}`",
@@ -1343,7 +1374,7 @@ def render_markdown_report(
         "",
         _validation_markdown_table(validation_progress),
         "",
-        "## 验证样本入账资格",
+        "## 正式校准样本入账资格",
         "",
         _eligibility_markdown(eligibility),
         "",
@@ -1455,13 +1486,14 @@ def _validation_html_table(progress: dict[str, object]) -> str:
             continue
         cls = "buy" if row.get("validated") else "sell"
         table_rows.append(
-            "<tr class='{cls}'><td>{side}</td><td>{validated}</td><td>{reason}</td>"
+            "<tr class='{cls}'><td>{side}</td><td>{validated}</td><td>{threshold}</td><td>{reason}</td>"
             "<td>{obs}/{min_obs}</td><td>{days}/{min_days}</td><td>{alpha}/{min_alpha}</td>"
             "<td>{hit}/{min_hit}</td><td>{recent}/{min_recent}</td><td>{wilson}/{min_wilson}</td>"
-                "<td>{max_symbol}/{max_allowed}</td></tr>".format(
+            "<td>{max_symbol}/{max_allowed}</td></tr>".format(
                 cls=cls,
                 side=html.escape(_side_label_cn(row.get("side"))),
                 validated=_yes_no_cn(row.get("validated")),
+                threshold=_score(row.get("score_threshold")),
                 reason=html.escape(_reason_cn(row.get("reason"))),
                 obs=int(row.get("observation_count") or 0),
                 min_obs=int(row.get("min_observations") or 0),
@@ -1480,7 +1512,7 @@ def _validation_html_table(progress: dict[str, object]) -> str:
             )
         )
     return (
-        "<table><tr><th>方向</th><th>已验证</th><th>原因</th><th>样本数</th><th>天数</th>"
+        "<table><tr><th>方向</th><th>已验证</th><th>分数阈值</th><th>原因</th><th>样本数</th><th>天数</th>"
         "<th>Alpha</th><th>命中率</th><th>近期命中率</th><th>Wilson 下界</th><th>单标的集中度</th></tr>"
         + "\n".join(table_rows)
         + "</table>"
@@ -1495,10 +1527,10 @@ def _eligibility_html(summary: dict[str, object]) -> str:
         f"{html.escape(_blocking_count_label_cn(key))}={int(value or 0)}" for key, value in sorted(blockers.items())
     )
     return (
-        "<div class='gate'><strong>验证样本入账资格：</strong>"
+        "<div class='gate'><strong>正式校准样本入账资格：</strong>"
         "当前可入账={eligible}；如果是最终报告可入账={eligible_if_final}；"
         "分数达标={score_pass}；接近达标={near_score}；最高分={max_score}；"
-        "观察或高置信={watch}；数据质量通过={quality}；最终报告行数={final}；"
+        "校准置信度={validation_confidence}；观察或高置信={watch}；数据质量通过={quality}；最终报告行数={final}；"
         "未入账原因={blockers}</div>"
     ).format(
         eligible=int(summary.get("validation_eligible_count") or 0),
@@ -1506,6 +1538,7 @@ def _eligibility_html(summary: dict[str, object]) -> str:
         score_pass=int(summary.get("score_pass_count") or 0),
         near_score=int(summary.get("near_score_count") or 0),
         max_score=_score(summary.get("max_side_score")),
+        validation_confidence=int(summary.get("validation_confidence_count") or 0),
         watch=int(summary.get("watch_or_high_count") or 0),
         quality=int(summary.get("data_quality_pass_count") or 0),
         final=int(summary.get("final_report_count") or 0),
@@ -1563,11 +1596,12 @@ def _confidence_gap_html(summary: dict[str, object]) -> str:
             if not isinstance(row, dict):
                 continue
             rows.append(
-                "<tr><td>{side}</td><td>{validated}</td><td>{obs}</td><td>{days}</td>"
+                "<tr><td>{side}</td><td>{validated}</td><td>{threshold}</td><td>{obs}</td><td>{days}</td>"
                 "<td>{alpha}</td><td>{hit}</td><td>{recent}</td><td>{wilson}</td>"
                 "<td>{concentration}</td></tr>".format(
                     side=html.escape(_side_label_cn(row.get("side"))),
                     validated=_yes_no_cn(row.get("validated")),
+                    threshold=_score(row.get("score_threshold")),
                     obs=int(row.get("observations_needed") or 0),
                     days=int(row.get("signal_days_needed") or 0),
                     alpha=_pct(row.get("alpha_gap")),
@@ -1580,7 +1614,7 @@ def _confidence_gap_html(summary: dict[str, object]) -> str:
     table = "<p>没有高置信差距明细。</p>"
     if rows:
         table = (
-            "<table><tr><th>方向</th><th>已验证</th><th>还缺样本</th><th>还缺天数</th>"
+            "<table><tr><th>方向</th><th>已验证</th><th>分数阈值</th><th>还缺样本</th><th>还缺天数</th>"
             "<th>Alpha 差距</th><th>命中率差距</th><th>近期命中率差距</th><th>Wilson 差距</th>"
             "<th>集中度超限</th></tr>"
             + "\n".join(rows)
@@ -1589,7 +1623,7 @@ def _confidence_gap_html(summary: dict[str, object]) -> str:
     return (
         "<div class='gate'><strong>高置信准备度：</strong>可发布={ready}；"
         "条件={requirements}；阻塞项={blockers}</div>"
-        "<div class='gate'><strong>验证样本差距：</strong>正式事件={official_events}；"
+        "<div class='gate'><strong>校准样本差距：</strong>正式事件={official_events}；"
         "正式 forward return={official_returns}；影子事件={shadow_events}；"
         "影子 forward return={shadow_returns}；探索事件={exploration_events}；"
         "探索 forward return={exploration_returns}；当前可入账={eligible}；最终报告可入账={eligible_if_final}；"
@@ -1723,7 +1757,7 @@ tr.sell {{ background: #fff1f2; }}
 {chinese_conclusion}
 <p class="muted">本报告使用 Futu OpenD 的逐笔成交、盘口快照和报价数据。它识别的是主力行为迹象，不声称能确认具体机构账户身份。</p>
 <div class="gate"><strong>验证门槛：</strong>已通过={_yes_no_cn(validation_gate.get('validated'))}；{reason}</div>
-<div class="gate"><strong>正式验证样本：</strong>事件={validation_progress.get('event_count', 0)}；forward return={validation_progress.get('forward_return_count', 0)}；晋级观察周期={validation_progress.get('promotion_horizon', 0)}d；基准={html.escape(str(validation_progress.get('benchmark') or 'n/a'))}</div>
+<div class="gate"><strong>正式校准样本：</strong>事件={validation_progress.get('event_count', 0)}；forward return={validation_progress.get('forward_return_count', 0)}；校准最低分={_score(validation_progress.get('official_min_event_score'))}；观察展示最低分={_score(validation_progress.get('reportable_min_event_score'))}；候选阈值={html.escape(_score_list(validation_progress.get('score_thresholds')))}；晋级观察周期={validation_progress.get('promotion_horizon', 0)}d；基准={html.escape(str(validation_progress.get('benchmark') or 'n/a'))}</div>
 <div class="gate"><strong>影子校准：</strong>事件={validation_progress.get('shadow_event_count', 0)}；forward return={validation_progress.get('shadow_forward_return_count', 0)}；最低分={_score(validation_progress.get('shadow_min_event_score'))}</div>
 <div class="gate"><strong>探索校准：</strong>事件={validation_progress.get('exploration_event_count', 0)}；forward return={validation_progress.get('exploration_forward_return_count', 0)}；最低分={_score(validation_progress.get('exploration_min_event_score'))}</div>
 <div class="gate"><strong>数据质量门槛：</strong>合格股票={data_quality.get('eligible_symbol_count', 0)}/{data_quality.get('symbol_count', 0)}；成交/盘口覆盖中位数={_pct(data_quality.get('median_trade_coverage_ratio_regular'))}/{_pct(data_quality.get('median_book_coverage_ratio_regular'))}；NAS 上传完整={_yes_no_cn(data_quality.get('nas_upload_complete'))}；manifest 行数={data_quality.get('manifest_count', 0)}</div>
@@ -1732,7 +1766,7 @@ tr.sell {{ background: #fff1f2; }}
 {_confidence_gap_html(confidence_gap)}
 <h2>分方向验证进度</h2>
 {_validation_html_table(validation_progress)}
-<h2>验证样本入账资格</h2>
+<h2>正式校准样本入账资格</h2>
 {_eligibility_html(eligibility)}
 <h2>日内回放校准</h2>
 {_intraday_replay_html(intraday_replay)}

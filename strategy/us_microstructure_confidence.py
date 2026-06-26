@@ -51,6 +51,7 @@ def _side_gap(
     recent_hit_rate = _float(metrics.get("recent_hit_rate"))
     wilson_lower = _float(metrics.get("wilson_lower"))
     symbol_share = _float(metrics.get("max_symbol_sample_share"), 0.0 if observation_count <= 0 else 1.0)
+    score_threshold = metrics.get("score_threshold")
 
     min_observations = _int(criteria.get("min_observations_per_side"))
     min_signal_days = _int(criteria.get("min_signal_days_per_side"))
@@ -64,6 +65,7 @@ def _side_gap(
         "side": side,
         "validated": _bool(validated_sides.get(side)),
         "reason": str(side_reasons.get(side) or ""),
+        "score_threshold": _float(score_threshold) if score_threshold is not None else None,
         "observation_count": observation_count,
         "min_observations": min_observations,
         "observations_needed": max(0, min_observations - observation_count),

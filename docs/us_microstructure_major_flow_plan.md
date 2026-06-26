@@ -482,37 +482,46 @@ Implemented status as of 2026-06-02:
 - `strategy/us_microstructure_signals.py` scores accumulation and distribution
   candidates, but only emits `high` confidence when a validation gate is
   promoted for that side and both regular-session trade and order-book coverage
-  gates pass. Without `validation/active_gate.json`, candidates stay
-  `warmup`/`diagnostic` or `watch`.
+  gates pass. When the gate has selected a validated score threshold for that
+  side, high-confidence release uses `max(watch_score, selected threshold)`;
+  without `validation/active_gate.json`, candidates stay `warmup`/`diagnostic`
+  or `watch`.
 - `strategy/us_microstructure_validation.py` maintains the forward validation
   ledger: `signal_events.parquet`, `forward_returns.parquet`,
-  `rule_metrics.csv`, and `active_gate.json`. It promotes only after the
-  configured sample-size, 5-day alpha, hit-rate, recent hit-rate, Wilson lower
-  bound, and symbol-concentration gates pass. The ledger only consumes
-  reportable `watch`/`high` signals with `data_quality_pass=true`; diagnostic
-  or low-coverage rows are not allowed to train the confidence gate. It also
-  requires `is_final_report=true`, so intraday/manual reports cannot train the
-  confidence gate if a final post-close report fails to overwrite them. Signal
-  events preserve coverage, liquidity, duplicate-rate, spread, and evidence
-  block fields so every validation sample remains auditable.
+  `rule_metrics.csv`, `score_threshold_metrics.csv`, and `active_gate.json`.
+  It promotes only after the configured sample-size, 5-day alpha, hit-rate,
+  recent hit-rate, Wilson lower bound, and symbol-concentration gates pass.
+  The official calibration ledger consumes final, data-quality-passing
+  `diagnostic`/`watch`/`high` rows above `official_min_event_score` (default
+  50), then evaluates candidate score thresholds before promoting a side. This
+  separates calibration sample collection from visible reportability: lower
+  diagnostic rows can help estimate a score floor, but cannot become
+  high-confidence unless the selected threshold passes the promotion gates.
+  The stricter `min_event_score` remains the reportable/watch audit floor. The
+  ledger also requires `is_final_report=true`, so intraday/manual reports
+  cannot train the confidence gate if a final post-close report fails to
+  overwrite them. Signal events preserve coverage, liquidity, duplicate-rate,
+  spread, and evidence block fields so every validation sample remains
+  auditable.
 - `scripts/update_us_microstructure_prices.py` uses Futu OpenD `K_DAY` data to
   maintain `validation/prices/us_daily_prices.csv` and parquet. This is the
   daily close-price source used to turn signal events into forward-return labels.
 - `scripts/validate_us_microstructure_flow.py` updates the validation ledger
   from archived signal CSV files and daily close prices. It can read a
   `date,symbol,close` price CSV and/or Qlib daily close data. By default it
-  auto-detects `validation/prices/us_daily_prices.csv`. It also writes a
+  auto-detects `validation/prices/us_daily_prices.csv`. It writes the
+  official calibration ledger for final, data-quality-passing candidates,
+  plus score-threshold metrics used by `active_gate.json`. It also writes a
   separate shadow calibration ledger for final, data-quality-passing near-miss
   candidates (`shadow_signal_events.parquet`, `shadow_forward_returns.parquet`,
   and `shadow_rule_metrics.csv`). Shadow rows are not allowed to promote
-  `active_gate.json`; they exist only to calibrate whether the strict official
-  score/confidence filters are starving validation samples. A broader
+  `active_gate.json`; they exist only as an audit layer around stricter
+  score/confidence filters. A broader
   exploration ledger (`exploration_signal_events.parquet`,
   `exploration_forward_returns.parquet`, and `exploration_rule_metrics.csv`)
   captures final, data-quality-passing candidates above a lower research score
   floor, default 50. Exploration rows are also blocked from promotion; they only
-  make score-threshold calibration observable when official/shadow samples are
-  empty.
+  preserve the broader research view beside the official calibration ledger.
 - `scripts/repair_us_microstructure_nas_uploads.py` retries failed, skipped, or
   otherwise non-`ok` raw-file uploads recorded in manifest rows, updates the
   manifest rows after successful repair, and mirrors the repaired manifest back

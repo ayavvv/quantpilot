@@ -14,9 +14,11 @@ from strategy.us_microstructure_validation import (
     ForwardValidationConfig,
     build_active_gate,
     build_rule_metrics,
+    build_score_threshold_metrics,
     compute_forward_returns,
     load_price_history_from_csv,
     load_exploration_signal_events,
+    load_official_calibration_events,
     load_shadow_signal_events,
     load_signal_events,
 )
@@ -314,6 +316,60 @@ def test_signal_scoring_requires_side_specific_validation_for_high_confidence():
     assert signals.iloc[0]["confidence"] == "high"
 
 
+def test_signal_scoring_uses_validated_gate_score_threshold_for_high_confidence():
+    minutes = pd.date_range("2026-06-01 13:30:00+00:00", periods=6, freq="min")
+    active_buy = 600_000.0
+    active_sell = 400_000.0
+    features = pd.DataFrame(
+        {
+            "symbol": ["US.AAPL"] * len(minutes),
+            "minute": minutes,
+            "trade_count": [100] * len(minutes),
+            "dollar_volume": [1_000_000.0] * len(minutes),
+            "active_buy_dollar": [active_buy] * len(minutes),
+            "active_sell_dollar": [active_sell] * len(minutes),
+            "has_trade_data": [True] * len(minutes),
+            "has_book_data": [True] * len(minutes),
+            "coverage_ratio_regular": [1.0] * len(minutes),
+            "trade_coverage_ratio_regular": [1.0] * len(minutes),
+            "book_coverage_ratio_regular": [1.0] * len(minutes),
+            "reference_price": [100, 100.02, 100.04, 100.05, 100.06, 100.07],
+            "vwap_deviation_bps": [2] * len(minutes),
+            "price_impact_bps_per_musd": [10] * len(minutes),
+            "spread_bps": [3] * len(minutes),
+            "depth_imbalance_1": [0.18] * len(minutes),
+            "depth_imbalance_5": [0.18] * len(minutes),
+            "bid_replenish_1": [500] * len(minutes),
+            "ask_replenish_1": [0] * len(minutes),
+            "dollar_volume_z": [1.5] * len(minutes),
+            "odd_lot_ratio": [0.1] * len(minutes),
+            "duplicate_sequence_rate": [0.0] * len(minutes),
+        }
+    )
+
+    signals = score_microstructure_signals(
+        features,
+        config=MicrostructureSignalConfig(
+            min_trade_count=100,
+            min_dollar_volume=1_000,
+            min_data_coverage=0.1,
+            watch_score=70,
+            high_score=85,
+        ),
+        validation_gate={
+            "state": "validated",
+            "validated": True,
+            "validated_sides": {"accumulation": True, "distribution": False},
+            "side_metrics": {"accumulation": {"score_threshold": 60}},
+        },
+    )
+
+    row = signals.iloc[0]
+    assert row["side"] == "accumulation"
+    assert 70 <= row["side_score"] < 85
+    assert row["confidence"] == "high"
+
+
 def test_signal_scoring_uses_total_duplicate_sequence_rate_for_quality():
     minutes = pd.date_range("2026-06-01 13:30:00+00:00", periods=3, freq="min")
     features = pd.DataFrame(
@@ -476,11 +532,12 @@ def test_validation_eligibility_summary_exposes_sample_blockers():
     assert summary["validation_eligible_if_final_count"] == 1
     assert summary["score_pass_count"] == 1
     assert summary["near_score_count"] == 1
+    assert summary["validation_confidence_count"] == 2
     assert summary["watch_or_high_count"] == 1
     assert summary["data_quality_pass_count"] == 1
     assert summary["final_report_count"] == 1
     assert summary["blocking_counts"]["score_below_min"] == 1
-    assert summary["blocking_counts"]["not_watch_or_high"] == 1
+    assert summary["blocking_counts"]["not_validation_confidence"] == 0
     assert summary["blocking_counts"]["data_quality_failed"] == 1
     assert summary["blocking_counts"]["not_final_report"] == 1
 
@@ -876,7 +933,7 @@ def test_report_script_writes_warmup_artifacts(tmp_path, monkeypatch):
     assert "分标的数据质量" in html_report
     assert "重复序列审计" in html_report
     assert "分方向验证进度" in html_report
-    assert "验证样本入账资格" in html_report
+    assert "正式校准样本入账资格" in html_report
     assert "高置信准备度" in html_report
     assert "日内回放校准" in html_report
     assert "缺少 5 日验证指标" in html_report
@@ -1177,6 +1234,77 @@ def test_forward_validation_builds_active_gate_from_price_csv(tmp_path):
     assert gate["validated_sides"]["accumulation"] is True
 
 
+def test_active_gate_uses_score_threshold_metrics_for_selected_floor():
+    forward_returns = pd.DataFrame(
+        [
+            {
+                "signal_date": "2026-01-02",
+                "symbol": "US.AAPL",
+                "side": "accumulation",
+                "side_score": 55,
+                "horizon": 5,
+                "fwd_return": 0.04,
+                "benchmark_return": 0.01,
+                "directional_alpha": 0.03,
+                "directional_hit": True,
+            },
+            {
+                "signal_date": "2026-01-05",
+                "symbol": "US.MSFT",
+                "side": "accumulation",
+                "side_score": 62,
+                "horizon": 5,
+                "fwd_return": 0.05,
+                "benchmark_return": 0.01,
+                "directional_alpha": 0.04,
+                "directional_hit": True,
+            },
+            {
+                "signal_date": "2026-01-06",
+                "symbol": "US.NVDA",
+                "side": "accumulation",
+                "side_score": 72,
+                "horizon": 5,
+                "fwd_return": 0.06,
+                "benchmark_return": 0.01,
+                "directional_alpha": 0.05,
+                "directional_hit": True,
+            },
+            {
+                "signal_date": "2026-01-07",
+                "symbol": "US.TSLA",
+                "side": "accumulation",
+                "side_score": 80,
+                "horizon": 5,
+                "fwd_return": 0.07,
+                "benchmark_return": 0.01,
+                "directional_alpha": 0.06,
+                "directional_hit": True,
+            },
+        ]
+    )
+    cfg = ForwardValidationConfig(
+        horizons=(5,),
+        score_thresholds=(50, 70, 85),
+        min_signal_days_per_side=2,
+        min_observations_per_side=2,
+        min_alpha=0.001,
+        min_hit_rate=0.5,
+        min_recent_hit_rate=0.5,
+        min_wilson_lower=0.2,
+        max_symbol_sample_share=0.51,
+    )
+
+    metrics = build_rule_metrics(forward_returns, config=cfg)
+    threshold_metrics = build_score_threshold_metrics(forward_returns, config=cfg)
+    gate = build_active_gate(metrics, threshold_metrics=threshold_metrics, config=cfg)
+
+    assert gate["validated"] is True
+    assert gate["validated_sides"]["accumulation"] is True
+    assert gate["side_metrics"]["accumulation"]["score_threshold"] == 50
+    assert "score_threshold>=50" in gate["side_reasons"]["accumulation"]
+
+
 def test_validation_script_writes_warmup_gate_without_future_prices(tmp_path):
     _write_signal(
         tmp_path,
@@ -1249,14 +1377,21 @@ def test_validation_script_writes_shadow_near_threshold_events(tmp_path):
     )
 
     gate = json.loads((tmp_path / "validation" / "active_gate.json").read_text(encoding="utf-8"))
+    official_events = pd.read_parquet(tmp_path / "validation" / "signal_events.parquet")
+    threshold_metrics = pd.read_csv(tmp_path / "validation" / "score_threshold_metrics.csv")
     shadow_events = pd.read_parquet(tmp_path / "validation" / "shadow_signal_events.parquet")
     shadow_returns = pd.read_parquet(tmp_path / "validation" / "shadow_forward_returns.parquet")
 
-    assert gate["event_count"] == 0
-    assert gate["forward_return_count"] == 0
+    assert gate["official_min_event_score"] == 50
+    assert gate["reportable_min_event_score"] == 70
+    assert gate["event_count"] == 1
+    assert gate["forward_return_count"] == 1
     assert gate["shadow_min_event_score"] == 65
     assert gate["shadow_event_count"] == 1
     assert gate["shadow_forward_return_count"] == 1
+    assert official_events.iloc[0]["validation_scope"] == "official"
+    assert official_events.iloc[0]["confidence"] == "diagnostic"
+    assert not threshold_metrics.empty
     assert shadow_events.iloc[0]["validation_scope"] == "shadow"
     assert shadow_returns.iloc[0]["horizon"] == 1
 
@@ -1308,15 +1443,23 @@ def test_validation_script_writes_exploration_events_below_shadow_threshold(tmp_
     )
 
     gate = json.loads((tmp_path / "validation" / "active_gate.json").read_text(encoding="utf-8"))
+    official_events = pd.read_parquet(tmp_path / "validation" / "signal_events.parquet")
+    threshold_metrics = pd.read_csv(tmp_path / "validation" / "score_threshold_metrics.csv")
     exploration_events = pd.read_parquet(tmp_path / "validation" / "exploration_signal_events.parquet")
     exploration_returns = pd.read_parquet(tmp_path / "validation" / "exploration_forward_returns.parquet")
     shadow_events = pd.read_parquet(tmp_path / "validation" / "shadow_signal_events.parquet")
 
-    assert gate["event_count"] == 0
+    assert gate["official_min_event_score"] == 50
+    assert gate["reportable_min_event_score"] == 70
+    assert gate["event_count"] == 1
+    assert gate["forward_return_count"] == 1
     assert gate["shadow_event_count"] == 0
     assert gate["exploration_min_event_score"] == 50
     assert gate["exploration_event_count"] == 1
     assert gate["exploration_forward_return_count"] == 1
+    assert official_events.iloc[0]["validation_scope"] == "official"
+    assert official_events.iloc[0]["confidence"] == "diagnostic"
+    assert not threshold_metrics.empty
     assert shadow_events.empty
     assert exploration_events.iloc[0]["validation_scope"] == "exploration"
     assert exploration_returns.iloc[0]["horizon"] == 1
@@ -1431,6 +1574,48 @@ def test_load_signal_events_requires_reportable_quality_signals(tmp_path):
     assert row["duplicate_sequence_count"] == 10
     assert row["dollar_volume"] == 90_000_000.0
     assert row["spread_bps"] == 2.5
+
+
+def test_load_official_calibration_events_keeps_quality_diagnostic_rows(tmp_path):
+    signal_path = _write_signal(
+        tmp_path,
+        "2026-01-02",
+        [
+            {
+                "symbol": "US.AAPL",
+                "side": "distribution",
+                "side_score": 55,
+                "rank": 1,
+                "confidence": "diagnostic",
+                "data_quality_pass": True,
+            },
+            {
+                "symbol": "US.MSFT",
+                "side": "distribution",
+                "side_score": 49,
+                "rank": 2,
+                "confidence": "diagnostic",
+                "data_quality_pass": True,
+            },
+            {
+                "symbol": "US.TSLA",
+                "side": "distribution",
+                "side_score": 58,
+                "rank": 3,
+                "confidence": "diagnostic",
+                "data_quality_pass": True,
+                "is_final_report": False,
+            },
+        ],
+    )
+
+    reportable = load_signal_events([signal_path], min_event_score=70)
+    official = load_official_calibration_events([signal_path], min_event_score=50)
+
+    assert reportable.empty
+    assert official["symbol"].tolist() == ["US.AAPL"]
+    assert official.iloc[0]["validation_scope"] == "official"
+    assert official.iloc[0]["confidence"] == "diagnostic"
 
 
 def test_load_shadow_signal_events_keeps_final_quality_near_threshold_rows(tmp_path):
