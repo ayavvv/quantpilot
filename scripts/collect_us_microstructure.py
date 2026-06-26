@@ -17,7 +17,7 @@ import subprocess
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
@@ -184,19 +184,41 @@ def _append_manifest(base_dir: Path, date: str, run_id: str, records: list[dict[
     return path
 
 
-def _copy_to_nas(local_path: Path, local_base: Path, nas_host: str, nas_dir: str) -> tuple[str, str, str]:
+def _normalise_remote_dir(nas_dir: str) -> str:
+    remote_dir = str(nas_dir or "").rstrip("/")
+    return remote_dir or "/"
+
+
+def _remote_path_for(local_path: Path, local_base: Path, nas_dir: str) -> str:
     relative = local_path.relative_to(local_base)
-    remote_path = f"{nas_dir.rstrip('/')}/{relative.as_posix()}"
-    remote_parent = str(PurePosixPath(remote_path).parent)
-    remote_command = f"mkdir -p {shlex.quote(remote_parent)} && tar -xf - -C {shlex.quote(remote_parent)}"
+    remote_dir = _normalise_remote_dir(nas_dir)
+    if remote_dir == "/":
+        return f"/{relative.as_posix()}"
+    return f"{remote_dir}/{relative.as_posix()}"
+
+
+def _copy_many_to_nas(
+    local_paths: Iterable[Path],
+    local_base: Path,
+    nas_host: str,
+    nas_dir: str,
+) -> tuple[str, dict[Path, str], str]:
+    paths = [Path(path) for path in local_paths]
+    remote_paths = {path: _remote_path_for(path, local_base, nas_dir) for path in paths}
+    if not paths:
+        return "ok", remote_paths, ""
+
+    relative_paths = [path.relative_to(local_base).as_posix() for path in paths]
+    remote_dir = _normalise_remote_dir(nas_dir)
+    remote_command = f"mkdir -p {shlex.quote(remote_dir)} && tar -xf - -C {shlex.quote(remote_dir)}"
 
     tar_proc = subprocess.Popen(
-        ["tar", "-cf", "-", "-C", str(local_path.parent), local_path.name],
+        ["tar", "-cf", "-", "-C", str(local_base), *relative_paths],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
     if tar_proc.stdout is None:
-        return "failed", remote_path, "failed to open tar stdout pipe"
+        return "failed", remote_paths, "failed to open tar stdout pipe"
 
     ssh_proc = subprocess.Popen(
         ["ssh", nas_host, remote_command],
@@ -210,11 +232,37 @@ def _copy_to_nas(local_path: Path, local_base: Path, nas_host: str, nas_dir: str
     tar_code = tar_proc.wait()
 
     if tar_code != 0:
-        return "failed", remote_path, tar_stderr.decode("utf-8", errors="replace").strip()
+        return "failed", remote_paths, tar_stderr.decode("utf-8", errors="replace").strip()
     if ssh_proc.returncode != 0:
         message = (ssh_stderr or ssh_stdout or b"").decode("utf-8", errors="replace").strip()
-        return "failed", remote_path, message
-    return "ok", remote_path, ""
+        return "failed", remote_paths, message
+    return "ok", remote_paths, ""
+
+
+def _copy_to_nas(local_path: Path, local_base: Path, nas_host: str, nas_dir: str) -> tuple[str, str, str]:
+    path = Path(local_path)
+    status, remote_paths, error = _copy_many_to_nas([path], local_base, nas_host, nas_dir)
+    return status, remote_paths.get(path, _remote_path_for(path, local_base, nas_dir)), error
+
+
+def _mark_manifest_uploads(
+    manifests: list[dict[str, Any]],
+    *,
+    local_base: Path,
+    nas_dir: str,
+    status: str,
+    remote_paths: dict[Path, str],
+    error: str,
+) -> list[dict[str, Any]]:
+    updated: list[dict[str, Any]] = []
+    for record in manifests:
+        local_path = Path(str(record["local_path"]))
+        item = dict(record)
+        item["nas_upload_status"] = status
+        item["nas_path"] = remote_paths.get(local_path, _remote_path_for(local_path, local_base, nas_dir))
+        item["nas_error"] = "" if status == "ok" else error
+        updated.append(item)
+    return updated
 
 
 def _sync_manifests_to_nas(
@@ -231,16 +279,16 @@ def _sync_manifests_to_nas(
             record["nas_error"] = ""
         return manifests
 
-    updated: list[dict[str, Any]] = []
-    for record in manifests:
-        local_path = Path(str(record["local_path"]))
-        status, remote_path, error = _copy_to_nas(local_path, local_base, nas_host, nas_dir)
-        item = dict(record)
-        item["nas_upload_status"] = status
-        item["nas_path"] = remote_path
-        item["nas_error"] = error
-        updated.append(item)
-    return updated
+    local_paths = [Path(str(record["local_path"])) for record in manifests]
+    status, remote_paths, error = _copy_many_to_nas(local_paths, local_base, nas_host, nas_dir)
+    return _mark_manifest_uploads(
+        manifests,
+        local_base=local_base,
+        nas_dir=nas_dir,
+        status=status,
+        remote_paths=remote_paths,
+        error=error,
+    )
 
 
 def _flatten_order_book(raw: dict[str, Any], *, symbol: str, recv_time: str, levels: int) -> dict[str, Any]:
@@ -329,7 +377,7 @@ def _flush_batch(
     run_id: str,
     batch_index: int,
 ) -> int:
-    manifest_records: list[dict[str, Any]] = []
+    written_records: list[dict[str, Any]] = []
     for kind, rows in buffers.items():
         written = _write_partition(
             rows,
@@ -339,10 +387,15 @@ def _flush_batch(
             run_id=run_id,
             batch_index=batch_index,
         )
-        manifest_records.extend(
-            _sync_manifests_to_nas(written, local_base=local_dir, nas_host=nas_host, nas_dir=nas_dir)
-        )
+        written_records.extend(written)
         rows.clear()
+
+    manifest_records = _sync_manifests_to_nas(
+        written_records,
+        local_base=local_dir,
+        nas_host=nas_host,
+        nas_dir=nas_dir,
+    )
     manifest_path = _append_manifest(local_dir, date, run_id, manifest_records)
     if manifest_path and nas_host and nas_dir:
         status, _, error = _copy_to_nas(manifest_path, local_dir, nas_host, nas_dir)
