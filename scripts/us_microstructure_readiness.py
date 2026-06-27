@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from scripts.collect_us_microstructure import DEFAULT_NAS_DIR, _copy_to_nas
+from scripts.collect_us_microstructure import DEFAULT_NAS_DIR, _sync_paths_to_nas
 from strategy.us_microstructure_confidence import build_confidence_gap
 
 
@@ -392,14 +392,8 @@ def _readiness_output_paths(base_dir: str | Path, date: str) -> list[Path]:
 
 
 def sync_readiness_outputs(paths: list[Path], *, base_dir: str | Path, nas_host: str, nas_dir: str) -> list[dict[str, str]]:
-    results: list[dict[str, str]] = []
-    if not nas_host or not nas_dir:
-        return results
     local_base = Path(base_dir).expanduser()
-    for path in paths:
-        status, remote_path, error = _copy_to_nas(path, local_base, nas_host, nas_dir)
-        results.append({"local_path": str(path), "nas_path": remote_path, "status": status, "error": error})
-    return results
+    return _sync_paths_to_nas(paths, local_base=local_base, nas_host=nas_host, nas_dir=nas_dir)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

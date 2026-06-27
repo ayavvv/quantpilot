@@ -3,6 +3,68 @@ from pathlib import Path
 from scripts import collect_us_microstructure as collect
 
 
+def test_sync_paths_to_nas_uploads_outputs_in_one_batch(tmp_path, monkeypatch):
+    first = tmp_path / "reports" / "first.json"
+    second = tmp_path / "reports" / "second.html"
+    first.parent.mkdir(parents=True)
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+    calls = []
+
+    def fake_copy_many_to_nas(local_paths, local_base, nas_host, nas_dir):
+        paths = [Path(path) for path in local_paths]
+        calls.append((paths, local_base, nas_host, nas_dir))
+        return (
+            "ok",
+            {path: f"{nas_dir}/{path.relative_to(local_base).as_posix()}" for path in paths},
+            "",
+        )
+
+    monkeypatch.setattr(collect, "_copy_many_to_nas", fake_copy_many_to_nas)
+
+    results = collect._sync_paths_to_nas(
+        [first, second],
+        local_base=tmp_path,
+        nas_host="nas",
+        nas_dir="/volume1/docker/quantpilot/us_microstructure",
+    )
+
+    assert len(calls) == 1
+    assert calls[0][0] == [first, second]
+    assert [item["status"] for item in results] == ["ok", "ok"]
+    assert [item["error"] for item in results] == ["", ""]
+    assert results[0]["nas_path"].endswith("/reports/first.json")
+    assert results[1]["nas_path"].endswith("/reports/second.html")
+
+
+def test_sync_paths_to_nas_marks_whole_batch_failed(tmp_path, monkeypatch):
+    first = tmp_path / "validation" / "gate.json"
+    second = tmp_path / "validation" / "metrics.csv"
+    first.parent.mkdir(parents=True)
+    first.write_text("{}", encoding="utf-8")
+    second.write_text("metric,value\n", encoding="utf-8")
+
+    def fake_copy_many_to_nas(local_paths, local_base, nas_host, nas_dir):
+        paths = [Path(path) for path in local_paths]
+        return (
+            "failed",
+            {path: f"{nas_dir}/{path.relative_to(local_base).as_posix()}" for path in paths},
+            "ssh failed",
+        )
+
+    monkeypatch.setattr(collect, "_copy_many_to_nas", fake_copy_many_to_nas)
+
+    results = collect._sync_paths_to_nas(
+        [first, second],
+        local_base=tmp_path,
+        nas_host="nas",
+        nas_dir="/volume1/docker/quantpilot/us_microstructure",
+    )
+
+    assert [item["status"] for item in results] == ["failed", "failed"]
+    assert [item["error"] for item in results] == ["ssh failed", "ssh failed"]
+
+
 def test_sync_manifests_to_nas_uploads_partition_files_in_one_batch(tmp_path, monkeypatch):
     first = tmp_path / "trades" / "date=2026-06-26" / "symbol=US.AAPL" / "part-1.parquet"
     second = tmp_path / "quotes" / "date=2026-06-26" / "symbol=US.NVDA" / "part-1.parquet"

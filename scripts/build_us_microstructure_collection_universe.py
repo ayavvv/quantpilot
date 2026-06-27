@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from scripts.build_us_microstructure_universe import DEFAULT_BASE_DIR, DEFAULT_NAS_DIR
-from scripts.collect_us_microstructure import _copy_to_nas
+from scripts.collect_us_microstructure import _sync_paths_to_nas
 from strategy.us_microstructure_features import normalize_us_symbol, normalize_us_symbols
 
 
@@ -345,13 +345,7 @@ def write_collection_outputs(
 
 
 def _sync_outputs(paths: Iterable[Path], *, base_dir: Path, nas_host: str, nas_dir: str) -> list[dict[str, str]]:
-    results: list[dict[str, str]] = []
-    if not nas_host or not nas_dir:
-        return results
-    for path in paths:
-        status, remote_path, error = _copy_to_nas(path, base_dir, nas_host, nas_dir)
-        results.append({"local_path": str(path), "nas_path": remote_path, "status": status, "error": error})
-    return results
+    return _sync_paths_to_nas(paths, local_base=base_dir, nas_host=nas_host, nas_dir=nas_dir)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

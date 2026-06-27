@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from scripts.collect_us_microstructure import DEFAULT_NAS_DIR, _copy_to_nas
+from scripts.collect_us_microstructure import DEFAULT_NAS_DIR, _sync_paths_to_nas
 
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(Path.home() / "quantpilot_data")))
@@ -82,6 +82,7 @@ def repair_manifest_uploads(
     for manifest_path in _manifest_paths(base, date):
         records = _read_manifest(manifest_path)
         changed = False
+        repair_items: list[tuple[dict[str, Any], Path, str, str]] = []
         for record in records:
             if not _needs_repair(record):
                 continue
@@ -107,30 +108,55 @@ def repair_manifest_uploads(
                 record["repair_checked_at"] = _utc_now_iso()
                 changed = True
                 continue
-            status, remote_path, error = _copy_to_nas(local_path, base, nas_host, nas_dir)
-            if status == "ok":
-                repaired += 1
-                record["previous_nas_upload_status"] = previous_status
-                record["previous_nas_error"] = str(record.get("nas_error") or "")
-                record["nas_upload_status"] = status
-                record["nas_path"] = remote_path
-                record["nas_error"] = ""
-                record["repaired_at"] = _utc_now_iso()
-            else:
-                failed += 1
-                record["nas_upload_status"] = status
-                record["nas_path"] = remote_path
-                record["nas_error"] = error
-                record["repair_checked_at"] = _utc_now_iso()
-            changed = True
+            repair_items.append((record, local_path, previous_status, str(record.get("nas_error") or "")))
+        if repair_items:
+            sync_results = _sync_paths_to_nas(
+                [local_path for _, local_path, _, _ in repair_items],
+                local_base=base,
+                nas_host=nas_host,
+                nas_dir=nas_dir,
+            )
+            results_by_path = {Path(item["local_path"]): item for item in sync_results}
+            for record, local_path, previous_status, previous_error in repair_items:
+                result = results_by_path.get(
+                    local_path,
+                    {
+                        "status": "failed",
+                        "nas_path": "",
+                        "error": "missing repair sync result",
+                    },
+                )
+                status = result["status"]
+                remote_path = result["nas_path"]
+                error = result["error"]
+                if status == "ok":
+                    repaired += 1
+                    record["previous_nas_upload_status"] = previous_status
+                    record["previous_nas_error"] = previous_error
+                    record["nas_upload_status"] = status
+                    record["nas_path"] = remote_path
+                    record["nas_error"] = ""
+                    record["repaired_at"] = _utc_now_iso()
+                else:
+                    failed += 1
+                    record["nas_upload_status"] = status
+                    record["nas_path"] = remote_path
+                    record["nas_error"] = error
+                    record["repair_checked_at"] = _utc_now_iso()
+                changed = True
         if changed and not dry_run:
             _write_manifest(manifest_path, records)
             changed_paths.append(str(manifest_path))
-            status, _, _ = _copy_to_nas(manifest_path, base, nas_host, nas_dir)
-            if status != "ok":
-                manifest_sync_failed += 1
         if limit and checked >= int(limit):
             break
+    if changed_paths and not dry_run:
+        manifest_sync_results = _sync_paths_to_nas(
+            [Path(path) for path in changed_paths],
+            local_base=base,
+            nas_host=nas_host,
+            nas_dir=nas_dir,
+        )
+        manifest_sync_failed = sum(1 for item in manifest_sync_results if item["status"] != "ok")
 
     return {
         "date": date,

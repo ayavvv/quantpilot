@@ -245,6 +245,28 @@ def _copy_to_nas(local_path: Path, local_base: Path, nas_host: str, nas_dir: str
     return status, remote_paths.get(path, _remote_path_for(path, local_base, nas_dir)), error
 
 
+def _sync_paths_to_nas(
+    local_paths: Iterable[Path],
+    *,
+    local_base: Path,
+    nas_host: str,
+    nas_dir: str,
+) -> list[dict[str, str]]:
+    paths = [Path(path) for path in local_paths]
+    if not nas_host or not nas_dir or not paths:
+        return []
+    status, remote_paths, error = _copy_many_to_nas(paths, local_base, nas_host, nas_dir)
+    return [
+        {
+            "local_path": str(path),
+            "nas_path": remote_paths.get(path, _remote_path_for(path, local_base, nas_dir)),
+            "status": status,
+            "error": "" if status == "ok" else error,
+        }
+        for path in paths
+    ]
+
+
 def _mark_manifest_uploads(
     manifests: list[dict[str, Any]],
     *,

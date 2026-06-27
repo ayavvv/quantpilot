@@ -12,7 +12,7 @@ from typing import Callable, Iterable
 
 import pandas as pd
 
-from scripts.collect_us_microstructure import DEFAULT_RSA_KEY, DEFAULT_SYMBOLS, _copy_to_nas
+from scripts.collect_us_microstructure import DEFAULT_RSA_KEY, DEFAULT_SYMBOLS, _sync_paths_to_nas
 from strategy.us_microstructure_features import normalize_us_symbol, normalize_us_symbols
 from strategy.us_microstructure_validation import discover_signal_files
 
@@ -274,13 +274,7 @@ def _autype_from_text(value: str):
 
 
 def _sync_outputs(paths: Iterable[Path], *, base_dir: Path, nas_host: str, nas_dir: str) -> list[dict[str, str]]:
-    results = []
-    if not nas_host or not nas_dir:
-        return results
-    for path in paths:
-        status, remote_path, error = _copy_to_nas(path, base_dir, nas_host, nas_dir)
-        results.append({"local_path": str(path), "nas_path": remote_path, "status": status, "error": error})
-    return results
+    return _sync_paths_to_nas(paths, local_base=base_dir, nas_host=nas_host, nas_dir=nas_dir)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -364,8 +358,7 @@ def main(argv: list[str] | None = None) -> int:
             status = json.loads(status_path.read_text(encoding="utf-8"))
             status["nas_sync"] = sync_results
             status_path.write_text(json.dumps(status, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            if args.nas_host and args.nas_dir:
-                _copy_to_nas(status_path, base_dir, args.nas_host, args.nas_dir)
+            _sync_outputs([status_path], base_dir=base_dir, nas_host=args.nas_host, nas_dir=args.nas_dir)
 
     print(f"Updated US microstructure prices: rows={len(prices)} symbols={len(symbols)} errors={len(errors)}")
     print(f"Wrote price CSV: {outputs['csv']}")

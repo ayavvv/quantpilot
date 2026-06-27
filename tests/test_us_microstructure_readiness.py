@@ -428,11 +428,20 @@ def test_sync_readiness_outputs_copies_snapshots_to_nas(tmp_path, monkeypatch):
     latest_path.write_text("{}", encoding="utf-8")
     calls = []
 
-    def fake_copy_to_nas(local_path, local_base, nas_host, nas_dir):
-        calls.append((local_path, local_base, nas_host, nas_dir))
-        return "ok", f"{nas_dir}/readiness/{local_path.name}", ""
+    def fake_sync_paths_to_nas(local_paths, *, local_base, nas_host, nas_dir):
+        paths = list(local_paths)
+        calls.append((paths, local_base, nas_host, nas_dir))
+        return [
+            {
+                "local_path": str(path),
+                "nas_path": f"{nas_dir}/readiness/{path.name}",
+                "status": "ok",
+                "error": "",
+            }
+            for path in paths
+        ]
 
-    monkeypatch.setattr(readiness, "_copy_to_nas", fake_copy_to_nas)
+    monkeypatch.setattr(readiness, "_sync_paths_to_nas", fake_sync_paths_to_nas)
 
     results = readiness.sync_readiness_outputs(
         [dated_path, latest_path],
@@ -442,5 +451,6 @@ def test_sync_readiness_outputs_copies_snapshots_to_nas(tmp_path, monkeypatch):
     )
 
     assert [item["status"] for item in results] == ["ok", "ok"]
-    assert len(calls) == 2
+    assert len(calls) == 1
+    assert calls[0][0] == [dated_path, latest_path]
     assert calls[0][2] == "nas"

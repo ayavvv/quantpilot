@@ -14,8 +14,11 @@ def _write_manifest(path: Path, records: list[dict]):
 
 def test_repair_manifest_uploads_retries_failed_rows_and_syncs_manifest(tmp_path, monkeypatch):
     data_file = tmp_path / "trades" / "date=2026-06-01" / "symbol=US.AAPL" / "part-test.parquet"
+    second_data_file = tmp_path / "quotes" / "date=2026-06-01" / "symbol=US.NVDA" / "part-test.parquet"
     data_file.parent.mkdir(parents=True)
     data_file.write_text("parquet", encoding="utf-8")
+    second_data_file.parent.mkdir(parents=True)
+    second_data_file.write_text("parquet", encoding="utf-8")
     manifest_path = tmp_path / "manifests" / "date=2026-06-01" / "manifest-run.jsonl"
     _write_manifest(
         manifest_path,
@@ -26,16 +29,32 @@ def test_repair_manifest_uploads_retries_failed_rows_and_syncs_manifest(tmp_path
                 "local_path": str(data_file),
                 "nas_upload_status": "failed",
                 "nas_error": "old error",
+            },
+            {
+                "kind": "quotes",
+                "symbol": "US.NVDA",
+                "local_path": str(second_data_file),
+                "nas_upload_status": "failed",
+                "nas_error": "second old error",
             }
         ],
     )
-    copied = []
+    batches = []
 
-    def fake_copy_to_nas(local_path, local_base, nas_host, nas_dir):
-        copied.append(Path(local_path))
-        return "ok", f"{nas_dir}/{Path(local_path).relative_to(local_base).as_posix()}", ""
+    def fake_sync_paths_to_nas(local_paths, *, local_base, nas_host, nas_dir):
+        paths = [Path(path) for path in local_paths]
+        batches.append(paths)
+        return [
+            {
+                "local_path": str(path),
+                "nas_path": f"{nas_dir}/{path.relative_to(local_base).as_posix()}",
+                "status": "ok",
+                "error": "",
+            }
+            for path in paths
+        ]
 
-    monkeypatch.setattr(repair_script, "_copy_to_nas", fake_copy_to_nas)
+    monkeypatch.setattr(repair_script, "_sync_paths_to_nas", fake_sync_paths_to_nas)
 
     result = repair_script.repair_manifest_uploads(
         base_dir=tmp_path,
@@ -43,18 +62,18 @@ def test_repair_manifest_uploads_retries_failed_rows_and_syncs_manifest(tmp_path
         nas_host="nas",
         nas_dir="/volume1/docker/quantpilot/us_microstructure",
     )
-    repaired = json.loads(manifest_path.read_text(encoding="utf-8").splitlines()[0])
+    repaired_rows = [json.loads(line) for line in manifest_path.read_text(encoding="utf-8").splitlines()]
 
     assert result["ok"] is True
-    assert result["checked"] == 1
-    assert result["repaired"] == 1
+    assert result["checked"] == 2
+    assert result["repaired"] == 2
     assert result["changed_manifest_paths"] == [str(manifest_path)]
-    assert copied == [data_file, manifest_path]
-    assert repaired["nas_upload_status"] == "ok"
-    assert repaired["previous_nas_upload_status"] == "failed"
-    assert repaired["previous_nas_error"] == "old error"
-    assert repaired["nas_error"] == ""
-    assert "repaired_at" in repaired
+    assert batches == [[data_file, second_data_file], [manifest_path]]
+    assert [row["nas_upload_status"] for row in repaired_rows] == ["ok", "ok"]
+    assert [row["previous_nas_upload_status"] for row in repaired_rows] == ["failed", "failed"]
+    assert [row["previous_nas_error"] for row in repaired_rows] == ["old error", "second old error"]
+    assert [row["nas_error"] for row in repaired_rows] == ["", ""]
+    assert all("repaired_at" in row for row in repaired_rows)
 
 
 def test_repair_manifest_uploads_keeps_missing_local_file_failed(tmp_path):
