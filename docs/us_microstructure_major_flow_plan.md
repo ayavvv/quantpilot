@@ -537,6 +537,12 @@ Implemented status as of 2026-06-02:
   local. `scripts/run_us_microstructure_cleanup.sh` is the launchd/manual
   wrapper and requires `--execute` internally, while the Python module defaults
   to planning/dry-run unless `--execute` is provided.
+- `scripts/cleanup_local_runtime_logs.py` prunes local runtime logs that are
+  not trading data. It deletes only old Futu OpenD log files (`*.log`,
+  rotated `*.log.*`, `*.logs`, and `*.ftlog`) and old QuantPilot `*.log`
+  files. It does not remove parquet, CSV, JSON, Markdown, or HTML artifacts.
+  The default retention is 14 days for Futu OpenD logs and 30 days for
+  QuantPilot logs.
 - `scripts/replay_us_microstructure_intraday.py` builds a forward-collected
   intraday calibration ledger from the same Futu tick/book archive. It replays
   multiple regular-session cutoff times using only features visible up to each
@@ -605,9 +611,12 @@ Implemented status as of 2026-06-02:
   the recovery guard and repairing NAS uploads, then checks readiness again.
   It treats `high_confidence_ready=false` as a normal warmup state rather than
   a failure; only pipeline health issues trigger repair.
-- `scripts/run_us_microstructure_cleanup.sh` runs the archive-aware raw cleanup.
-  The default retention is controlled by `US_MICROSTRUCTURE_RAW_RETENTION_DAYS`
-  (default `7`). If the NAS `docker` share is mounted over SMB, set
+- `scripts/run_us_microstructure_cleanup.sh` runs both archive-aware raw
+  cleanup and runtime-log cleanup. Raw retention is controlled by
+  `US_MICROSTRUCTURE_RAW_RETENTION_DAYS` (default `7`); Futu OpenD log
+  retention is controlled by `FUTU_OPEND_LOG_RETENTION_DAYS` (default `14`);
+  QuantPilot log retention is controlled by `QUANTPILOT_LOG_RETENTION_DAYS`
+  (default `30`). If the NAS `docker` share is mounted over SMB, set
   `US_MICROSTRUCTURE_NAS_MOUNT_DIR` to the mounted
   `quantpilot/us_microstructure` directory and the shared upload helper will
   write to that mount instead of using SSH. For manual audits, add
@@ -630,8 +639,8 @@ Implemented status as of 2026-06-02:
   before returning nonzero so launchd logs and readiness JSON both expose the
   failure.
 - Launchd templates are available for weekday evening collection,
-  China-morning report generation, reboot recovery, raw hot-cache cleanup, and
-  morning/evening watchdog checks. The collect/report jobs
+  China-morning report generation, reboot recovery, raw hot-cache/runtime-log
+  cleanup, and morning/evening watchdog checks. The collect/report jobs
   call `scripts/run_us_microstructure_auto.sh collect|report`; the recovery job
   calls `scripts/run_us_microstructure_recover.sh` with `RunAtLoad=true` and a
   15-minute interval; cleanup runs at 11:15 Tue-Sat China time after the normal

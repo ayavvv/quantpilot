@@ -135,9 +135,15 @@ def test_cleanup_script_prunes_raw_after_archival_with_retention():
     assert 'US_MICROSTRUCTURE_RAW_RETENTION_DAYS="${US_MICROSTRUCTURE_RAW_RETENTION_DAYS:-7}"' in content
     assert "US_MICROSTRUCTURE_CLEANUP_EXECUTE" in content
     assert '"$PYTHON_BIN" -m scripts.cleanup_us_microstructure_archive' in content
+    assert '"$PYTHON_BIN" -m scripts.cleanup_local_runtime_logs' in content
     assert "--execute" in content
     assert "US_MICROSTRUCTURE_NAS_MOUNT_DIR" in content
     assert "US_MICROSTRUCTURE_CLEANUP_VERIFY_NAS_MOUNT" in content
+    assert "FUTU_OPEND_LOG_DIR" in content
+    assert 'FUTU_OPEND_LOG_RETENTION_DAYS="${FUTU_OPEND_LOG_RETENTION_DAYS:-14}"' in content
+    assert "QUANTPILOT_LOG_DIR" in content
+    assert 'QUANTPILOT_LOG_RETENTION_DAYS="${QUANTPILOT_LOG_RETENTION_DAYS:-30}"' in content
+    assert "LOCAL_RUNTIME_LOG_CLEANUP_NOW" in content
 
 
 def test_report_script_updates_prices_before_validation_by_default():
