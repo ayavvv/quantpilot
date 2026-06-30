@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import time
 from collections import defaultdict
@@ -26,6 +27,7 @@ import pandas as pd
 
 DEFAULT_LOCAL_DIR = "~/quantpilot_data/us_microstructure"
 DEFAULT_NAS_DIR = "/volume1/docker/quantpilot/us_microstructure"
+DEFAULT_NAS_MOUNT_DIR = os.environ.get("US_MICROSTRUCTURE_NAS_MOUNT_DIR", "").strip()
 DEFAULT_RSA_KEY = Path(__file__).resolve().parents[1] / "keys" / "futu_rsa_1024.pem"
 US_EASTERN = ZoneInfo("America/New_York")
 DEFAULT_SYMBOLS = (
@@ -208,6 +210,20 @@ def _copy_many_to_nas(
     if not paths:
         return "ok", remote_paths, ""
 
+    mount_dir = Path(DEFAULT_NAS_MOUNT_DIR).expanduser() if DEFAULT_NAS_MOUNT_DIR else None
+    if mount_dir is not None:
+        if not mount_dir.is_dir():
+            return "failed", remote_paths, f"NAS mount directory is not available: {mount_dir}"
+        try:
+            for path in paths:
+                relative = path.relative_to(local_base)
+                target = mount_dir / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, target)
+        except Exception as exc:
+            return "failed", remote_paths, f"SMB copy failed: {exc}"
+        return "ok", remote_paths, ""
+
     relative_paths = [path.relative_to(local_base).as_posix() for path in paths]
     remote_dir = _normalise_remote_dir(nas_dir)
     remote_command = f"mkdir -p {shlex.quote(remote_dir)} && tar -xf - -C {shlex.quote(remote_dir)}"
@@ -245,6 +261,10 @@ def _copy_to_nas(local_path: Path, local_base: Path, nas_host: str, nas_dir: str
     return status, remote_paths.get(path, _remote_path_for(path, local_base, nas_dir)), error
 
 
+def _nas_sync_enabled(nas_host: str, nas_dir: str) -> bool:
+    return bool(nas_dir and (nas_host or DEFAULT_NAS_MOUNT_DIR))
+
+
 def _sync_paths_to_nas(
     local_paths: Iterable[Path],
     *,
@@ -253,7 +273,7 @@ def _sync_paths_to_nas(
     nas_dir: str,
 ) -> list[dict[str, str]]:
     paths = [Path(path) for path in local_paths]
-    if not nas_host or not nas_dir or not paths:
+    if not _nas_sync_enabled(nas_host, nas_dir) or not paths:
         return []
     status, remote_paths, error = _copy_many_to_nas(paths, local_base, nas_host, nas_dir)
     return [
@@ -294,7 +314,7 @@ def _sync_manifests_to_nas(
     nas_host: str,
     nas_dir: str,
 ) -> list[dict[str, Any]]:
-    if not nas_host or not nas_dir:
+    if not _nas_sync_enabled(nas_host, nas_dir):
         for record in manifests:
             record["nas_upload_status"] = "skipped"
             record["nas_path"] = ""

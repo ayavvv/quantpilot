@@ -528,6 +528,15 @@ Implemented status as of 2026-06-02:
   to NAS. The report wrapper runs this before scoring so transient NAS/SSH
   failures do not permanently block a session when the local hot-cache files
   are still available.
+- `scripts/cleanup_us_microstructure_archive.py` prunes the Mac local raw
+  hot-cache after archival. It only considers dated `trades/`, `order_book/`,
+  and `quotes/` parquet partitions older than the retention window (default
+  seven calendar days). A date is eligible only when every local raw parquet for
+  that date has an `ok` NAS-upload manifest row; generated `features_1m/`,
+  `signals/`, `quality/`, `validation/`, `reports/`, and all manifests remain
+  local. `scripts/run_us_microstructure_cleanup.sh` is the launchd/manual
+  wrapper and requires `--execute` internally, while the Python module defaults
+  to planning/dry-run unless `--execute` is provided.
 - `scripts/replay_us_microstructure_intraday.py` builds a forward-collected
   intraday calibration ledger from the same Futu tick/book archive. It replays
   multiple regular-session cutoff times using only features visible up to each
@@ -596,6 +605,14 @@ Implemented status as of 2026-06-02:
   the recovery guard and repairing NAS uploads, then checks readiness again.
   It treats `high_confidence_ready=false` as a normal warmup state rather than
   a failure; only pipeline health issues trigger repair.
+- `scripts/run_us_microstructure_cleanup.sh` runs the archive-aware raw cleanup.
+  The default retention is controlled by `US_MICROSTRUCTURE_RAW_RETENTION_DAYS`
+  (default `7`). If the NAS `docker` share is mounted over SMB, set
+  `US_MICROSTRUCTURE_NAS_MOUNT_DIR` to the mounted
+  `quantpilot/us_microstructure` directory and the shared upload helper will
+  write to that mount instead of using SSH. For manual audits, add
+  `--verify-nas-mount` to the Python cleanup module to require every candidate
+  raw file to exist on the mounted SMB tree before local deletion.
 - `scripts/run_us_microstructure_report.sh` is the Mac-side entrypoint for cron
   or launchd. It updates daily prices, repairs any non-`ok` NAS uploads still
   recoverable from local hot-cache files, updates validation through the prior
@@ -613,18 +630,31 @@ Implemented status as of 2026-06-02:
   before returning nonzero so launchd logs and readiness JSON both expose the
   failure.
 - Launchd templates are available for weekday evening collection,
-  China-morning report generation, reboot recovery, and morning/evening
-  watchdog checks. The collect/report jobs
+  China-morning report generation, reboot recovery, raw hot-cache cleanup, and
+  morning/evening watchdog checks. The collect/report jobs
   call `scripts/run_us_microstructure_auto.sh collect|report`; the recovery job
   calls `scripts/run_us_microstructure_recover.sh` with `RunAtLoad=true` and a
-  15-minute interval; the watchdog runs at 09:15 Tue-Sat and 21:10 Mon-Fri
-  China time, plus at load. On Mac this is installed as a LaunchAgent when
-  passwordless sudo is unavailable, or as a system LaunchDaemon when installed
-  with administrator privileges. NAS cron mirrors the same auto/recovery/watchdog
+  15-minute interval; cleanup runs at 11:15 Tue-Sat China time after the normal
+  report window; the watchdog runs at 09:15 Tue-Sat and 21:10 Mon-Fri China
+  time, plus at load. On Mac this is installed as a LaunchAgent when passwordless
+  sudo is unavailable, or as a system LaunchDaemon when installed with
+  administrator privileges. NAS cron mirrors the same auto/recovery/watchdog
   entrypoints and dispatches back to the Mac mini by SSH.
   `scripts/install_us_microstructure_launchd.sh` renders all templates into
   `/Library/LaunchDaemons` when passwordless sudo is available, or user
   `LaunchAgents` otherwise.
+
+SMB mount shape for the NAS `docker` share:
+
+```bash
+mkdir -p /Volumes/Untouchable-docker
+mount_smbfs //<smb-user>@192.168.100.131/docker /Volumes/Untouchable-docker
+export US_MICROSTRUCTURE_NAS_MOUNT_DIR=/Volumes/Untouchable-docker/quantpilot/us_microstructure
+```
+
+The canonical NAS archive path remains
+`/volume1/docker/quantpilot/us_microstructure/`; the SMB mount is just a local
+filesystem route to the same tree.
 
 Start with a fixed universe file:
 

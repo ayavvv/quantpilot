@@ -21,6 +21,7 @@ LAUNCHD_LABELS = (
     "com.quantpilot.us_microstructure.report",
     "com.quantpilot.us_microstructure.recover",
     "com.quantpilot.us_microstructure.watchdog",
+    "com.quantpilot.us_microstructure.cleanup",
 )
 
 

@@ -9,6 +9,7 @@ def test_readiness_launchd_labels_cover_automation_and_recovery_jobs():
         "com.quantpilot.us_microstructure.report",
         "com.quantpilot.us_microstructure.recover",
         "com.quantpilot.us_microstructure.watchdog",
+        "com.quantpilot.us_microstructure.cleanup",
     )
 
 

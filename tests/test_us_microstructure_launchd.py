@@ -6,6 +6,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 AUTO_SCRIPT = REPO_ROOT / "scripts" / "run_us_microstructure_auto.sh"
 RECOVER_SCRIPT = REPO_ROOT / "scripts" / "run_us_microstructure_recover.sh"
 WATCHDOG_SCRIPT = REPO_ROOT / "scripts" / "run_us_microstructure_watchdog.sh"
+CLEANUP_SCRIPT = REPO_ROOT / "scripts" / "run_us_microstructure_cleanup.sh"
 COLLECT_SCRIPT = REPO_ROOT / "scripts" / "run_us_microstructure_collect.sh"
 REPORT_SCRIPT = REPO_ROOT / "scripts" / "run_us_microstructure_report.sh"
 INSTALL_SCRIPT = REPO_ROOT / "scripts" / "install_us_microstructure_launchd.sh"
@@ -13,6 +14,7 @@ COLLECT_PLIST = REPO_ROOT / "deploy" / "launchd" / "com.quantpilot.us_microstruc
 REPORT_PLIST = REPO_ROOT / "deploy" / "launchd" / "com.quantpilot.us_microstructure.report.plist"
 RECOVER_PLIST = REPO_ROOT / "deploy" / "launchd" / "com.quantpilot.us_microstructure.recover.plist"
 WATCHDOG_PLIST = REPO_ROOT / "deploy" / "launchd" / "com.quantpilot.us_microstructure.watchdog.plist"
+CLEANUP_PLIST = REPO_ROOT / "deploy" / "launchd" / "com.quantpilot.us_microstructure.cleanup.plist"
 CORE_SYMBOLS = REPO_ROOT / "config" / "us_microstructure_core_symbols.txt"
 
 
@@ -110,7 +112,7 @@ def test_recover_script_guards_reboot_catchup_windows():
     assert 'US_MICROSTRUCTURE_SEND_EMAIL="$US_MICROSTRUCTURE_RECOVER_SEND_EMAIL"' in content
     assert 'run_us_microstructure_auto.sh" collect' in content
     assert 'run_us_microstructure_auto.sh" report' in content
-    assert "us_microstructure_recover.lock" in content
+    assert "us_microstructure_recover.flock" in content
 
 
 def test_watchdog_script_runs_recovery_readiness_and_safe_repairs():
@@ -125,6 +127,17 @@ def test_watchdog_script_runs_recovery_readiness_and_safe_repairs():
     assert "scripts.repair_us_microstructure_nas_uploads" in content
     assert "readiness_after_repair" in content
     assert "high_confidence_ready" in content
+
+
+def test_cleanup_script_prunes_raw_after_archival_with_retention():
+    content = CLEANUP_SCRIPT.read_text(encoding="utf-8")
+    assert "US_MICROSTRUCTURE_RAW_RETENTION_DAYS" in content
+    assert 'US_MICROSTRUCTURE_RAW_RETENTION_DAYS="${US_MICROSTRUCTURE_RAW_RETENTION_DAYS:-7}"' in content
+    assert "US_MICROSTRUCTURE_CLEANUP_EXECUTE" in content
+    assert '"$PYTHON_BIN" -m scripts.cleanup_us_microstructure_archive' in content
+    assert "--execute" in content
+    assert "US_MICROSTRUCTURE_NAS_MOUNT_DIR" in content
+    assert "US_MICROSTRUCTURE_CLEANUP_VERIFY_NAS_MOUNT" in content
 
 
 def test_report_script_updates_prices_before_validation_by_default():
@@ -221,6 +234,23 @@ def test_us_microstructure_watchdog_launchd_plist_checks_morning_and_evening():
     assert {item["Weekday"] for item in intervals if item["Hour"] == 21} == {1, 2, 3, 4, 5}
 
 
+def test_us_microstructure_cleanup_launchd_plist_runs_after_reports():
+    payload = _load_plist(CLEANUP_PLIST)
+    assert payload["Label"] == "com.quantpilot.us_microstructure.cleanup"
+    assert payload["UserName"] == "__USER__"
+    assert payload["WorkingDirectory"] == "__PROJECT_DIR__"
+    assert payload["ProgramArguments"] == ["/bin/bash", "__PROJECT_DIR__/scripts/run_us_microstructure_cleanup.sh"]
+    assert payload["StandardOutPath"] == "__PROJECT_DIR__/logs/us_microstructure_cleanup.out.log"
+    assert payload["StandardErrorPath"] == "__PROJECT_DIR__/logs/us_microstructure_cleanup.err.log"
+    assert payload["EnvironmentVariables"]["US_MICROSTRUCTURE_CLEANUP_EXECUTE"] == "true"
+    assert payload["EnvironmentVariables"]["US_MICROSTRUCTURE_RAW_RETENTION_DAYS"] == "7"
+    intervals = payload["StartCalendarInterval"]
+    assert len(intervals) == 5
+    assert {item["Weekday"] for item in intervals} == {2, 3, 4, 5, 6}
+    assert {item["Hour"] for item in intervals} == {11}
+    assert {item["Minute"] for item in intervals} == {15}
+
+
 def test_us_microstructure_install_script_installs_launch_jobs():
     content = INSTALL_SCRIPT.read_text(encoding="utf-8")
     assert 'TARGET_DIR="/Library/LaunchDaemons"' in content
@@ -232,6 +262,7 @@ def test_us_microstructure_install_script_installs_launch_jobs():
     assert 'render_and_install "com.quantpilot.us_microstructure.report"' in content
     assert 'render_and_install "com.quantpilot.us_microstructure.recover"' in content
     assert 'render_and_install "com.quantpilot.us_microstructure.watchdog"' in content
+    assert 'render_and_install "com.quantpilot.us_microstructure.cleanup"' in content
     assert 'payload.pop("UserName", None)' in content
     assert 'sudo launchctl bootstrap system "$target_path"' in content
     assert 'sudo launchctl enable "system/$label"' in content

@@ -3,6 +3,32 @@ from pathlib import Path
 from scripts import collect_us_microstructure as collect
 
 
+def test_sync_paths_to_nas_uses_smb_mount_when_configured(tmp_path, monkeypatch):
+    local_file = tmp_path / "reports" / "status.json"
+    local_file.parent.mkdir(parents=True)
+    local_file.write_text('{"ok": true}', encoding="utf-8")
+    mount = tmp_path / "nas_mount"
+    mount.mkdir()
+    monkeypatch.setattr(collect, "DEFAULT_NAS_MOUNT_DIR", str(mount))
+
+    results = collect._sync_paths_to_nas(
+        [local_file],
+        local_base=tmp_path,
+        nas_host="",
+        nas_dir="/volume1/docker/quantpilot/us_microstructure",
+    )
+
+    assert results == [
+        {
+            "local_path": str(local_file),
+            "nas_path": "/volume1/docker/quantpilot/us_microstructure/reports/status.json",
+            "status": "ok",
+            "error": "",
+        }
+    ]
+    assert (mount / "reports" / "status.json").read_text(encoding="utf-8") == '{"ok": true}'
+
+
 def test_sync_paths_to_nas_uploads_outputs_in_one_batch(tmp_path, monkeypatch):
     first = tmp_path / "reports" / "first.json"
     second = tmp_path / "reports" / "second.html"
