@@ -26,6 +26,7 @@ LOCK_DIR = LOCK_ROOT / "active"
 
 NAS_HOST = os.environ.get("NAS_HOST", "")
 NAS_USER = os.environ.get("NAS_USER", "")
+SKIP_NAS_SYNC = os.environ.get("SKIP_NAS_SYNC", "").strip().lower() in {"1", "true", "yes", "y"}
 NAS_QLIB_PATH = os.environ.get("NAS_QLIB_PATH", "/volume1/docker/quantpilot/qlib_data")
 SSH_KEY = os.environ.get("SSH_KEY", str(Path.home() / ".ssh" / "id_ed25519"))
 NAS_COLLECTOR_CONTAINER = os.environ.get("NAS_COLLECTOR_CONTAINER", "quantpilot-collector")
@@ -54,7 +55,7 @@ def latest_signal_date() -> str:
 
 
 def latest_nas_completed_date() -> str:
-    if not (NAS_HOST and NAS_USER):
+    if SKIP_NAS_SYNC or not (NAS_HOST and NAS_USER):
         return ""
     return a_share_readiness.latest_nas_a_share_completed_date(
         nas_host=NAS_HOST,
@@ -65,7 +66,7 @@ def latest_nas_completed_date() -> str:
 
 
 def latest_nas_a_share_date() -> str:
-    if not (NAS_HOST and NAS_USER):
+    if SKIP_NAS_SYNC or not (NAS_HOST and NAS_USER):
         return ""
     return a_share_readiness.latest_nas_a_share_date(
         nas_host=NAS_HOST,
@@ -76,7 +77,7 @@ def latest_nas_a_share_date() -> str:
 
 
 def expected_signal_date(now: datetime | None = None) -> str:
-    if not (NAS_HOST and NAS_USER):
+    if SKIP_NAS_SYNC or not (NAS_HOST and NAS_USER):
         return ""
     now = now or datetime.now()
     return a_share_readiness.previous_trade_date_via_collector(

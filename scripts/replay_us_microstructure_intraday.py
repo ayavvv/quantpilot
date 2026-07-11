@@ -572,8 +572,7 @@ def main(argv: list[str] | None = None) -> int:
         status["nas_sync"] = sync_results
         outputs["status"].write_text(json.dumps(status, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         outputs["latest_status"].write_text(json.dumps(status, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        if args.nas_host and args.nas_dir:
-            _sync_outputs([outputs["status"], outputs["latest_status"]], base_dir=base_dir, nas_host=args.nas_host, nas_dir=args.nas_dir)
+        _sync_outputs([outputs["status"], outputs["latest_status"]], base_dir=base_dir, nas_host=args.nas_host, nas_dir=args.nas_dir)
     print(
         "Intraday replay: events={events} quality_events={quality_events} returns={returns} cutoffs={cutoffs}".format(
             events=status["event_count"],

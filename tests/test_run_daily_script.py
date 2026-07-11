@@ -11,6 +11,8 @@ RUN_TRADE = REPO_ROOT / "scripts" / "run_trade.sh"
 
 def test_run_daily_passes_target_date_to_sync_script():
     content = RUN_DAILY.read_text()
+    assert 'SKIP_NAS_SYNC="${SKIP_NAS_SYNC:-false}"' in content
+    assert 'if [ -n "$NAS_HOST" ] && [ -n "$NAS_USER" ] && [ "$SKIP_NAS_SYNC" != "true" ]; then' in content
     assert 'SYNC_TARGET_A_SHARE_DATE="$TARGET_A_SHARE_DATE"' in content
     assert 'EXPECTED_TARGET_A_SHARE_DATE="${SYNC_TARGET_A_SHARE_DATE:-}" "$SCRIPT_DIR/sync_data.sh"' in content
 
@@ -35,6 +37,12 @@ def test_run_daily_schedules_ready_retry_on_timeout():
     assert 'spawn_ready_retry "$TARGET_A_SHARE_DATE"' in content
     assert 'nohup "$SCRIPT_DIR/run_daily_when_ready.sh" "$target_date"' in content
     assert 'scripts.a_share_readiness nas-latest-date' in content
+
+
+def test_run_daily_when_ready_respects_skip_nas_sync():
+    content = RUN_DAILY_WHEN_READY.read_text()
+    assert 'SKIP_NAS_SYNC="${SKIP_NAS_SYNC:-false}"' in content
+    assert 'SKIP_NAS_SYNC=true, not watching NAS readiness' in content
 
 
 def test_run_daily_runs_healthcheck_on_failures_and_completion():
@@ -153,6 +161,9 @@ def test_run_trade_builds_pretrade_capital_flow_advisory():
 
 def test_sync_data_syncs_and_promotes_metadata():
     content = SYNC_DATA.read_text()
+    assert 'SKIP_NAS_SYNC="${SKIP_NAS_SYNC:-false}"' in content
+    assert 'NAS sync disabled by SKIP_NAS_SYNC=true' in content
+    assert 'NAS_HOST/NAS_USER not configured; skipping NAS sync' in content
     assert 'tar cf - calendars instruments features metadata' in content
     assert 'for subdir in calendars instruments features metadata; do' in content
 

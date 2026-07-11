@@ -23,10 +23,16 @@ NAS_QLIB_PATH="${NAS_QLIB_PATH:-/volume1/docker/quantpilot/qlib_data}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519}"
 PYTHON_BIN="${PYTHON_BIN:-$PROJECT_DIR/.venv/bin/python}"
 REPAIR_QLIB_METADATA="${REPAIR_QLIB_METADATA:-true}"
+SKIP_NAS_SYNC="${SKIP_NAS_SYNC:-false}"
+
+if [ "$SKIP_NAS_SYNC" = "true" ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] NAS sync disabled by SKIP_NAS_SYNC=true"
+    exit 0
+fi
 
 if [ -z "$NAS_HOST" ] || [ -z "$NAS_USER" ]; then
-    echo "Error: NAS_HOST and NAS_USER must be set in .env or environment"
-    exit 1
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] NAS_HOST/NAS_USER not configured; skipping NAS sync"
+    exit 0
 fi
 
 QLIB_DIR="${QLIB_DATA_DIR:-$DATA_DIR/qlib_data}"

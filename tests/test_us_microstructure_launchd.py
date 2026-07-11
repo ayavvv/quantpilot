@@ -53,6 +53,9 @@ def test_collect_script_runs_futu_collector_with_nas_and_lock():
     assert "US_MICROSTRUCTURE_FLOW_RANKING_FILE" in content
     assert "US_MICROSTRUCTURE_UNIVERSE_HISTORY_SLEEP_SECONDS" in content
     assert "US_MICROSTRUCTURE_UNIVERSE_MINUTE_SLEEP_SECONDS" in content
+    assert "US_MICROSTRUCTURE_NAS_MOUNT_DIR" in content
+    assert "US_MICROSTRUCTURE_ALLOW_SSH_NAS_SYNC" in content
+    assert 'US_MICROSTRUCTURE_NAS_HOST="${US_MICROSTRUCTURE_NAS_HOST:-}"' in content
     assert "US_MICROSTRUCTURE_UNIVERSE_FILE" in content
     assert "config/us_microstructure_core_symbols.txt" in content
     assert "--core-source" in content

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from scripts.collect_us_microstructure import DEFAULT_NAS_DIR, _sync_paths_to_nas
+from scripts.collect_us_microstructure import DEFAULT_NAS_DIR, _nas_sync_enabled, _sync_paths_to_nas
 
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(Path.home() / "quantpilot_data")))
@@ -101,10 +101,10 @@ def repair_manifest_uploads(
                 continue
             if dry_run:
                 continue
-            if not nas_host or not nas_dir:
+            if not _nas_sync_enabled(nas_host, nas_dir):
                 failed += 1
                 record["nas_upload_status"] = "failed"
-                record["nas_error"] = "repair requires --nas-host and --nas-dir"
+                record["nas_error"] = "repair requires US_MICROSTRUCTURE_NAS_MOUNT_DIR or explicitly enabled SSH NAS sync"
                 record["repair_checked_at"] = _utc_now_iso()
                 changed = True
                 continue

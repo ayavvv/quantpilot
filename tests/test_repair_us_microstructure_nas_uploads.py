@@ -54,6 +54,7 @@ def test_repair_manifest_uploads_retries_failed_rows_and_syncs_manifest(tmp_path
             for path in paths
         ]
 
+    monkeypatch.setattr(repair_script, "_nas_sync_enabled", lambda nas_host, nas_dir: True)
     monkeypatch.setattr(repair_script, "_sync_paths_to_nas", fake_sync_paths_to_nas)
 
     result = repair_script.repair_manifest_uploads(

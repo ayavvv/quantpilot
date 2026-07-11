@@ -25,6 +25,7 @@ NAS_HOST="${NAS_HOST:-}"
 NAS_USER="${NAS_USER:-}"
 NAS_QLIB_PATH="${NAS_QLIB_PATH:-/volume1/docker/quantpilot/qlib_data}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519}"
+SKIP_NAS_SYNC="${SKIP_NAS_SYNC:-false}"
 PYTHON_BIN="${PYTHON_BIN:-$PROJECT_DIR/.venv/bin/python}"
 PYTHONPATH="${PROJECT_DIR}${PYTHONPATH:+:$PYTHONPATH}"
 NAS_COLLECTOR_CONTAINER="${NAS_COLLECTOR_CONTAINER:-quantpilot-collector}"
@@ -94,6 +95,11 @@ nas_latest_date() {
 nightly_running() {
     pgrep -f "$SCRIPT_DIR/run_daily.sh|python -m inference.run_daily" >/dev/null 2>&1
 }
+
+if [ "$SKIP_NAS_SYNC" = "true" ]; then
+    log "SKIP_NAS_SYNC=true, not watching NAS readiness"
+    exit 0
+fi
 
 if [ -z "$NAS_HOST" ] || [ -z "$NAS_USER" ]; then
     log "NAS_HOST/NAS_USER missing, cannot watch NAS readiness"

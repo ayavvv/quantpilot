@@ -29,6 +29,29 @@ def test_sync_paths_to_nas_uses_smb_mount_when_configured(tmp_path, monkeypatch)
     assert (mount / "reports" / "status.json").read_text(encoding="utf-8") == '{"ok": true}'
 
 
+def test_sync_paths_to_nas_does_not_use_ssh_by_default(tmp_path, monkeypatch):
+    local_file = tmp_path / "reports" / "status.json"
+    local_file.parent.mkdir(parents=True)
+    local_file.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(collect, "DEFAULT_NAS_MOUNT_DIR", "")
+    monkeypatch.setattr(collect, "DEFAULT_ALLOW_SSH_NAS_SYNC", False)
+
+    def fail_copy_many_to_nas(*args, **kwargs):
+        raise AssertionError("SSH copy should not be attempted")
+
+    monkeypatch.setattr(collect, "_copy_many_to_nas", fail_copy_many_to_nas)
+
+    assert (
+        collect._sync_paths_to_nas(
+            [local_file],
+            local_base=tmp_path,
+            nas_host="nas",
+            nas_dir="/volume1/docker/quantpilot/us_microstructure",
+        )
+        == []
+    )
+
+
 def test_sync_paths_to_nas_uploads_outputs_in_one_batch(tmp_path, monkeypatch):
     first = tmp_path / "reports" / "first.json"
     second = tmp_path / "reports" / "second.html"
@@ -46,6 +69,7 @@ def test_sync_paths_to_nas_uploads_outputs_in_one_batch(tmp_path, monkeypatch):
             "",
         )
 
+    monkeypatch.setattr(collect, "DEFAULT_ALLOW_SSH_NAS_SYNC", True)
     monkeypatch.setattr(collect, "_copy_many_to_nas", fake_copy_many_to_nas)
 
     results = collect._sync_paths_to_nas(
@@ -78,6 +102,7 @@ def test_sync_paths_to_nas_marks_whole_batch_failed(tmp_path, monkeypatch):
             "ssh failed",
         )
 
+    monkeypatch.setattr(collect, "DEFAULT_ALLOW_SSH_NAS_SYNC", True)
     monkeypatch.setattr(collect, "_copy_many_to_nas", fake_copy_many_to_nas)
 
     results = collect._sync_paths_to_nas(
@@ -109,6 +134,7 @@ def test_sync_manifests_to_nas_uploads_partition_files_in_one_batch(tmp_path, mo
             "",
         )
 
+    monkeypatch.setattr(collect, "DEFAULT_ALLOW_SSH_NAS_SYNC", True)
     monkeypatch.setattr(collect, "_copy_many_to_nas", fake_copy_many_to_nas)
 
     updated = collect._sync_manifests_to_nas(
@@ -147,6 +173,7 @@ def test_sync_manifests_to_nas_marks_whole_batch_failed(tmp_path, monkeypatch):
             "ssh failed",
         )
 
+    monkeypatch.setattr(collect, "DEFAULT_ALLOW_SSH_NAS_SYNC", True)
     monkeypatch.setattr(collect, "_copy_many_to_nas", fake_copy_many_to_nas)
 
     updated = collect._sync_manifests_to_nas(
@@ -198,6 +225,7 @@ def test_flush_batch_uploads_all_written_partitions_together(tmp_path, monkeypat
         return "ok", f"{nas_dir}/{path.relative_to(local_base).as_posix()}", ""
 
     monkeypatch.setattr(collect, "_write_partition", fake_write_partition)
+    monkeypatch.setattr(collect, "DEFAULT_ALLOW_SSH_NAS_SYNC", True)
     monkeypatch.setattr(collect, "_copy_many_to_nas", fake_copy_many_to_nas)
     monkeypatch.setattr(collect, "_copy_to_nas", fake_copy_to_nas)
 

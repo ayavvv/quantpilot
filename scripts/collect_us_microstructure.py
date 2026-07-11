@@ -28,6 +28,12 @@ import pandas as pd
 DEFAULT_LOCAL_DIR = "~/quantpilot_data/us_microstructure"
 DEFAULT_NAS_DIR = "/volume1/docker/quantpilot/us_microstructure"
 DEFAULT_NAS_MOUNT_DIR = os.environ.get("US_MICROSTRUCTURE_NAS_MOUNT_DIR", "").strip()
+DEFAULT_ALLOW_SSH_NAS_SYNC = str(os.environ.get("US_MICROSTRUCTURE_ALLOW_SSH_NAS_SYNC", "")).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "y",
+}
 DEFAULT_RSA_KEY = Path(__file__).resolve().parents[1] / "keys" / "futu_rsa_1024.pem"
 US_EASTERN = ZoneInfo("America/New_York")
 DEFAULT_SYMBOLS = (
@@ -224,6 +230,14 @@ def _copy_many_to_nas(
             return "failed", remote_paths, f"SMB copy failed: {exc}"
         return "ok", remote_paths, ""
 
+    if not nas_host or not DEFAULT_ALLOW_SSH_NAS_SYNC:
+        return (
+            "failed",
+            remote_paths,
+            "SSH NAS sync is disabled; set US_MICROSTRUCTURE_NAS_MOUNT_DIR or "
+            "US_MICROSTRUCTURE_ALLOW_SSH_NAS_SYNC=true to enable a remote sync target",
+        )
+
     relative_paths = [path.relative_to(local_base).as_posix() for path in paths]
     remote_dir = _normalise_remote_dir(nas_dir)
     remote_command = f"mkdir -p {shlex.quote(remote_dir)} && tar -xf - -C {shlex.quote(remote_dir)}"
@@ -262,7 +276,7 @@ def _copy_to_nas(local_path: Path, local_base: Path, nas_host: str, nas_dir: str
 
 
 def _nas_sync_enabled(nas_host: str, nas_dir: str) -> bool:
-    return bool(nas_dir and (nas_host or DEFAULT_NAS_MOUNT_DIR))
+    return bool(nas_dir and (DEFAULT_NAS_MOUNT_DIR or (nas_host and DEFAULT_ALLOW_SSH_NAS_SYNC)))
 
 
 def _sync_paths_to_nas(
@@ -439,7 +453,7 @@ def _flush_batch(
         nas_dir=nas_dir,
     )
     manifest_path = _append_manifest(local_dir, date, run_id, manifest_records)
-    if manifest_path and nas_host and nas_dir:
+    if manifest_path and _nas_sync_enabled(nas_host, nas_dir):
         status, _, error = _copy_to_nas(manifest_path, local_dir, nas_host, nas_dir)
         if status != "ok":
             print(f"WARNING: manifest NAS sync failed: {error}")
